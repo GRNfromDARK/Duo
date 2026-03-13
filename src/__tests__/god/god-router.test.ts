@@ -3,11 +3,12 @@
  * Source: FR-004 (AC-016, AC-017, AC-018, AC-018a, AC-018b)
  */
 
-import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { readFileSync, existsSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import type { CLIAdapter, ExecOptions, OutputChunk } from '../../types/adapter.js';
+import { GodPostCoderDecisionSchema, GodPostReviewerDecisionSchema } from '../../types/god-schemas.js';
 
 // ── Helper: create a mock CLIAdapter that returns specified output ──
 
@@ -60,12 +61,12 @@ const POST_CODER_RETRY = `God analysis: Coder output is empty.
 }
 \`\`\``;
 
-const POST_CODER_USER_INPUT = `God analysis: Coder has a question for the user.
+const POST_CODER_AUTONOMOUS_RESOLUTION = `God analysis: Coder asked for options, God resolved it autonomously.
 
 \`\`\`json
 {
-  "action": "request_user_input",
-  "reasoning": "Coder needs clarification on API design"
+  "action": "continue_to_review",
+  "reasoning": "REST is the simpler fit for this task, continue to review the implementation"
 }
 \`\`\``;
 
@@ -114,17 +115,6 @@ const POST_REVIEWER_LOOP_DETECTED = `God analysis: Loop detected.
 }
 \`\`\``;
 
-const POST_REVIEWER_USER_INPUT = `God analysis: Need user decision.
-
-\`\`\`json
-{
-  "action": "request_user_input",
-  "reasoning": "Fundamental design disagreement needs user input",
-  "confidenceScore": 0.5,
-  "progressTrend": "stagnant"
-}
-\`\`\``;
-
 const POST_REVIEWER_ROUTE_EMPTY_ISSUES = `God analysis: Reviewer found issues but no list.
 
 \`\`\`json
@@ -149,6 +139,28 @@ const POST_REVIEWER_ROUTE_NO_ISSUES = `God analysis: Reviewer found issues but m
 \`\`\``;
 
 // ── Tests ──
+
+describe('Routing schemas (AI-driven)', () => {
+  test('GodPostCoderDecision rejects request_user_input', () => {
+    const result = GodPostCoderDecisionSchema.safeParse({
+      action: 'request_user_input',
+      reasoning: 'test',
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  test('GodPostReviewerDecision rejects request_user_input', () => {
+    const result = GodPostReviewerDecisionSchema.safeParse({
+      action: 'request_user_input',
+      reasoning: 'test',
+      confidenceScore: 0.5,
+      progressTrend: 'stagnant',
+    });
+
+    expect(result.success).toBe(false);
+  });
+});
 
 describe('God Router', () => {
   let sessionDir: string;
@@ -199,9 +211,9 @@ describe('God Router', () => {
       expect(result.event.type).toBe('ROUTE_TO_CODER');
     });
 
-    test('request_user_input: routes to user when Coder has question', async () => {
+    test('Coder questions are resolved autonomously and still route to review', async () => {
       const { routePostCoder } = await import('../../god/god-router.js');
-      const adapter = createMockAdapter(POST_CODER_USER_INPUT);
+      const adapter = createMockAdapter(POST_CODER_AUTONOMOUS_RESOLUTION);
 
       const result = await routePostCoder(adapter, 'Should I use REST or GraphQL?', {
         round: 1,
@@ -211,18 +223,15 @@ describe('God Router', () => {
         seq: 3,
       });
 
-      expect(result.decision.action).toBe('request_user_input');
-      expect(result.event.type).toBe('NEEDS_USER_INPUT');
+      expect(result.decision.action).toBe('continue_to_review');
+      expect(result.event.type).toBe('ROUTE_TO_REVIEW');
     });
   });
 
   // ── AC-3: converged CANNOT be produced in ROUTING_POST_CODE ──
 
   describe('AC-018a: converged constraint', () => {
-    test('converged is impossible from PostCoder schema (only 3 valid actions)', async () => {
-      const { GodPostCoderDecisionSchema } = await import('../../types/god-schemas.js');
-
-      // The schema only allows 3 actions; 'converged' is not one of them
+    test('converged is impossible from PostCoder schema (only 2 valid actions)', async () => {
       const result = GodPostCoderDecisionSchema.safeParse({
         action: 'converged',
         reasoning: 'test',
@@ -324,21 +333,6 @@ describe('God Router', () => {
       expect(result.event.type).toBe('LOOP_DETECTED');
     });
 
-    test('request_user_input: routes to user', async () => {
-      const { routePostReviewer } = await import('../../god/god-router.js');
-      const adapter = createMockAdapter(POST_REVIEWER_USER_INPUT);
-
-      const result = await routePostReviewer(adapter, 'Disagreement on architecture', {
-        round: 3,
-        maxRounds: 10,
-        taskGoal: 'Refactor module',
-        sessionDir,
-        seq: 9,
-      });
-
-      expect(result.decision.action).toBe('request_user_input');
-      expect(result.event.type).toBe('NEEDS_USER_INPUT');
-    });
   });
 
   // ── AC-4: route_to_coder must carry non-empty unresolvedIssues ──
@@ -353,7 +347,7 @@ describe('God Router', () => {
         maxRounds: 10,
         taskGoal: 'Implement login',
         sessionDir,
-        seq: 10,
+        seq: 9,
       });
 
       // Should still route to coder but inject a generic issue
@@ -370,7 +364,7 @@ describe('God Router', () => {
         maxRounds: 10,
         taskGoal: 'Implement login',
         sessionDir,
-        seq: 11,
+        seq: 10,
       });
 
       // Should still route to coder but inject a generic issue
@@ -379,9 +373,9 @@ describe('God Router', () => {
     });
   });
 
-  // ── AC-5: God action → XState event mapping (7 mappings) ──
+  // ── AC-5: God action → XState event mapping ──
 
-  describe('godActionToEvent — 7 mappings', () => {
+  describe('godActionToEvent', () => {
     test('continue_to_review → ROUTE_TO_REVIEW', async () => {
       const { godActionToEvent } = await import('../../god/god-router.js');
       const event = godActionToEvent({ action: 'continue_to_review', reasoning: '' });
@@ -421,10 +415,10 @@ describe('God Router', () => {
       expect(event.type).toBe('PHASE_TRANSITION');
     });
 
-    test('request_user_input (PostCoder) → NEEDS_USER_INPUT', async () => {
+    test('request_user_input is no longer mapped', async () => {
       const { godActionToEvent } = await import('../../god/god-router.js');
-      const event = godActionToEvent({ action: 'request_user_input', reasoning: '' });
-      expect(event.type).toBe('NEEDS_USER_INPUT');
+      expect(() => godActionToEvent({ action: 'request_user_input', reasoning: '' } as any))
+        .toThrow('Unknown God action');
     });
 
     test('loop_detected → LOOP_DETECTED', async () => {

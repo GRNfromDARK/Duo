@@ -189,7 +189,7 @@ describe('detectLoop — intervention suggestions', () => {
 
     expect(result.detected).toBe(true);
     expect(result.intervention).toBeDefined();
-    expect(['rephrase_prompt', 'skip_issue', 'force_converge', 'request_human']).toContain(
+    expect(['rephrase_prompt', 'skip_issue', 'force_converge']).toContain(
       result.intervention!.type,
     );
   });

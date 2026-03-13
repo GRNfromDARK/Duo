@@ -1,5 +1,5 @@
 /**
- * Tests for Card F.3: Escape Window — 2秒逃生窗口 UI 状态
+ * Tests for the legacy escape-window state helpers.
  * Source: FR-008 (AC-025, AC-026, AC-027)
  */
 
@@ -21,14 +21,14 @@ function makeDecision(overrides?: Partial<GodAutoDecision>): GodAutoDecision {
 }
 
 describe('createEscapeWindowState', () => {
-  it('should create visible state with 2-second countdown', () => {
+  it('creates an already-confirmed state in AI-driven mode', () => {
     const decision = makeDecision();
     const state = createEscapeWindowState(decision);
 
-    expect(state.visible).toBe(true);
-    expect(state.countdown).toBe(2);
+    expect(state.visible).toBe(false);
+    expect(state.countdown).toBe(0);
     expect(state.decision).toEqual(decision);
-    expect(state.confirmed).toBe(false);
+    expect(state.confirmed).toBe(true);
     expect(state.cancelled).toBe(false);
   });
 
@@ -45,17 +45,17 @@ describe('createEscapeWindowState', () => {
   });
 });
 
-describe('handleEscapeKey — AC-026: Esc cancels, enters manual mode', () => {
-  it('should cancel on Escape key', () => {
+describe('handleEscapeKey — immediate execution mode', () => {
+  it('does not cancel on Escape key after auto-confirm', () => {
     const state = createEscapeWindowState(makeDecision());
     const next = handleEscapeKey(state, 'escape');
 
-    expect(next.cancelled).toBe(true);
+    expect(next.cancelled).toBe(false);
     expect(next.visible).toBe(false);
-    expect(next.confirmed).toBe(false);
+    expect(next.confirmed).toBe(true);
   });
 
-  it('should confirm on Space key', () => {
+  it('remains confirmed on Space key', () => {
     const state = createEscapeWindowState(makeDecision());
     const next = handleEscapeKey(state, 'space');
 
@@ -68,21 +68,21 @@ describe('handleEscapeKey — AC-026: Esc cancels, enters manual mode', () => {
     const state = createEscapeWindowState(makeDecision());
     const next = handleEscapeKey(state, 'a');
 
-    expect(next.confirmed).toBe(false);
+    expect(next.confirmed).toBe(true);
     expect(next.cancelled).toBe(false);
-    expect(next.visible).toBe(true);
+    expect(next.visible).toBe(false);
   });
 
-  it('should not change already cancelled state', () => {
+  it('does not change the already-confirmed state after Escape then Space', () => {
     let state = createEscapeWindowState(makeDecision());
     state = handleEscapeKey(state, 'escape');
     const next = handleEscapeKey(state, 'space');
 
-    expect(next.cancelled).toBe(true);
-    expect(next.confirmed).toBe(false);
+    expect(next.cancelled).toBe(false);
+    expect(next.confirmed).toBe(true);
   });
 
-  it('should not change already confirmed state', () => {
+  it('does not change already confirmed state', () => {
     let state = createEscapeWindowState(makeDecision());
     state = handleEscapeKey(state, 'space');
     const next = handleEscapeKey(state, 'escape');
@@ -92,21 +92,21 @@ describe('handleEscapeKey — AC-026: Esc cancels, enters manual mode', () => {
   });
 });
 
-describe('tickEscapeCountdown — AC-3: 2秒正确倒计时', () => {
-  it('should decrement countdown by 1', () => {
+describe('tickEscapeCountdown — immediate execution mode', () => {
+  it('does not decrement countdown after creation', () => {
     const state = createEscapeWindowState(makeDecision());
-    expect(state.countdown).toBe(2);
+    expect(state.countdown).toBe(0);
 
     const next = tickEscapeCountdown(state);
-    expect(next.countdown).toBe(1);
-    expect(next.visible).toBe(true);
-    expect(next.confirmed).toBe(false);
+    expect(next.countdown).toBe(0);
+    expect(next.visible).toBe(false);
+    expect(next.confirmed).toBe(true);
   });
 
-  it('should auto-confirm when countdown reaches 0', () => {
+  it('remains confirmed when ticking repeatedly', () => {
     let state = createEscapeWindowState(makeDecision());
-    state = tickEscapeCountdown(state); // 2 → 1
-    state = tickEscapeCountdown(state); // 1 → 0
+    state = tickEscapeCountdown(state);
+    state = tickEscapeCountdown(state);
 
     expect(state.countdown).toBe(0);
     expect(state.confirmed).toBe(true);
@@ -118,8 +118,9 @@ describe('tickEscapeCountdown — AC-3: 2秒正确倒计时', () => {
     state = handleEscapeKey(state, 'escape');
     const next = tickEscapeCountdown(state);
 
-    expect(next.countdown).toBe(2); // unchanged
-    expect(next.cancelled).toBe(true);
+    expect(next.countdown).toBe(0);
+    expect(next.cancelled).toBe(false);
+    expect(next.confirmed).toBe(true);
   });
 
   it('should not tick if already confirmed', () => {
@@ -127,7 +128,7 @@ describe('tickEscapeCountdown — AC-3: 2秒正确倒计时', () => {
     state = handleEscapeKey(state, 'space');
     const next = tickEscapeCountdown(state);
 
-    expect(next.countdown).toBe(2); // unchanged
+    expect(next.countdown).toBe(0);
     expect(next.confirmed).toBe(true);
   });
 });

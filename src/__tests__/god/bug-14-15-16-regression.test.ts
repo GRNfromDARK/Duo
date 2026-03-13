@@ -2,7 +2,7 @@
  * Regression tests for BUG-14, BUG-15, BUG-16.
  *
  * BUG-14 [P1]: compound task phaseId/phaseType not passed to God prompt generation
- * BUG-15 [P1]: WAITING_USER auto-decision auditSeqRef uses post-increment
+ * BUG-15 [P1]: GOD_DECIDING auto-decision auditSeqRef uses post-increment
  * BUG-16 [P2]: confirmContinueWithPhase overwrites taskPrompt with God reasoning
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -216,7 +216,7 @@ describe('BUG-15 regression: audit seq pre-increment consistency', () => {
     const ref = { current: 0 };
 
     // Simulates: God audit logger writes TASK_INIT at seq 0 (separate counter)
-    // Then WAITING_USER auto-decision uses post-increment:
+    // Then GOD_DECIDING auto-decision uses post-increment:
     const autoDecisionSeq = ref.current++; // Bug: returns 0
     expect(autoDecisionSeq).toBe(0);
 
@@ -279,8 +279,8 @@ describe('BUG-16 regression: confirmContinueWithPhase taskPrompt preservation', 
     const actor = startActor();
     advanceToPhaseTransitionWaiting(actor, originalTask);
 
-    // Verify we're in WAITING_USER with pending phase
-    expect(actor.getSnapshot().value).toBe('WAITING_USER');
+    // Verify we're in GOD_DECIDING with pending phase
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
     expect(actor.getSnapshot().context.pendingPhaseId).toBe('implement-phase');
 
     // Confirm phase transition

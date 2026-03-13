@@ -16,7 +16,7 @@ import type { GodPostReviewerDecision } from '../types/god-schemas.js';
 // ── Types ──
 
 export interface LoopIntervention {
-  type: 'rephrase_prompt' | 'skip_issue' | 'force_converge' | 'request_human';
+  type: 'rephrase_prompt' | 'skip_issue' | 'force_converge';
   details: string;
 }
 

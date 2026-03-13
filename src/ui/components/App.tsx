@@ -12,6 +12,7 @@ import { useMachine } from '@xstate/react';
 import { workflowMachine } from '../../engine/workflow-machine.js';
 import type { WorkflowContext } from '../../engine/workflow-machine.js';
 import { createAdapter } from '../../adapters/factory.js';
+import { createGodAdapter } from '../../god/god-adapter-factory.js';
 import { OutputStreamManager } from '../../adapters/output-stream-manager.js';
 import { ContextManager } from '../../session/context-manager.js';
 import type { RoundRecord } from '../../session/context-manager.js';
@@ -26,6 +27,7 @@ import { createRoundSummaryMessage } from '../round-summary.js';
 import type { SessionConfig } from '../../types/session.js';
 import type { DetectedCLI } from '../../adapters/detect.js';
 import type { CLIAdapter, OutputChunk } from '../../types/adapter.js';
+import type { GodAdapter } from '../../types/god-adapter.js';
 import type { Message, RoleName } from '../../types/ui.js';
 import type { TimelineEvent } from './TimelineOverlay.js';
 import {
@@ -49,7 +51,7 @@ import { routePostCoder, routePostReviewer } from '../../god/god-router.js';
 import { evaluateConvergence, type ConvergenceLogEntry } from '../../god/god-convergence.js';
 import { generateCoderPrompt, generateReviewerPrompt } from '../../god/god-prompt-generator.js';
 import type { PromptContext } from '../../god/god-prompt-generator.js';
-import { makeAutoDecision } from '../../god/auto-decision.js';
+import { makeAutoDecision, makeLocalAutoDecision } from '../../god/auto-decision.js';
 import type { AutoDecisionContext } from '../../god/auto-decision.js';
 import { evaluateRules } from '../../god/rule-engine.js';
 import { GodDecisionBanner } from './GodDecisionBanner.js';
@@ -58,6 +60,7 @@ import { PhaseTransitionBanner } from './PhaseTransitionBanner.js';
 import { withGodFallback, withGodFallbackSync } from '../god-fallback.js';
 import { canTriggerReclassify, writeReclassifyAudit } from '../reclassify-overlay.js';
 import { evaluatePhaseTransition } from '../../god/phase-transition.js';
+import { classifyInterruptIntent } from '../../god/interrupt-clarifier.js';
 
 // ── Adapter session helpers (duck-typed to avoid modifying CLIAdapter interface) ──
 
@@ -67,8 +70,10 @@ interface SessionCapableAdapter {
   restoreSessionId(id: string): void;
 }
 
-function isSessionCapable(adapter: CLIAdapter): adapter is CLIAdapter & SessionCapableAdapter {
-  return 'hasActiveSession' in adapter
+function isSessionCapable(adapter: unknown): adapter is SessionCapableAdapter {
+  return typeof adapter === 'object'
+    && adapter !== null
+    && 'hasActiveSession' in adapter
     && typeof (adapter as any).hasActiveSession === 'function'
     && 'getLastSessionId' in adapter
     && typeof (adapter as any).getLastSessionId === 'function'
@@ -91,11 +96,14 @@ function mapStateToStatus(stateValue: string): WorkflowStatus {
     case 'CODING':
     case 'REVIEWING':
       return 'active';
+    case 'GOD_DECIDING':
     case 'TASK_INIT':
     case 'ROUTING_POST_CODE':
     case 'ROUTING_POST_REVIEW':
     case 'EVALUATING':
       return 'routing';
+    case 'MANUAL_FALLBACK':
+      return 'interrupted';
     case 'INTERRUPTED':
       return 'interrupted';
     case 'ERROR':
@@ -128,6 +136,7 @@ export function App({ initialConfig, detected, resumeSession }: AppProps): React
     initialConfig.projectDir &&
     initialConfig.coder &&
     initialConfig.reviewer &&
+    initialConfig.god &&
     initialConfig.task;
 
   const [sessionConfig, setSessionConfig] = useState<SessionConfig | null>(
@@ -136,7 +145,7 @@ export function App({ initialConfig, detected, resumeSession }: AppProps): React
           projectDir: initialConfig.projectDir,
           coder: initialConfig.coder,
           reviewer: initialConfig.reviewer,
-          god: (initialConfig as SessionConfig).god ?? initialConfig.reviewer,
+          god: initialConfig.god,
           task: initialConfig.task,
         }
       : null,
@@ -208,7 +217,7 @@ function SessionRunner({
   // ── Core services (stable refs) ──
   const coderAdapterRef = useRef<CLIAdapter>(createAdapter(config.coder));
   const reviewerAdapterRef = useRef<CLIAdapter>(createAdapter(config.reviewer));
-  const godAdapterRef = useRef<CLIAdapter>(createAdapter(config.god));
+  const godAdapterRef = useRef<GodAdapter>(createGodAdapter(config.god));
   const contextManagerRef = useRef(
     new ContextManager({
       contextWindowSize: 200000,
@@ -257,10 +266,10 @@ function SessionRunner({
   taskAnalysisRef.current = taskAnalysis;
   const [showTaskAnalysisCard, setShowTaskAnalysisCard] = useState(false);
 
-  // ── BUG-21 fix: reclassify trigger to re-run WAITING_USER auto-decision ──
+  // ── BUG-21 fix: reclassify trigger to re-run GOD_DECIDING auto-decision ──
   const [reclassifyTrigger, setReclassifyTrigger] = useState(0);
 
-  // ── God auto-decision state (WAITING_USER escape window) ──
+  // ── God auto-decision state ──
   const [godDecision, setGodDecision] = useState<GodAutoDecision | null>(null);
   const [showGodBanner, setShowGodBanner] = useState(false);
 
@@ -507,7 +516,6 @@ function SessionRunner({
     try {
       const coderAdapter = coderAdapterRef.current;
       const reviewerAdapter = reviewerAdapterRef.current;
-      const godAdapter = godAdapterRef.current;
       sessionManagerRef.current.saveState(sessionIdRef.current, {
         round: ctx.round,
         status: stateValue.toLowerCase(),
@@ -518,10 +526,6 @@ function SessionRunner({
         ...(isSessionCapable(reviewerAdapter) && reviewerAdapter.getLastSessionId()
           ? { reviewerSessionId: reviewerAdapter.getLastSessionId()! }
           : {}),
-        ...(isSessionCapable(godAdapter) && godAdapter.getLastSessionId()
-          ? { godSessionId: godAdapter.getLastSessionId()! }
-          : {}),
-        godAdapter: config.god,
         ...(taskAnalysisRef.current ? { godTaskAnalysis: taskAnalysisRef.current } : {}),
         godConvergenceLog: convergenceLogRef.current,
         degradationState: degradationManagerRef.current.serializeState(),
@@ -1041,6 +1045,8 @@ function SessionRunner({
           // Store unresolvedIssues for next round's Coder prompt (AC-018b)
           if (godResult.decision.action === 'route_to_coder') {
             lastUnresolvedIssuesRef.current = godResult.decision.unresolvedIssues ?? [];
+          } else {
+            lastUnresolvedIssuesRef.current = [];
           }
 
           // Handle special routing actions with user-visible messages
@@ -1326,34 +1332,27 @@ function SessionRunner({
     });
     addTimelineEvent('error', `Error: ${ctx.lastError ?? 'Unknown'}`);
 
-    // Auto-recover to WAITING_USER
+    // Auto-recover to GOD_DECIDING / MANUAL_FALLBACK handling
     send({ type: 'RECOVERY' });
   }, [stateValue]);
 
-  // ── WAITING_USER: God auto-decision + escape window (FR-008) ──
-  // C.2: Uses withGodFallback for unified retry + degradation (AC-2, AC-3)
+  // ── GOD_DECIDING: God auto-decision — instant execution (AI-driven) ──
   useEffect(() => {
-    if (stateValue !== 'WAITING_USER') return;
+    if (stateValue !== 'GOD_DECIDING') return;
 
-    // BUG-2 fix: Don't start auto-decision while PhaseTransitionBanner is showing.
-    // The user should confirm/cancel the phase transition first.
     if (showPhaseTransition) return;
 
-    // Reset banner state on entry
     setGodDecision(null);
     setShowGodBanner(false);
 
     const manualWaitingMsg = 'Waiting for your decision. Type [c] to continue, [a] to accept, or enter new instructions.';
 
-    // God disabled → v1 behavior (wait for user input)
-    // BUG-3 fix: Use setMessages callback to check latest messages, avoiding stale closure.
     if (!degradationManagerRef.current.isGodAvailable()) {
-      setMessages(prev => {
-        const lastMsg = prev[prev.length - 1];
-        if (!lastMsg || lastMsg.content !== manualWaitingMsg) {
-          return [...prev, { id: nextMsgId(), role: 'system' as const, content: manualWaitingMsg, timestamp: Date.now() }];
-        }
-        return prev;
+      send({ type: 'MANUAL_FALLBACK_REQUIRED' } as any);
+      addMessage({
+        role: 'system',
+        content: `God unavailable. ${manualWaitingMsg}`,
+        timestamp: Date.now(),
       });
       return;
     }
@@ -1367,17 +1366,32 @@ function SessionRunner({
         taskGoal: config.task,
         sessionDir: path.join(config.projectDir, '.duo', 'sessions', sessionIdRef.current ?? 'unknown'),
         seq: ++auditSeqRef.current,
-        waitingReason: 'awaiting_user_decision',
+        waitingReason: 'god_deciding',
         projectDir: config.projectDir,
+        lastCoderOutput: ctx.lastCoderOutput?.slice(0, 2000) ?? undefined,
+        lastReviewerOutput: ctx.lastReviewerOutput?.slice(0, 2000) ?? undefined,
+        currentPhaseId: currentPhaseId ?? undefined,
+        currentPhaseType: currentPhaseId
+          ? taskAnalysis?.phases?.find(p => p.id === currentPhaseId)?.type as PromptContext['phaseType'] | undefined
+          : undefined,
+        phases: taskAnalysis?.phases?.map(phase => ({
+          id: phase.id,
+          name: phase.name,
+          type: phase.type as 'explore' | 'code' | 'discuss' | 'review' | 'debug',
+          description: phase.description,
+        })),
+        convergenceLog: convergenceLogRef.current.map((entry) => ({
+          round: entry.round,
+          classification: entry.classification,
+          blockingIssueCount: entry.blockingIssueCount,
+        })),
+        unresolvedIssues: lastUnresolvedIssuesRef.current,
       };
-
-      // Sentinel value for v1 fallback
-      const V1_SENTINEL = { fallback: true as const };
 
       const { result, usedGod, notification } = await withGodFallback(
         degradationManagerRef.current,
         async () => makeAutoDecision(godAdapterRef.current, autoDecisionContext, evaluateRules),
-        () => V1_SENTINEL,
+        () => makeLocalAutoDecision(autoDecisionContext, evaluateRules),
         'process_exit',
       );
 
@@ -1387,34 +1401,38 @@ function SessionRunner({
         addMessage({ role: 'system', content: notification.message, timestamp: Date.now() });
       }
 
-      if (!usedGod || 'fallback' in result) {
-        // v1 fallback — wait for manual input
-        addMessage({ role: 'system', content: manualWaitingMsg, timestamp: Date.now() });
-        return;
-      }
-
-      // God succeeded — handle auto-decision result
       const autoResult = result as Awaited<ReturnType<typeof makeAutoDecision>>;
 
-      // AC-025: Rule engine block → stay manual mode
       if (autoResult.blocked) {
+        send({ type: 'MANUAL_FALLBACK_REQUIRED' } as any);
         addMessage({
           role: 'system',
-          content: `God auto-decision blocked by rule engine. ${manualWaitingMsg}`,
+          content: 'Autonomous decision blocked by rule engine. Manual fallback.',
           timestamp: Date.now(),
         });
         return;
       }
 
-      // request_human → stay manual (no banner needed)
-      if (autoResult.decision.action === 'request_human') {
-        addMessage({ role: 'system', content: manualWaitingMsg, timestamp: Date.now() });
+      if (autoResult.decision.action === 'accept') {
+        addMessage({
+          role: 'system',
+          content: `${usedGod ? 'God' : 'Local fallback'}: accepting output. ${autoResult.decision.reasoning}`,
+          timestamp: Date.now(),
+        });
+        addTimelineEvent('converged', 'God auto-decision: accept');
+        send({ type: 'USER_CONFIRM', action: 'accept' });
         return;
       }
 
-      // Success — show escape window banner
-      setGodDecision(autoResult.decision);
-      setShowGodBanner(true);
+      pendingInstructionRef.current = autoResult.decision.instruction ?? null;
+      lastUnresolvedIssuesRef.current = [];
+      addMessage({
+        role: 'system',
+        content: `${usedGod ? 'God' : 'Local fallback'}: continue -> "${autoResult.decision.instruction ?? ''}"`,
+        timestamp: Date.now(),
+      });
+      addTimelineEvent('coding', 'God auto-decision: continue_with_instruction');
+      send({ type: 'USER_CONFIRM', action: 'continue' });
     })();
 
     return () => { cancelled = true; };
@@ -1456,7 +1474,7 @@ function SessionRunner({
         return;
       }
 
-      if (stateValue === 'WAITING_USER') {
+      if (stateValue === 'MANUAL_FALLBACK') {
         const decision = resolveUserDecision(
           stateValue,
           text,
@@ -1472,14 +1490,76 @@ function SessionRunner({
       }
 
       if (stateValue === 'INTERRUPTED') {
-        const decision = resolveUserDecision(
-          stateValue,
-          text,
-          lastInterruptedRoleRef.current,
-        );
-        if (decision?.type === 'resume') {
-          pendingInstructionRef.current = decision.input;
-          send({ type: 'USER_INPUT', input: text, resumeAs: decision.resumeAs });
+        const interruptContext = {
+          userInput: text,
+          taskGoal: config.task,
+          round: ctx.round,
+          currentPhaseId: currentPhaseId ?? undefined,
+          lastCoderOutput: ctx.lastCoderOutput?.slice(0, 1000) ?? undefined,
+          lastReviewerOutput: ctx.lastReviewerOutput?.slice(0, 1000) ?? undefined,
+          sessionDir: path.join(config.projectDir, '.duo', 'sessions', sessionIdRef.current ?? 'unknown'),
+          seq: ++auditSeqRef.current,
+          projectDir: config.projectDir,
+        };
+
+        if (degradationManagerRef.current.isGodAvailable()) {
+          void (async () => {
+            try {
+              const classification = await classifyInterruptIntent(
+                godAdapterRef.current,
+                interruptContext,
+              );
+
+              if (classification.needsClarification) {
+                addMessage({
+                  role: 'system',
+                  content: `God asks: ${classification.instruction}`,
+                  timestamp: Date.now(),
+                });
+                return;
+              }
+
+              pendingInstructionRef.current = classification.instruction;
+
+              if (classification.intent === 'restart') {
+                lastUnresolvedIssuesRef.current = [];
+                setPendingPhaseTransition(null);
+                setShowPhaseTransition(false);
+                addMessage({
+                  role: 'system',
+                  content: `God: restarting current attempt - ${classification.instruction}`,
+                  timestamp: Date.now(),
+                });
+                send({ type: 'USER_INPUT', input: classification.instruction, resumeAs: 'coder' });
+                return;
+              }
+
+              addMessage({
+                role: 'system',
+                content: `God: ${classification.intent} - ${classification.instruction}`,
+                timestamp: Date.now(),
+              });
+              send({
+                type: 'USER_INPUT',
+                input: classification.instruction,
+                resumeAs: lastInterruptedRoleRef.current ?? 'coder',
+              });
+            } catch {
+              pendingInstructionRef.current = text;
+              send({
+                type: 'USER_INPUT',
+                input: text,
+                resumeAs: lastInterruptedRoleRef.current ?? 'coder',
+              });
+            }
+          })();
+        } else {
+          pendingInstructionRef.current = text;
+          send({
+            type: 'USER_INPUT',
+            input: text,
+            resumeAs: lastInterruptedRoleRef.current ?? 'coder',
+          });
         }
         return;
       }
@@ -1500,7 +1580,6 @@ function SessionRunner({
         try {
           const ca = coderAdapterRef.current;
           const ra = reviewerAdapterRef.current;
-          const ga = godAdapterRef.current;
           sessionManagerRef.current.saveState(sessionIdRef.current, {
             round: ctx.round,
             status: 'interrupted',
@@ -1511,10 +1590,6 @@ function SessionRunner({
             ...(isSessionCapable(ra) && ra.getLastSessionId()
               ? { reviewerSessionId: ra.getLastSessionId()! }
               : {}),
-            ...(isSessionCapable(ga) && ga.getLastSessionId()
-              ? { godSessionId: ga.getLastSessionId()! }
-              : {}),
-            godAdapter: config.god,
             ...(taskAnalysisRef.current ? { godTaskAnalysis: taskAnalysisRef.current } : {}),
             godConvergenceLog: convergenceLogRef.current,
             degradationState: degradationManagerRef.current.serializeState(),
@@ -1675,10 +1750,10 @@ function SessionRunner({
       });
       addTimelineEvent('task_start', `Reclassify: ${oldType} → ${newType}`);
 
-      // BUG-21 fix: Trigger re-run of WAITING_USER auto-decision after reclassify
+      // Trigger re-run of GOD_DECIDING auto-decision after reclassify
       setReclassifyTrigger(prev => prev + 1);
 
-      // Resume to WAITING_USER so user can continue
+      // Resume to GOD_DECIDING so the autonomous decision can re-run
       if (stateValue === 'INTERRUPTED') {
         send({ type: 'USER_INPUT', input: `Reclassified to ${newType}`, resumeAs: 'decision' });
       }
@@ -1762,7 +1837,6 @@ function SessionRunner({
   };
 
   // SPEC-DECISION: Render ReclassifyOverlay as full replacement to avoid useInput conflicts.
-  // Card C.3 (AC-010): Ctrl+R triggers overlay in CODING/REVIEWING/WAITING_USER.
   if (showReclassify && taskAnalysis) {
     return (
       <Box flexDirection="column" width={columns} height={rows}>
@@ -1776,9 +1850,11 @@ function SessionRunner({
     );
   }
 
-  // SPEC-DECISION: Render PhaseTransitionBanner as full replacement.
-  // Card C.3 (AC-033): 2-second escape window for phase transitions.
-  if (showPhaseTransition && pendingPhaseTransition && stateValue === 'WAITING_USER') {
+  if (
+    showPhaseTransition
+    && pendingPhaseTransition
+    && (stateValue === 'GOD_DECIDING' || stateValue === 'MANUAL_FALLBACK')
+  ) {
     return (
       <Box flexDirection="column" width={columns} height={rows}>
         <PhaseTransitionBanner
@@ -1791,9 +1867,7 @@ function SessionRunner({
     );
   }
 
-  // SPEC-DECISION: Render GodDecisionBanner as overlay within MainLayout
-  // during WAITING_USER to avoid useInput conflicts with text input.
-  if (showGodBanner && godDecision && stateValue === 'WAITING_USER') {
+  if (showGodBanner && godDecision && stateValue === 'GOD_DECIDING') {
     return (
       <Box flexDirection="column" width={columns} height={rows}>
         <GodDecisionBanner

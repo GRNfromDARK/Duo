@@ -31,6 +31,7 @@ describe('cli resume entry', () => {
   const originalExit = process.exit;
   const originalLog = console.log;
   const originalError = console.error;
+  const originalWarn = console.warn;
 
   beforeEach(() => {
     vi.resetModules();
@@ -39,6 +40,7 @@ describe('cli resume entry', () => {
     process.exit = vi.fn() as never;
     console.log = vi.fn();
     console.error = vi.fn();
+    console.warn = vi.fn();
   });
 
   afterEach(() => {
@@ -46,6 +48,7 @@ describe('cli resume entry', () => {
     process.exit = originalExit;
     console.log = originalLog;
     console.error = originalError;
+    console.warn = originalWarn;
   });
 
   it('renders the App with the loaded session when resuming a specific session', async () => {
@@ -105,5 +108,65 @@ describe('cli resume entry', () => {
       task: 'Fix login',
     });
     expect(renderedElement.props.resumeSession).toEqual(session);
+  });
+
+  it('sanitizes unsupported persisted God adapters on resume', async () => {
+    const session: LoadedSession = {
+      metadata: {
+        id: 'session-unsupported-god',
+        projectDir: '/tmp/project',
+        coder: 'gemini',
+        reviewer: 'gemini',
+        god: 'gemini',
+        task: 'Fix login',
+        createdAt: 1,
+        updatedAt: 2,
+      },
+      state: {
+        round: 1,
+        status: 'reviewing',
+        currentRole: 'reviewer',
+      },
+      history: [],
+    };
+
+    console.warn = vi.fn();
+    handleResumeMock.mockReturnValue({
+      success: true,
+      session,
+    });
+    detectInstalledCLIsMock.mockResolvedValue([
+      {
+        name: 'claude-code',
+        displayName: 'Claude Code',
+        command: 'claude',
+        installed: true,
+        version: '1.0.0',
+      },
+      {
+        name: 'gemini',
+        displayName: 'Gemini',
+        command: 'gemini',
+        installed: true,
+        version: '1.0.0',
+      },
+    ]);
+
+    await import('../cli.js');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const renderCalls = renderMock.mock.calls as unknown as Array<
+      [{ props: Record<string, unknown> }]
+    >;
+    const renderedElement = renderCalls[0]![0];
+    expect(renderedElement.props.initialConfig).toEqual({
+      projectDir: '/tmp/project',
+      coder: 'gemini',
+      reviewer: 'gemini',
+      god: 'claude-code',
+      task: 'Fix login',
+    });
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("Persisted God adapter 'gemini'"));
   });
 });

@@ -6,9 +6,12 @@
 import { execFile } from 'node:child_process';
 import { access, constants } from 'node:fs/promises';
 import type { DetectedCLI } from '../adapters/detect.js';
+import {
+  isSupportedGodAdapterName,
+  resolveGodAdapterForStart,
+} from '../god/god-adapter-config.js';
 import type {
   StartArgs,
-  SessionConfig,
   ValidationResult,
   StartResult,
 } from '../types/session.js';
@@ -91,6 +94,11 @@ export function validateCLIChoices(
 
   const rolesToCheck: [string, string][] = [['Coder', coder], ['Reviewer', reviewer]];
   if (god) {
+    if (!isSupportedGodAdapterName(god)) {
+      errors.push(`God adapter '${god}' is not supported. Supported God adapters: claude-code, codex.`);
+      return { valid: false, errors, warnings: [] };
+    }
+
     rolesToCheck.push(['God', god]);
   }
 
@@ -135,6 +143,16 @@ export async function createSessionConfig(
     allWarnings.push(...cliResult.warnings);
   }
 
+  let godConfig: ReturnType<typeof resolveGodAdapterForStart> | null = null;
+  if (args.reviewer && allErrors.length === 0) {
+    godConfig = resolveGodAdapterForStart(args.reviewer, detected, args.god);
+    if (!godConfig.ok) {
+      allErrors.push(...godConfig.errors);
+    } else {
+      allWarnings.push(...godConfig.warnings);
+    }
+  }
+
   const valid = allErrors.length === 0 && dirResult.valid;
 
   if (!valid) {
@@ -145,8 +163,15 @@ export async function createSessionConfig(
     };
   }
 
-  // God defaults to reviewer when not explicitly specified (FR-006)
-  const god = args.god ?? args.reviewer!;
+  if (!godConfig?.ok) {
+    return {
+      config: null,
+      validation: { valid: false, errors: ['Unable to resolve a supported God adapter.'], warnings: allWarnings },
+      detectedCLIs: installedNames,
+    };
+  }
+
+  const god = godConfig.god;
 
   return {
     config: {

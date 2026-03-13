@@ -1,7 +1,7 @@
 /**
  * Regression tests for audited bugs BUG-1 through BUG-4.
  *
- * BUG-1 [P1]: CLEAR_PENDING_PHASE must reset pendingPhaseId in WAITING_USER
+ * BUG-1 [P1]: CLEAR_PENDING_PHASE must reset pendingPhaseId in GOD_DECIDING
  * BUG-2 [P1]: (React-level) auto-decision should not fire during phase transition — tested via state assertions
  * BUG-3 [P2]: (React-level) stale closure dedup — tested via state/message logic extraction
  * BUG-4 [P2]: INTERRUPTED → recovery path on reclassify cancel (USER_INPUT resumeAs)
@@ -20,7 +20,7 @@ function startActor(context?: Partial<WorkflowContext>) {
   return actor;
 }
 
-/** Helper: advance to WAITING_USER via phase transition */
+/** Helper: advance to GOD_DECIDING via phase transition */
 function advanceToPhaseTransitionWaiting(actor: ReturnType<typeof startActor>) {
   actor.send({ type: 'START_TASK', prompt: 'compound task' });
   actor.send({ type: 'TASK_INIT_SKIP' });
@@ -45,8 +45,8 @@ describe('BUG-1 regression: CLEAR_PENDING_PHASE event', () => {
     // Cancel → send CLEAR_PENDING_PHASE
     actor.send({ type: 'CLEAR_PENDING_PHASE' });
 
-    // Should still be in WAITING_USER (self-transition, no target change)
-    expect(actor.getSnapshot().value).toBe('WAITING_USER');
+    // Should still be in GOD_DECIDING (self-transition, no target change)
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
     expect(actor.getSnapshot().context.pendingPhaseId).toBeNull();
     expect(actor.getSnapshot().context.pendingPhaseSummary).toBeNull();
     actor.stop();
@@ -78,13 +78,13 @@ describe('BUG-1 regression: CLEAR_PENDING_PHASE event', () => {
     actor.send({ type: 'REVIEW_COMPLETE', output: 'ok' });
     actor.send({ type: 'CONVERGED' });
 
-    // In WAITING_USER with no pending phase
-    expect(actor.getSnapshot().value).toBe('WAITING_USER');
+    // In GOD_DECIDING with no pending phase
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
     expect(actor.getSnapshot().context.pendingPhaseId).toBeNull();
 
     // CLEAR_PENDING_PHASE should not break anything
     actor.send({ type: 'CLEAR_PENDING_PHASE' });
-    expect(actor.getSnapshot().value).toBe('WAITING_USER');
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
     expect(actor.getSnapshot().context.pendingPhaseId).toBeNull();
     actor.stop();
   });
@@ -108,7 +108,7 @@ describe('BUG-1 regression: CLEAR_PENDING_PHASE event', () => {
 });
 
 // ──────────────────────────────────────────────
-// BUG-2: Phase transition context check in WAITING_USER
+// BUG-2: Phase transition context check in GOD_DECIDING
 // (React useEffect test — we verify the XState context is available for the guard)
 // ──────────────────────────────────────────────
 describe('BUG-2 regression: pendingPhaseId visible in context for guard checks', () => {
@@ -123,7 +123,7 @@ describe('BUG-2 regression: pendingPhaseId visible in context for guard checks',
     actor.stop();
   });
 
-  it('context.pendingPhaseId is null when entering WAITING_USER without phase transition', () => {
+  it('context.pendingPhaseId is null when entering GOD_DECIDING without phase transition', () => {
     const actor = startActor();
     actor.send({ type: 'START_TASK', prompt: 'test' });
     actor.send({ type: 'TASK_INIT_SKIP' });
@@ -132,7 +132,7 @@ describe('BUG-2 regression: pendingPhaseId visible in context for guard checks',
     actor.send({ type: 'REVIEW_COMPLETE', output: 'ok' });
     actor.send({ type: 'CONVERGED' });
 
-    expect(actor.getSnapshot().value).toBe('WAITING_USER');
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
     expect(actor.getSnapshot().context.pendingPhaseId).toBeNull();
     actor.stop();
   });

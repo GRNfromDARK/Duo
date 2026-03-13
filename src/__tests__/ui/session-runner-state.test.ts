@@ -177,7 +177,7 @@ describe('session-runner-state', () => {
         projectDir: loaded.metadata.projectDir,
         coder: loaded.metadata.coder,
         reviewer: loaded.metadata.reviewer,
-        god: loaded.metadata.god ?? loaded.metadata.reviewer,
+        god: 'codex',
         task: loaded.metadata.task,
       });
 
@@ -230,7 +230,7 @@ describe('session-runner-state', () => {
         projectDir: loaded.metadata.projectDir,
         coder: loaded.metadata.coder,
         reviewer: loaded.metadata.reviewer,
-        god: loaded.metadata.god ?? loaded.metadata.reviewer,
+        god: 'codex',
         task: loaded.metadata.task,
       });
 
@@ -261,7 +261,7 @@ describe('session-runner-state', () => {
         projectDir: loaded.metadata.projectDir,
         coder: loaded.metadata.coder,
         reviewer: loaded.metadata.reviewer,
-        god: loaded.metadata.god ?? loaded.metadata.reviewer,
+        god: 'claude-code',
         task: loaded.metadata.task,
       });
 
@@ -284,10 +284,12 @@ describe('session-runner-state', () => {
           classification: 'improving',
           shouldTerminate: false,
           blockingIssueCount: 2,
+          criteriaProgress: [],
+          summary: 'round 0',
         },
       ];
       const degradationState = {
-        level: 0 as const,
+        level: 'L1' as const,
         consecutiveFailures: 0,
         godDisabled: false,
         fallbackActive: false,
@@ -299,7 +301,7 @@ describe('session-runner-state', () => {
           projectDir: '/tmp/project',
           coder: 'claude-code',
           reviewer: 'gemini',
-          god: 'gemini',
+          god: 'codex',
           task: 'Fix bug',
           createdAt: 1,
           updatedAt: 2,
@@ -309,7 +311,7 @@ describe('session-runner-state', () => {
           status: 'coding',
           currentRole: 'coder',
           godSessionId: 'god_ses_123',
-          godAdapter: 'gemini',
+          godAdapter: 'codex',
           godTaskAnalysis,
           godConvergenceLog,
           degradationState,
@@ -323,11 +325,11 @@ describe('session-runner-state', () => {
         projectDir: loaded.metadata.projectDir,
         coder: loaded.metadata.coder,
         reviewer: loaded.metadata.reviewer,
-        god: loaded.metadata.god ?? loaded.metadata.reviewer,
+        god: 'codex',
         task: loaded.metadata.task,
       });
 
-      expect(runtime.godSessionId).toBe('god_ses_123');
+      expect('godSessionId' in runtime).toBe(false);
       expect(runtime.godTaskAnalysis).toEqual(godTaskAnalysis);
       expect(runtime.godConvergenceLog).toEqual(godConvergenceLog);
       expect(runtime.degradationState).toEqual(degradationState);
@@ -340,7 +342,7 @@ describe('session-runner-state', () => {
           projectDir: '/tmp/project',
           coder: 'claude-code',
           reviewer: 'gemini',
-          god: 'gemini',
+          god: 'codex',
           task: 'Fix bug',
           createdAt: 1,
           updatedAt: 2,
@@ -360,7 +362,7 @@ describe('session-runner-state', () => {
         projectDir: loaded.metadata.projectDir,
         coder: loaded.metadata.coder,
         reviewer: loaded.metadata.reviewer,
-        god: loaded.metadata.god ?? loaded.metadata.reviewer,
+        god: 'codex',
         task: loaded.metadata.task,
       });
 
@@ -390,7 +392,7 @@ describe('session-runner-state', () => {
         projectDir: loaded.metadata.projectDir,
         coder: loaded.metadata.coder,
         reviewer: loaded.metadata.reviewer,
-        god: loaded.metadata.god ?? loaded.metadata.reviewer,
+        god: 'claude-code',
         task: loaded.metadata.task,
       });
 
@@ -420,11 +422,11 @@ describe('session-runner-state', () => {
         projectDir: loaded.metadata.projectDir,
         coder: loaded.metadata.coder,
         reviewer: loaded.metadata.reviewer,
-        god: loaded.metadata.god ?? loaded.metadata.reviewer,
+        god: 'claude-code',
         task: loaded.metadata.task,
       });
 
-      expect(runtime.godSessionId).toBeUndefined();
+      expect('godSessionId' in runtime).toBe(false);
       expect(runtime.godTaskAnalysis).toBeUndefined();
       expect(runtime.godConvergenceLog).toBeUndefined();
       expect(runtime.degradationState).toBeUndefined();

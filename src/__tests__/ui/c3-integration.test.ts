@@ -45,7 +45,7 @@ const defaultCtx: KeyContext = {
 
 // ── AC-1: Ctrl+R triggers reclassify action ──
 
-describe('AC-1: Ctrl+R in CODING/REVIEWING/WAITING_USER', () => {
+describe('AC-1: Ctrl+R in CODING/REVIEWING/GOD_DECIDING/MANUAL_FALLBACK', () => {
   it('Ctrl+R produces reclassify action', () => {
     const action = processKeybinding('r', key({ ctrl: true }), defaultCtx);
     expect(action.type).toBe('reclassify');
@@ -65,8 +65,12 @@ describe('AC-1: Ctrl+R in CODING/REVIEWING/WAITING_USER', () => {
     expect(canTriggerReclassify('REVIEWING')).toBe(true);
   });
 
-  it('canTriggerReclassify allows WAITING_USER', () => {
-    expect(canTriggerReclassify('WAITING_USER')).toBe(true);
+  it('canTriggerReclassify allows GOD_DECIDING', () => {
+    expect(canTriggerReclassify('GOD_DECIDING')).toBe(true);
+  });
+
+  it('canTriggerReclassify allows MANUAL_FALLBACK', () => {
+    expect(canTriggerReclassify('MANUAL_FALLBACK')).toBe(true);
   });
 
   it('canTriggerReclassify rejects IDLE', () => {
@@ -78,7 +82,12 @@ describe('AC-1: Ctrl+R in CODING/REVIEWING/WAITING_USER', () => {
   });
 
   it('RECLASSIFY_ALLOWED_STATES matches AC-010 spec', () => {
-    expect(RECLASSIFY_ALLOWED_STATES).toEqual(['CODING', 'REVIEWING', 'WAITING_USER']);
+    expect(RECLASSIFY_ALLOWED_STATES).toEqual([
+      'CODING',
+      'REVIEWING',
+      'GOD_DECIDING',
+      'MANUAL_FALLBACK',
+    ]);
   });
 });
 

@@ -1,13 +1,14 @@
 /**
- * Tests for Card F.3: Auto Decision — WAITING_USER 代理决策
+ * Tests for Card F.3: Auto Decision — GOD_DECIDING 代理决策
  * Source: FR-008 (AC-025, AC-026, AC-027)
  */
 
-import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import type { CLIAdapter, ExecOptions, OutputChunk } from '../../types/adapter.js';
+import { GodAutoDecisionSchema } from '../../types/god-schemas.js';
 
 // ── Helper: mock CLIAdapter ──
 
@@ -75,10 +76,40 @@ const GOD_MALFORMED_OUTPUT = `God analysis: garbled output here, no JSON.`;
 
 import {
   makeAutoDecision,
-  type AutoDecisionResult,
+  makeLocalAutoDecision,
   type AutoDecisionContext,
 } from '../../god/auto-decision.js';
 import type { RuleEngineResult, ActionContext } from '../../god/rule-engine.js';
+
+describe('GodAutoDecisionSchema (AI-driven)', () => {
+  test('rejects request_human action', () => {
+    const result = GodAutoDecisionSchema.safeParse({
+      action: 'request_human',
+      reasoning: 'test',
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  test('accepts accept action', () => {
+    const result = GodAutoDecisionSchema.safeParse({
+      action: 'accept',
+      reasoning: 'task complete',
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  test('accepts continue_with_instruction action', () => {
+    const result = GodAutoDecisionSchema.safeParse({
+      action: 'continue_with_instruction',
+      reasoning: 'needs more work',
+      instruction: 'fix the bug',
+    });
+
+    expect(result.success).toBe(true);
+  });
+});
 
 describe('makeAutoDecision', () => {
   let tempDir: string;
@@ -122,6 +153,25 @@ describe('makeAutoDecision', () => {
     };
   }
 
+  function createPromptCapturingAdapter(output: string): {
+    adapter: CLIAdapter;
+    getPrompt(): string;
+  } {
+    let capturedPrompt = '';
+    const baseAdapter = createMockAdapter(output);
+
+    return {
+      adapter: {
+        ...baseAdapter,
+        execute(prompt: string, opts: ExecOptions): AsyncIterable<OutputChunk> {
+          capturedPrompt = prompt;
+          return baseAdapter.execute(prompt, opts);
+        },
+      },
+      getPrompt: () => capturedPrompt,
+    };
+  }
+
   // AC-025: Rule engine block prevents agent decision execution
   test('AC-025: rule engine block → decision not executed, blocked=true', async () => {
     const adapter = createMockAdapter(GOD_CONTINUE_OUTPUT);
@@ -157,24 +207,31 @@ describe('makeAutoDecision', () => {
     expect(result.decision.instruction).toBe('Please address the edge case in error handling');
   });
 
-  test('request_human → blocked=false, action=request_human', async () => {
+  test('request_human output falls back to an autonomous local decision', async () => {
     const adapter = createMockAdapter(GOD_REQUEST_HUMAN_OUTPUT);
-    const ctx = makeContext();
+    const ctx = makeContext({
+      waitingReason: 'loop_detected',
+      unresolvedIssues: ['Resolve the API direction and continue implementation'],
+    });
 
     const result = await makeAutoDecision(adapter, ctx, noBlockRuleEngine);
 
     expect(result.blocked).toBe(false);
-    expect(result.decision.action).toBe('request_human');
+    expect(result.decision.action).toBe('continue_with_instruction');
+    expect(result.decision.instruction).toContain('Resolve the API direction');
   });
 
-  test('malformed God output → fallback to request_human', async () => {
+  test('malformed God output falls back to autonomous continuation', async () => {
     const adapter = createMockAdapter(GOD_MALFORMED_OUTPUT);
-    const ctx = makeContext();
+    const ctx = makeContext({
+      currentPhaseId: 'phase-2',
+      currentPhaseType: 'code',
+    });
 
     const result = await makeAutoDecision(adapter, ctx, noBlockRuleEngine);
 
-    expect(result.decision.action).toBe('request_human');
-    expect(result.decision.reasoning).toContain('Fallback');
+    expect(result.decision.action).toBe('continue_with_instruction');
+    expect(result.decision.reasoning).toContain('Local fallback');
   });
 
   // AC-027: reasoning written to audit log
@@ -205,5 +262,57 @@ describe('makeAutoDecision', () => {
 
     expect(entry.decisionType).toBe('AUTO_DECISION');
     expect(entry.decision.blocked).toBe(true);
+  });
+
+  test('includes phase and output context in the God prompt', async () => {
+    const { adapter, getPrompt } = createPromptCapturingAdapter(GOD_ACCEPT_OUTPUT);
+    const ctx = makeContext({
+      currentPhaseId: 'phase-2',
+      currentPhaseType: 'code',
+      phases: [
+        { id: 'phase-1', name: 'Explore', type: 'explore', description: 'Explore the codebase' },
+        { id: 'phase-2', name: 'Code', type: 'code', description: 'Implement the change' },
+      ],
+      lastCoderOutput: 'Coder chose REST and implemented the endpoint.',
+      lastReviewerOutput: '[CHANGES_REQUESTED] Add null checks.',
+    });
+
+    await makeAutoDecision(adapter, ctx, noBlockRuleEngine);
+
+    expect(getPrompt()).toContain('Current Phase: phase-2');
+    expect(getPrompt()).toContain('Last Coder Output');
+    expect(getPrompt()).toContain('Last Reviewer Output');
+  });
+});
+
+describe('makeLocalAutoDecision', () => {
+  test('accepts when reviewer approved and no unresolved issues remain', () => {
+    const result = makeLocalAutoDecision({
+      round: 1,
+      maxRounds: 10,
+      taskGoal: 'Implement feature',
+      sessionDir: '/tmp/test',
+      seq: 1,
+      waitingReason: 'converged',
+      lastReviewerOutput: '[APPROVED] Looks good',
+      unresolvedIssues: [],
+    }, () => ({ blocked: false, results: [] }));
+
+    expect(result.decision.action).toBe('accept');
+  });
+
+  test('continues with instruction when unresolved issues remain', () => {
+    const result = makeLocalAutoDecision({
+      round: 2,
+      maxRounds: 10,
+      taskGoal: 'Implement feature',
+      sessionDir: '/tmp/test',
+      seq: 1,
+      waitingReason: 'loop_detected',
+      unresolvedIssues: ['Fix failing login validation'],
+    }, () => ({ blocked: false, results: [] }));
+
+    expect(result.decision.action).toBe('continue_with_instruction');
+    expect(result.decision.instruction).toContain('Fix failing login validation');
   });
 });

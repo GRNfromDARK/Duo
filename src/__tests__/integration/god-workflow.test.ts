@@ -259,7 +259,7 @@ describe('Scenario 1: Normal God workflow path (AC-1)', () => {
     const postReviewResult2 = await routePostReviewer(postReviewAdapter2, 'All issues resolved. [APPROVED]', {
       round: 1, maxRounds: 5, taskGoal: 'implement login', sessionDir: sessionDir(), seq: 4,
     });
-    // converged from POST_REVIEW goes to WAITING_USER via state machine
+    // converged from POST_REVIEW goes to GOD_DECIDING via state machine
     expect(postReviewResult2.event).toEqual({ type: 'CONVERGED' });
 
     actor.send({ type: 'ROUTE_TO_EVALUATE' });
@@ -288,9 +288,9 @@ describe('Scenario 1: Normal God workflow path (AC-1)', () => {
     expect(convergenceResult.shouldTerminate).toBe(true);
 
     actor.send({ type: 'CONVERGED' });
-    expect(actor.getSnapshot().value).toBe('WAITING_USER');
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
 
-    // ── Step 6: WAITING_USER → DONE ──
+    // ── Step 6: GOD_DECIDING → DONE ──
     actor.send({ type: 'USER_CONFIRM', action: 'accept' });
     expect(actor.getSnapshot().value).toBe('DONE');
 
@@ -440,7 +440,7 @@ describe('Scenario 2: God degradation path (AC-2)', () => {
 
     // Step 5: v1 convergence → CONVERGED
     actor.send({ type: 'CONVERGED' });
-    expect(actor.getSnapshot().value).toBe('WAITING_USER');
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
 
     actor.send({ type: 'USER_CONFIRM', action: 'accept' });
     expect(actor.getSnapshot().value).toBe('DONE');
@@ -450,10 +450,10 @@ describe('Scenario 2: God degradation path (AC-2)', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// Scenario 3: Agent auto-decision in WAITING_USER
+// Scenario 3: Agent auto-decision in GOD_DECIDING
 // ═══════════════════════════════════════════════════════════════════
 
-describe('Scenario 3: Auto-decision in WAITING_USER (AC-3)', () => {
+describe('Scenario 3: Auto-decision in GOD_DECIDING (AC-3)', () => {
   it('God auto-decision: continue_with_instruction → USER_CONFIRM continue', async () => {
     const actor = startActor();
     actor.send({ type: 'START_TASK', prompt: 'implement feature' });
@@ -463,7 +463,7 @@ describe('Scenario 3: Auto-decision in WAITING_USER (AC-3)', () => {
     actor.send({ type: 'REVIEW_COMPLETE', output: 'needs work' });
     actor.send({ type: 'ROUTE_TO_EVALUATE' });
     actor.send({ type: 'CONVERGED' });
-    expect(actor.getSnapshot().value).toBe('WAITING_USER');
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
 
     // God makes auto-decision
     const godAdapter = createMockAdapter({
@@ -520,7 +520,7 @@ describe('Scenario 3: Auto-decision in WAITING_USER (AC-3)', () => {
     actor.stop();
   });
 
-  it('God auto-decision: request_human → no auto-action, stays WAITING_USER', async () => {
+  it('God auto-decision: invalid request_human output falls back to autonomous continue', async () => {
     const actor = startActor();
     actor.send({ type: 'START_TASK', prompt: 'task' });
     actor.send({ type: 'TASK_INIT_SKIP' });
@@ -533,17 +533,18 @@ describe('Scenario 3: Auto-decision in WAITING_USER (AC-3)', () => {
     const godAdapter = createMockAdapter({
       action: 'request_human',
       reasoning: 'Ambiguous requirement, need human input.',
-    } satisfies GodAutoDecision);
+    });
 
     const result = await makeAutoDecision(godAdapter, {
       round: 0, maxRounds: 5, taskGoal: 'task',
       sessionDir: sessionDir(), seq: 5, waitingReason: 'converged',
     }, () => ({ blocked: false, results: [] }));
 
-    expect(result.decision.action).toBe('request_human');
+    expect(result.decision.action).toBe('continue_with_instruction');
+    expect(result.reasoning).toContain('Local fallback');
 
-    // State machine stays in WAITING_USER (no auto-execute for request_human)
-    expect(actor.getSnapshot().value).toBe('WAITING_USER');
+    // State machine remains in GOD_DECIDING until the caller executes the autonomous choice.
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
 
     actor.stop();
   });
@@ -673,7 +674,7 @@ describe('Scenario 4: Compound phase transition (AC-4)', () => {
       nextPhaseId: transitionResult.nextPhaseId!,
       summary: transitionResult.previousPhaseSummary!,
     });
-    expect(actor.getSnapshot().value).toBe('WAITING_USER');
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
     expect(actor.getSnapshot().context.pendingPhaseId).toBe('code');
 
     // User confirms phase transition
@@ -733,7 +734,7 @@ describe('Scenario 4: Compound phase transition (AC-4)', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('Scenario 5: duo resume (AC-5)', () => {
-  it('restoreGodSession returns adapter + sessionId from persisted state', async () => {
+  it('restoreGodSession returns null because God adapters are stateless', async () => {
     const state: SessionState = {
       round: 3,
       status: 'CODING',
@@ -745,9 +746,7 @@ describe('Scenario 5: duo resume (AC-5)', () => {
     const adapterFactory = (name: string): CLIAdapter => createMockAdapter({ action: 'continue_to_review', reasoning: 'ok' });
 
     const result = await restoreGodSession(state, adapterFactory);
-    expect(result).not.toBeNull();
-    expect(result!.sessionId).toBe('god-session-abc');
-    expect(result!.adapter.name).toBe('mock-god');
+    expect(result).toBeNull();
   });
 
   it('restoreGodSession returns null when godSessionId missing (graceful degradation)', async () => {
@@ -822,7 +821,7 @@ describe('Scenario 5: duo resume (AC-5)', () => {
 
     const state: SessionState = {
       round: 2,
-      status: 'WAITING_USER',
+      status: 'god_deciding',
       currentRole: 'coder',
       godConvergenceLog: convergenceLog,
     };

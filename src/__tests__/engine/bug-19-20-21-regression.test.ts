@@ -5,7 +5,7 @@
  *   → Fixed by using taskAnalysisRef (tested via ref pattern verification)
  * BUG-20 [P2]: confirmContinueWithPhase guard uses !== null, doesn't exclude undefined
  *   → Fixed by using != null (loose comparison)
- * BUG-21 [P2]: WAITING_USER auto-decision not re-triggered after reclassify
+ * BUG-21 [P2]: GOD_DECIDING auto-decision not re-triggered after reclassify
  *   → Fixed by adding reclassifyTrigger to useEffect deps (tested via state machine behavior)
  */
 import { describe, it, expect } from 'vitest';
@@ -22,7 +22,7 @@ function startActor(context?: Partial<WorkflowContext>) {
   return actor;
 }
 
-/** Helper: advance to WAITING_USER via normal convergence */
+/** Helper: advance to GOD_DECIDING via normal convergence */
 function advanceToWaitingUser(actor: ReturnType<typeof startActor>) {
   actor.send({ type: 'START_TASK', prompt: 'test task' });
   actor.send({ type: 'TASK_INIT_SKIP' });
@@ -60,7 +60,7 @@ describe('BUG-20 regression: confirmContinueWithPhase guard with undefined pendi
     actor.send({ type: 'REVIEW_COMPLETE', output: 'reviewed' });
     actor.send({ type: 'PHASE_TRANSITION', nextPhaseId: 'phase2', summary: 'Next phase' });
 
-    expect(actor.getSnapshot().value).toBe('WAITING_USER');
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
     expect(actor.getSnapshot().context.pendingPhaseId).toBe('phase2');
 
     actor.send({ type: 'USER_CONFIRM', action: 'continue' });
@@ -191,27 +191,27 @@ describe('BUG-19 regression: taskAnalysisRef pattern', () => {
 });
 
 // ══════════════════════════════════════════════════════════════════
-// BUG-21: WAITING_USER auto-decision re-trigger after reclassify
-// (State machine level: verify WAITING_USER re-entry mechanics)
+// BUG-21: GOD_DECIDING auto-decision re-trigger after reclassify
+// (State machine level: verify GOD_DECIDING re-entry mechanics)
 // ══════════════════════════════════════════════════════════════════
 
-describe('BUG-21 regression: reclassify re-triggers auto-decision in WAITING_USER', () => {
-  it('reclassify in WAITING_USER state: state stays WAITING_USER (no state change for useEffect)', () => {
-    // This test documents the problem: reclassify in WAITING_USER doesn't
+describe('BUG-21 regression: reclassify re-triggers auto-decision in GOD_DECIDING', () => {
+  it('reclassify in GOD_DECIDING state: state stays GOD_DECIDING (no state change for useEffect)', () => {
+    // This test documents the problem: reclassify in GOD_DECIDING doesn't
     // change stateValue, so useEffect([stateValue, ...]) won't re-run.
     // The fix adds reclassifyTrigger to the deps.
     const actor = startActor();
     advanceToWaitingUser(actor);
 
-    expect(actor.getSnapshot().value).toBe('WAITING_USER');
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
 
-    // Reclassify doesn't send any XState event when already in WAITING_USER
-    // stateValue remains 'WAITING_USER' — hence BUG-21
-    expect(actor.getSnapshot().value).toBe('WAITING_USER');
+    // Reclassify doesn't send any XState event when already in GOD_DECIDING
+    // stateValue remains 'GOD_DECIDING' — hence BUG-21
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
     actor.stop();
   });
 
-  it('reclassify from INTERRUPTED sends USER_INPUT to reach WAITING_USER', () => {
+  it('reclassify from INTERRUPTED sends USER_INPUT to reach GOD_DECIDING', () => {
     const actor = startActor();
     actor.send({ type: 'START_TASK', prompt: 'test' });
     actor.send({ type: 'TASK_INIT_SKIP' });
@@ -222,8 +222,8 @@ describe('BUG-21 regression: reclassify re-triggers auto-decision in WAITING_USE
     // handleReclassifySelect sends USER_INPUT with resumeAs='decision' when INTERRUPTED
     actor.send({ type: 'USER_INPUT', input: 'Reclassified to debug', resumeAs: 'decision' });
 
-    // Should be in WAITING_USER now
-    expect(actor.getSnapshot().value).toBe('WAITING_USER');
+    // Should be in GOD_DECIDING now
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
     actor.stop();
   });
 

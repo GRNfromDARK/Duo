@@ -25,7 +25,7 @@ function makeConfig(overrides?: Partial<SessionConfig>): SessionConfig {
     projectDir: tmpDir,
     coder: 'claude-code',
     reviewer: 'codex',
-    god: 'gemini',
+    god: 'codex',
     task: 'implement login',
     ...overrides,
   };
@@ -67,7 +67,7 @@ describe('AC-039: Tri-party session ID atomic commit', () => {
       coderSessionId: 'coder-session-001',
       reviewerSessionId: 'reviewer-session-001',
       godSessionId: 'god-session-001',
-      godAdapter: 'gemini',
+      godAdapter: 'codex',
     };
     mgr.saveState(session.id, state);
 
@@ -112,7 +112,7 @@ describe('AC-039: Tri-party session ID atomic commit', () => {
 // ── AC-040: 任一方 session 丢失不影响其他方 ──
 
 describe('AC-040: Individual session loss does not affect others', () => {
-  test('coder session lost — reviewer and god still restored', async () => {
+  test('coder session lost — reviewer still restored and god remains stateless', async () => {
     const triParty: TriPartySessionState = {
       coderSessionId: null, // lost
       reviewerSessionId: 'reviewer-session-001',
@@ -127,12 +127,10 @@ describe('AC-040: Individual session loss does not affect others', () => {
     expect(result.reviewer).not.toBeNull();
     expect(result.reviewer!.adapter.name).toBe('codex');
     expect(result.reviewer!.sessionId).toBe('reviewer-session-001');
-    expect(result.god).not.toBeNull();
-    expect(result.god!.adapter.name).toBe('gemini');
-    expect(result.god!.sessionId).toBe('god-session-001');
+    expect(result.god).toBeNull();
   });
 
-  test('reviewer session lost — coder and god still restored', async () => {
+  test('reviewer session lost — coder still restored and god remains stateless', async () => {
     const triParty: TriPartySessionState = {
       coderSessionId: 'coder-session-001',
       reviewerSessionId: null, // lost
@@ -146,8 +144,7 @@ describe('AC-040: Individual session loss does not affect others', () => {
     expect(result.coder).not.toBeNull();
     expect(result.coder!.adapter.name).toBe('claude-code');
     expect(result.reviewer).toBeNull();
-    expect(result.god).not.toBeNull();
-    expect(result.god!.adapter.name).toBe('gemini');
+    expect(result.god).toBeNull();
   });
 
   test('god session lost — coder and reviewer still restored', async () => {
@@ -182,7 +179,7 @@ describe('AC-040: Individual session loss does not affect others', () => {
     const result = await restoreTriPartySession(triParty, config, mockFactory);
     expect(result.coder).not.toBeNull();
     expect(result.reviewer).toBeNull(); // factory threw for codex (reviewer)
-    expect(result.god).not.toBeNull();
+    expect(result.god).toBeNull();
   });
 
   test('all sessions lost — all return null', async () => {
@@ -202,10 +199,10 @@ describe('AC-040: Individual session loss does not affect others', () => {
   });
 });
 
-// ── AC-041a: God 与 Coder 使用同一 CLI 时 session 隔离 ──
+// ── AC-041a: God remains stateless even when adapter names overlap ──
 
 describe('AC-041a: Session isolation when God and Coder use same CLI', () => {
-  test('God and Coder both use claude-code — separate adapter instances', async () => {
+  test('God and Coder both use claude-code — only coder/reviewer sessions are restored', async () => {
     const triParty: TriPartySessionState = {
       coderSessionId: 'coder-session-001',
       reviewerSessionId: 'reviewer-session-001',
@@ -214,28 +211,22 @@ describe('AC-041a: Session isolation when God and Coder use same CLI', () => {
 
     // God and Coder both use claude-code
     const config = makeConfig({ coder: 'claude-code', god: 'claude-code' });
-    const instances: CLIAdapter[] = [];
     const mockFactory = (name: string) => {
-      const adapter = makeMockAdapter(name);
-      instances.push(adapter);
-      return adapter;
+      return makeMockAdapter(name);
     };
 
     const result = await restoreTriPartySession(triParty, config, mockFactory);
 
-    // Both restored successfully
+    // Coder/reviewer restore normally; God stays stateless
     expect(result.coder).not.toBeNull();
-    expect(result.god).not.toBeNull();
+    expect(result.reviewer).not.toBeNull();
+    expect(result.god).toBeNull();
 
-    // Different adapter instances (session isolation)
-    expect(result.coder!.adapter).not.toBe(result.god!.adapter);
-
-    // Different session IDs
     expect(result.coder!.sessionId).toBe('coder-session-001');
-    expect(result.god!.sessionId).toBe('god-session-002');
+    expect(result.reviewer!.sessionId).toBe('reviewer-session-001');
   });
 
-  test('all three use the same CLI — three separate adapter instances', async () => {
+  test('all three use the same CLI — coder and reviewer still restore independently', async () => {
     const triParty: TriPartySessionState = {
       coderSessionId: 'coder-session-001',
       reviewerSessionId: 'reviewer-session-002',
@@ -243,29 +234,22 @@ describe('AC-041a: Session isolation when God and Coder use same CLI', () => {
     };
 
     const config = makeConfig({ coder: 'claude-code', reviewer: 'claude-code', god: 'claude-code' });
-    const instances: CLIAdapter[] = [];
     const mockFactory = (name: string) => {
-      const adapter = makeMockAdapter(name);
-      instances.push(adapter);
-      return adapter;
+      return makeMockAdapter(name);
     };
 
     const result = await restoreTriPartySession(triParty, config, mockFactory);
 
-    // All three restored
+    // Only coder and reviewer restore
     expect(result.coder).not.toBeNull();
     expect(result.reviewer).not.toBeNull();
-    expect(result.god).not.toBeNull();
+    expect(result.god).toBeNull();
 
-    // All different instances
+    // Different adapter instances for the resumable roles
     expect(result.coder!.adapter).not.toBe(result.reviewer!.adapter);
-    expect(result.coder!.adapter).not.toBe(result.god!.adapter);
-    expect(result.reviewer!.adapter).not.toBe(result.god!.adapter);
 
-    // Each has its own session ID
     expect(result.coder!.sessionId).toBe('coder-session-001');
     expect(result.reviewer!.sessionId).toBe('reviewer-session-002');
-    expect(result.god!.sessionId).toBe('god-session-003');
   });
 });
 
@@ -284,7 +268,7 @@ describe('Tri-party session restore via SessionManager', () => {
       coderSessionId: 'coder-roundtrip-001',
       reviewerSessionId: 'reviewer-roundtrip-001',
       godSessionId: 'god-roundtrip-001',
-      godAdapter: 'gemini',
+      godAdapter: 'codex',
     };
     mgr.saveState(session.id, state);
 
@@ -304,8 +288,7 @@ describe('Tri-party session restore via SessionManager', () => {
     expect(result.coder!.sessionId).toBe('coder-roundtrip-001');
     expect(result.reviewer).not.toBeNull();
     expect(result.reviewer!.sessionId).toBe('reviewer-roundtrip-001');
-    expect(result.god).not.toBeNull();
-    expect(result.god!.sessionId).toBe('god-roundtrip-001');
+    expect(result.god).toBeNull();
   });
 
   test('legacy session without god fields — backward compatible restore', async () => {

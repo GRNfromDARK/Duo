@@ -37,9 +37,9 @@ export interface SessionState {
   coderSessionId?: string;
   /** CLI session ID for the reviewer adapter */
   reviewerSessionId?: string;
-  /** CLI session ID for the God adapter (AR-005) */
+  /** Legacy persisted God session ID. Runtime restore is intentionally disabled. */
   godSessionId?: string;
-  /** Name of the God adapter (e.g. 'gemini') */
+  /** Legacy persisted God adapter name from older sessions. */
   godAdapter?: string;
   /** God task analysis — written on first round only (FR-011) */
   godTaskAnalysis?: GodTaskAnalysis;

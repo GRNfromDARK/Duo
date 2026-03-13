@@ -22,7 +22,7 @@ function makeConfig(overrides?: Partial<SessionConfig>): SessionConfig {
     projectDir: tmpDir,
     coder: 'claude-code',
     reviewer: 'codex',
-    god: 'gemini',
+    god: 'codex',
     task: 'implement login',
     ...overrides,
   };
@@ -71,14 +71,14 @@ describe('God session state persistence', () => {
       status: 'coding',
       currentRole: 'coder',
       godSessionId: 'god-session-123',
-      godAdapter: 'gemini',
+      godAdapter: 'codex',
     };
     mgr.saveState(session.id, state);
 
     const sessionDir = path.join(sessionsDir, session.id);
     const snapshot = JSON.parse(fs.readFileSync(path.join(sessionDir, 'snapshot.json'), 'utf-8'));
     expect(snapshot.state.godSessionId).toBe('god-session-123');
-    expect(snapshot.state.godAdapter).toBe('gemini');
+    expect(snapshot.state.godAdapter).toBe('codex');
   });
 
   test('godTaskAnalysis is written only on first round', () => {
@@ -92,7 +92,7 @@ describe('God session state persistence', () => {
       status: 'coding',
       currentRole: 'coder',
       godSessionId: 'god-123',
-      godAdapter: 'gemini',
+      godAdapter: 'codex',
       godTaskAnalysis: analysis,
     };
     mgr.saveState(session.id, state1);
@@ -108,7 +108,7 @@ describe('God session state persistence', () => {
       status: 'reviewing',
       currentRole: 'reviewer',
       godSessionId: 'god-123',
-      godAdapter: 'gemini',
+      godAdapter: 'codex',
     };
     mgr.saveState(session.id, state2);
 
@@ -127,7 +127,7 @@ describe('God session state persistence', () => {
       status: 'reviewing',
       currentRole: 'reviewer',
       godSessionId: 'god-123',
-      godAdapter: 'gemini',
+      godAdapter: 'codex',
       godConvergenceLog: [entry1],
     };
     mgr.saveState(session.id, state1);
@@ -142,7 +142,7 @@ describe('God session state persistence', () => {
       status: 'reviewing',
       currentRole: 'reviewer',
       godSessionId: 'god-123',
-      godAdapter: 'gemini',
+      godAdapter: 'codex',
       godConvergenceLog: [entry1, entry2],
     };
     mgr.saveState(session.id, state2);
@@ -170,7 +170,7 @@ describe('God session persistence size constraint (NFR-007)', () => {
       status: 'completed',
       currentRole: 'coder',
       godSessionId: 'god-session-long-task-uuid-1234',
-      godAdapter: 'gemini',
+      godAdapter: 'codex',
       godTaskAnalysis: makeTaskAnalysis(),
       godConvergenceLog: convergenceLog,
     };
@@ -192,38 +192,24 @@ describe('God session persistence size constraint (NFR-007)', () => {
   });
 });
 
-// ── AC-1 (resume): duo resume restores God session ──
+// ── AC-1 (resume): duo resume keeps God stateless ──
 
 describe('restoreGodSession', () => {
-  test('restores God adapter and session ID from snapshot state', async () => {
+  test('always returns null because God adapters are stateless', async () => {
     const state: SessionState = {
       round: 3,
       status: 'coding',
       currentRole: 'coder',
       godSessionId: 'god-session-abc',
-      godAdapter: 'gemini',
+      godAdapter: 'codex',
     };
 
-    const mockAdapter = {
-      name: 'gemini',
-      displayName: 'Gemini CLI',
-      version: '1.0',
-      isInstalled: async () => true,
-      getVersion: async () => '1.0',
-      execute: async function* () {},
-      kill: async () => {},
-      isRunning: () => false,
-    };
-
-    const mockFactory = (name: string) => {
-      if (name === 'gemini') return mockAdapter;
-      throw new Error(`Unknown adapter: ${name}`);
+    const mockFactory = (_name: string) => {
+      throw new Error('should not be called');
     };
 
     const result = await restoreGodSession(state, mockFactory);
-    expect(result).not.toBeNull();
-    expect(result!.adapter).toBe(mockAdapter);
-    expect(result!.sessionId).toBe('god-session-abc');
+    expect(result).toBeNull();
   });
 
   test('returns null when godSessionId is missing', async () => {
@@ -282,7 +268,7 @@ describe('godTaskAnalysis round-trip', () => {
       status: 'coding',
       currentRole: 'coder',
       godSessionId: 'god-123',
-      godAdapter: 'gemini',
+      godAdapter: 'codex',
       godTaskAnalysis: analysis,
     });
 

@@ -57,7 +57,7 @@ Output this exact JSON schema:
 
 \`\`\`json
 {
-  "action": "continue_to_review|retry_coder|request_user_input",
+  "action": "continue_to_review|retry_coder",
   "reasoning": "why",
   "retryHint": "optional hint for retry_coder"
 }
@@ -67,7 +67,7 @@ Output this exact JSON schema:
 
 \`\`\`json
 {
-  "action": "route_to_coder|converged|phase_transition|loop_detected|request_user_input",
+  "action": "route_to_coder|converged|phase_transition|loop_detected",
   "reasoning": "why",
   "unresolvedIssues": ["issue1"],
   "confidenceScore": 0.9,
@@ -90,11 +90,11 @@ Output this exact JSON schema:
 }
 \`\`\`
 
-## 5. AUTO_DECISION — Decide for user at WAITING_USER
+## 5. AUTO_DECISION — Decide autonomously at GOD_DECIDING
 
 \`\`\`json
 {
-  "action": "accept|continue_with_instruction|request_human",
+  "action": "accept|continue_with_instruction",
   "reasoning": "why (max 2000 chars)",
   "instruction": "optional instruction for continue_with_instruction"
 }
@@ -105,6 +105,7 @@ Output this exact JSON schema:
 1. Output ONLY a single \`\`\`json code block. Nothing else. No explanation, no preamble, no follow-up.
 2. Do NOT use any tools. Do NOT read files. Do NOT run commands. You are a pure decision-maker.
 3. Base decisions on the context provided in the user prompt.
-4. When uncertain, prefer conservative actions (extra review round over premature convergence).
+4. When uncertain, prefer conservative autonomous actions (extra review round over premature convergence).
+5. You are NEVER allowed to request user input or ask a human to decide.
 `;
 }

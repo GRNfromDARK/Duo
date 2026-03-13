@@ -13,7 +13,12 @@ import { appendAuditLog, type GodAuditEntry } from '../god/god-audit.js';
 const RECLASSIFY_TYPES: TaskType[] = ['explore', 'code', 'review', 'debug'];
 
 /** XState states where Ctrl+R is allowed (AC-010). */
-export const RECLASSIFY_ALLOWED_STATES: string[] = ['CODING', 'REVIEWING', 'WAITING_USER'];
+export const RECLASSIFY_ALLOWED_STATES: string[] = [
+  'CODING',
+  'REVIEWING',
+  'GOD_DECIDING',
+  'MANUAL_FALLBACK',
+];
 
 export interface ReclassifyOverlayState {
   visible: boolean;

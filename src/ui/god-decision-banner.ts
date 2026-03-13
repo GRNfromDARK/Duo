@@ -5,22 +5,19 @@
  * Framework-agnostic: exports pure functions for state transitions.
  * The Ink component layer consumes these functions.
  *
- * 2-second countdown window:
- * - Space: immediate execute
- * - Esc: cancel → manual mode
- * - Timeout: auto-execute
+ * AI-driven mode: execute immediately with no human gate.
  */
 
 import type { GodAutoDecision } from '../types/god-schemas.js';
 
 export interface GodDecisionBannerState {
   decision: GodAutoDecision;
-  countdown: number; // milliseconds remaining (starts at 2000)
+  countdown: number;
   cancelled: boolean;
   executed: boolean;
 }
 
-export const ESCAPE_WINDOW_MS = 2000;
+export const ESCAPE_WINDOW_MS = 0;
 export const TICK_INTERVAL_MS = 100;
 
 export function createGodDecisionBannerState(
@@ -28,9 +25,9 @@ export function createGodDecisionBannerState(
 ): GodDecisionBannerState {
   return {
     decision,
-    countdown: ESCAPE_WINDOW_MS,
+    countdown: 0,
     cancelled: false,
-    executed: false,
+    executed: true,
   };
 }
 
@@ -70,10 +67,8 @@ export function tickBannerCountdown(
 export function formatDecisionSummary(decision: GodAutoDecision): string {
   switch (decision.action) {
     case 'accept':
-      return 'God will accept the current output';
+      return 'God: accepting output';
     case 'continue_with_instruction':
-      return `God will continue: "${decision.instruction ?? ''}"`;
-    case 'request_human':
-      return 'God requests human input';
+      return `God: continuing - "${decision.instruction ?? ''}"`;
   }
 }

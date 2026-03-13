@@ -12,6 +12,7 @@ import {
   generateReviewerPrompt,
 } from '../../god/god-prompt-generator.js';
 import type { PromptContext } from '../../god/god-prompt-generator.js';
+import type { ConvergenceLogEntry } from '../../god/god-convergence.js';
 import { ContextManager } from '../../session/context-manager.js';
 import { DegradationManager } from '../../god/degradation-manager.js';
 import { ConvergenceService } from '../../decision/convergence-service.js';
@@ -56,7 +57,7 @@ function selectCoderPrompt(opts: {
   config: { task: string };
   ctx: { round: number; maxRounds: number; lastReviewerOutput?: string | null };
   lastUnresolvedIssues: string[];
-  convergenceLog: Array<{ round: number; blockingIssueCount: number; classification: string; shouldTerminate: boolean }>;
+  convergenceLog: ConvergenceLogEntry[];
   sessionDir: string;
   auditSeq: number;
   choiceRoute?: { target: string; prompt: string } | null;
@@ -372,7 +373,7 @@ describe('AC-6: Fallback to v1 ContextManager when God unavailable', () => {
 
     // Degrade God by triggering multiple failures
     for (let i = 0; i < 5; i++) {
-      dm.handleGodFailure(new Error('test failure'), 'test');
+      dm.handleGodFailure({ kind: 'process_exit', message: 'test failure' });
     }
     expect(dm.isGodAvailable()).toBe(false);
 
@@ -419,7 +420,7 @@ describe('AC-6: Fallback to v1 ContextManager when God unavailable', () => {
     const dm = makeDegradationManager(cm);
 
     for (let i = 0; i < 5; i++) {
-      dm.handleGodFailure(new Error('test failure'), 'test');
+      dm.handleGodFailure({ kind: 'process_exit', message: 'test failure' });
     }
 
     const prompt = selectReviewerPrompt({
@@ -512,8 +513,24 @@ describe('Convergence log trend in Coder prompt', () => {
       ctx: { round: 3, maxRounds: 5 },
       lastUnresolvedIssues: ['Fix memory leak'],
       convergenceLog: [
-        { round: 1, blockingIssueCount: 5, classification: 'major_issues', shouldTerminate: false },
-        { round: 2, blockingIssueCount: 2, classification: 'minor_issues', shouldTerminate: false },
+        {
+          round: 1,
+          timestamp: '2026-03-12T00:00:00Z',
+          blockingIssueCount: 5,
+          classification: 'major_issues',
+          shouldTerminate: false,
+          criteriaProgress: [],
+          summary: 'round 1',
+        },
+        {
+          round: 2,
+          timestamp: '2026-03-12T00:01:00Z',
+          blockingIssueCount: 2,
+          classification: 'minor_issues',
+          shouldTerminate: false,
+          criteriaProgress: [],
+          summary: 'round 2',
+        },
       ],
       sessionDir: '/tmp/test',
       auditSeq: 3,

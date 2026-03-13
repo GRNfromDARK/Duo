@@ -576,7 +576,7 @@ describe('Round6 BUG-4: updatedAt no +1ms drift when now > updatedAt', () => {
 describe('SessionManager — God session persistence (C.4)', () => {
   test('saveState persists God fields (godAdapter, godTaskAnalysis, godConvergenceLog, degradationState)', () => {
     const mgr = new SessionManager(sessionsDir);
-    const session = mgr.createSession(makeConfig({ god: 'gemini' }));
+    const session = mgr.createSession(makeConfig({ god: 'codex' }));
 
     const godTaskAnalysis = {
       taskType: 'code' as const,
@@ -592,6 +592,8 @@ describe('SessionManager — God session persistence (C.4)', () => {
         classification: 'improving',
         shouldTerminate: false,
         blockingIssueCount: 3,
+        criteriaProgress: [],
+        summary: 'round 0',
       },
       {
         round: 1,
@@ -599,10 +601,12 @@ describe('SessionManager — God session persistence (C.4)', () => {
         classification: 'near_converged',
         shouldTerminate: false,
         blockingIssueCount: 1,
+        criteriaProgress: [],
+        summary: 'round 1',
       },
     ];
     const degradationState = {
-      level: 1 as const,
+      level: 'L2' as const,
       consecutiveFailures: 1,
       godDisabled: false,
       fallbackActive: false,
@@ -614,7 +618,7 @@ describe('SessionManager — God session persistence (C.4)', () => {
       status: 'coding',
       currentRole: 'coder',
       godSessionId: 'god_ses_abc',
-      godAdapter: 'gemini',
+      godAdapter: 'codex',
       godTaskAnalysis,
       godConvergenceLog,
       degradationState,
@@ -622,7 +626,7 @@ describe('SessionManager — God session persistence (C.4)', () => {
 
     const loaded = mgr.loadSession(session.id);
     expect(loaded.state.godSessionId).toBe('god_ses_abc');
-    expect(loaded.state.godAdapter).toBe('gemini');
+    expect(loaded.state.godAdapter).toBe('codex');
     expect(loaded.state.godTaskAnalysis).toEqual(godTaskAnalysis);
     expect(loaded.state.godConvergenceLog).toEqual(godConvergenceLog);
     expect(loaded.state.degradationState).toEqual(degradationState);

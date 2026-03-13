@@ -1,24 +1,37 @@
 /**
- * Auto Decision — WAITING_USER 代理决策服务
+ * Auto Decision — GOD_DECIDING 自主决策服务
  * Source: FR-008 (AC-025, AC-026, AC-027)
  *
- * God autonomously decides in WAITING_USER state:
+ * God autonomously decides in GOD_DECIDING:
  * - accept: task complete
  * - continue_with_instruction: inject instruction and continue
- * - request_human: defer to human
  *
  * Decisions are checked against rule engine before execution (AC-025).
  * Reasoning is written to audit log (AC-027).
  */
 
-import type { CLIAdapter, OutputChunk } from '../types/adapter.js';
+import type { GodAdapter } from '../types/god-adapter.js';
 import type { GodAutoDecision } from '../types/god-schemas.js';
 import { GodAutoDecisionSchema } from '../types/god-schemas.js';
 import { extractWithRetry } from '../parsers/god-json-extractor.js';
 import { appendAuditLog, type GodAuditEntry } from './god-audit.js';
 import type { RuleEngineResult, ActionContext } from './rule-engine.js';
+import { collectGodAdapterOutput } from './god-call.js';
 
-// ── Types ──
+type AutoDecisionPhaseType = 'explore' | 'code' | 'discuss' | 'review' | 'debug';
+
+interface AutoDecisionPhase {
+  id: string;
+  name: string;
+  type: AutoDecisionPhaseType;
+  description: string;
+}
+
+interface AutoDecisionLogEntry {
+  round: number;
+  classification: string;
+  blockingIssueCount: number;
+}
 
 export interface AutoDecisionContext {
   round: number;
@@ -26,8 +39,15 @@ export interface AutoDecisionContext {
   taskGoal: string;
   sessionDir: string;
   seq: number;
-  waitingReason: string; // why we entered WAITING_USER (e.g. 'converged', 'loop_detected')
+  waitingReason: string;
   projectDir?: string;
+  lastCoderOutput?: string;
+  lastReviewerOutput?: string;
+  currentPhaseId?: string;
+  currentPhaseType?: AutoDecisionPhaseType;
+  phases?: AutoDecisionPhase[];
+  convergenceLog?: AutoDecisionLogEntry[];
+  unresolvedIssues?: string[];
 }
 
 export interface AutoDecisionResult {
@@ -37,148 +57,177 @@ export interface AutoDecisionResult {
   reasoning: string;
 }
 
-// ── Default fallback ──
-
-const DEFAULT_DECISION: GodAutoDecision = {
-  action: 'request_human',
-  reasoning: 'Fallback: defaulting to request_human (God extraction failed)',
-};
-
-// ── Collect adapter output ──
-
 const GOD_TIMEOUT_MS = 30_000;
 
-async function collectAdapterOutput(
-  adapter: CLIAdapter,
-  prompt: string,
-  systemPrompt: string,
-  projectDir?: string,
-): Promise<string> {
-  // God calls are stateless — clear any captured session ID to ensure --system-prompt is always passed
-  if ('hasActiveSession' in adapter && (adapter as any).hasActiveSession?.()) {
-    (adapter as any).lastSessionId = null;
-  }
-  // Adapters that don't support --system-prompt (e.g. Codex): embed it into the user prompt
-  const supportsSystemPrompt = adapter.name === 'claude-code';
-  const effectivePrompt = supportsSystemPrompt
-    ? prompt
-    : `${systemPrompt}\n\n---\n\n${prompt}`;
-  const chunks: string[] = [];
-
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => {
-      adapter.kill().catch(() => {});
-      reject(new Error(`God adapter timed out after ${GOD_TIMEOUT_MS}ms`));
-    }, GOD_TIMEOUT_MS);
-  });
-
-  const collectPromise = (async () => {
-    for await (const chunk of adapter.execute(effectivePrompt, {
-      cwd: projectDir ?? process.cwd(),
-      systemPrompt: supportsSystemPrompt ? systemPrompt : undefined,
-      disableTools: true,
-    })) {
-      if (chunk.type === 'text' || chunk.type === 'code' || chunk.type === 'error') {
-        chunks.push(chunk.content);
-      }
-    }
-    return chunks.join('');
-  })();
-
-  return Promise.race([collectPromise, timeoutPromise]);
+function summarizeForPrompt(value: string, maxLength = 1500): string {
+  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
 }
 
-// ── Build prompt ──
-
-function buildAutoDecisionPrompt(context: AutoDecisionContext): string {
-  return [
-    `## WAITING_USER Auto Decision`,
-    ``,
-    `Task: ${context.taskGoal}`,
-    `Round: ${context.round}/${context.maxRounds}`,
-    `Waiting reason: ${context.waitingReason}`,
-    ``,
-    `Decide the next action. Output a JSON code block:`,
-    '```json',
-    `{`,
-    `  "action": "accept" | "continue_with_instruction" | "request_human",`,
-    `  "reasoning": "...",`,
-    `  "instruction": "..."  // only if action is continue_with_instruction`,
-    `}`,
-    '```',
-  ].join('\n');
-}
-
-const SYSTEM_PROMPT = `You are the God orchestrator making an autonomous decision in WAITING_USER state.
-Decide whether to accept the current output, continue with an instruction, or request human input.
-Output a JSON code block with your decision.`;
-
-// ── Main function ──
-
-/**
- * Make an autonomous decision in WAITING_USER state.
- * AC-025: Rule engine is checked before execution; block prevents execution.
- * AC-027: Reasoning is written to audit log.
- */
-export async function makeAutoDecision(
-  godAdapter: CLIAdapter,
+function evaluateDecision(
+  decision: GodAutoDecision,
   context: AutoDecisionContext,
   ruleEngine: (action: ActionContext) => RuleEngineResult,
-): Promise<AutoDecisionResult> {
-  // 1. Query God for decision
-  const prompt = buildAutoDecisionPrompt(context);
-  const rawOutput = await collectAdapterOutput(godAdapter, prompt, SYSTEM_PROMPT, context.projectDir);
-
-  // 2. Extract decision from God output (with retry for format correction)
-  let decision: GodAutoDecision;
-  const extracted = await extractWithRetry(rawOutput, GodAutoDecisionSchema, async (hint) =>
-    collectAdapterOutput(godAdapter, `${prompt}\n\nPrevious attempt had format errors: ${hint}\nPlease output valid JSON.`, SYSTEM_PROMPT, context.projectDir),
-  );
-  if (extracted && extracted.success) {
-    decision = extracted.data;
-  } else {
-    decision = DEFAULT_DECISION;
-  }
-
-  // 3. Check rule engine (AC-025)
-  // Use config_modify type so rule engine path-based checks (R-001, R-002) can evaluate properly.
-  // For auto-decisions that include an instruction, check it as a command to catch suspicious patterns.
+): AutoDecisionResult {
   const effectiveCwd = context.projectDir ?? process.cwd();
-  let ruleCheck: RuleEngineResult;
-  if (decision.action === 'continue_with_instruction' && decision.instruction) {
-    ruleCheck = ruleEngine({
+  const ruleCheck = decision.action === 'continue_with_instruction' && decision.instruction
+    ? ruleEngine({
       type: 'command_exec',
       command: decision.instruction,
       cwd: effectiveCwd,
       godApproved: true,
-    });
-  } else if (decision.action === 'accept' || decision.action === 'request_human') {
-    // accept and request_human are pure workflow control decisions — no file/config modification.
-    // Skip rule engine path checks to avoid false blocks from R-001 for non-~/Documents projects.
-    ruleCheck = { blocked: false, results: [] };
-  } else {
-    ruleCheck = ruleEngine({
-      type: 'config_modify',
-      path: effectiveCwd,
-      cwd: effectiveCwd,
-      godApproved: true,
-    });
+    })
+    : { blocked: false, results: [] };
+
+  return {
+    decision,
+    ruleCheck,
+    blocked: ruleCheck.blocked,
+    reasoning: decision.reasoning,
+  };
+}
+
+function buildLocalAutoDecision(context: AutoDecisionContext): GodAutoDecision {
+  if (
+    context.lastReviewerOutput?.includes('[APPROVED]') &&
+    (context.unresolvedIssues?.length ?? 0) === 0
+  ) {
+    return {
+      action: 'accept',
+      reasoning: 'Local fallback: reviewer approved and no unresolved issues remain.',
+    };
   }
 
-  const blocked = ruleCheck.blocked;
-  const reasoning = decision.reasoning;
+  const instruction = context.unresolvedIssues && context.unresolvedIssues.length > 0
+    ? `Address the remaining issues: ${context.unresolvedIssues.join('; ')}`
+    : context.currentPhaseId
+      ? `Continue working on phase ${context.currentPhaseId} and make the next concrete improvement.`
+      : 'Review the latest coder and reviewer outputs, then continue the task.';
 
-  // 4. Write audit log (AC-027)
+  return {
+    action: 'continue_with_instruction',
+    reasoning: 'Local fallback: God unavailable for this turn, continuing autonomously.',
+    instruction,
+  };
+}
+
+export function makeLocalAutoDecision(
+  context: AutoDecisionContext,
+  ruleEngine: (action: ActionContext) => RuleEngineResult,
+): AutoDecisionResult {
+  return evaluateDecision(buildLocalAutoDecision(context), context, ruleEngine);
+}
+
+function buildAutoDecisionPrompt(context: AutoDecisionContext): string {
+  const sections = [
+    '## Auto Decision',
+    '',
+    `Task: ${context.taskGoal}`,
+    `Round: ${context.round}/${context.maxRounds}`,
+    `Waiting reason: ${context.waitingReason}`,
+  ];
+
+  if (context.currentPhaseId && context.phases) {
+    const phaseList = context.phases
+      .map((phase) => `${phase.id === context.currentPhaseId ? '->' : '  '} ${phase.id} (${phase.type}): ${phase.description}`)
+      .join('\n');
+    sections.push(
+      '',
+      `Current Phase: ${context.currentPhaseId} (${context.currentPhaseType ?? 'unknown'})`,
+      `Phases:\n${phaseList}`,
+    );
+  }
+
+  if (context.lastCoderOutput) {
+    sections.push('', `## Last Coder Output\n${summarizeForPrompt(context.lastCoderOutput)}`);
+  }
+
+  if (context.lastReviewerOutput) {
+    sections.push('', `## Last Reviewer Output\n${summarizeForPrompt(context.lastReviewerOutput)}`);
+  }
+
+  if (context.unresolvedIssues && context.unresolvedIssues.length > 0) {
+    sections.push(
+      '',
+      `## Unresolved Issues\n${context.unresolvedIssues.map((issue, index) => `${index + 1}. ${issue}`).join('\n')}`,
+    );
+  }
+
+  if (context.convergenceLog && context.convergenceLog.length > 0) {
+    sections.push(
+      '',
+      `## Convergence History\n${context.convergenceLog.map((entry) => `Round ${entry.round}: ${entry.classification}, blocking=${entry.blockingIssueCount}`).join('\n')}`,
+    );
+  }
+
+  sections.push(
+    '',
+    'You are the autonomous God orchestrator. You MUST decide and never defer to humans.',
+    'Decide the next action. Output a JSON code block:',
+    '```json',
+    '{',
+    '  "action": "accept" | "continue_with_instruction",',
+    '  "reasoning": "...",',
+    '  "instruction": "..."  // required if action is continue_with_instruction',
+    '}',
+    '```',
+  );
+
+  return sections.join('\n');
+}
+
+const SYSTEM_PROMPT = `You are the God orchestrator, the autonomous decision-maker for this AI coding system.
+You MUST always make a decision.
+
+Available actions:
+- "accept": The task is complete and the output is satisfactory.
+- "continue_with_instruction": More work is needed. Provide a clear instruction for the next iteration.
+
+You are NEVER allowed to defer to a human.
+If a Coder asks a question or proposes options, you choose the best option based on the task goal.
+If there is a disagreement between Coder and Reviewer, you arbitrate and decide the direction.
+
+For compound tasks with phases, evaluate whether the current phase goal is met.
+If it is met, instruct the system to advance the work inside the next iteration.
+Output a JSON code block with your decision.`;
+
+export async function makeAutoDecision(
+  godAdapter: GodAdapter,
+  context: AutoDecisionContext,
+  ruleEngine: (action: ActionContext) => RuleEngineResult,
+): Promise<AutoDecisionResult> {
+  const prompt = buildAutoDecisionPrompt(context);
+  const rawOutput = await collectGodAdapterOutput({
+    adapter: godAdapter,
+    prompt,
+    systemPrompt: SYSTEM_PROMPT,
+    projectDir: context.projectDir,
+    timeoutMs: GOD_TIMEOUT_MS,
+  });
+
+  const extracted = await extractWithRetry(rawOutput, GodAutoDecisionSchema, async (hint) =>
+    collectGodAdapterOutput({
+      adapter: godAdapter,
+      prompt: `${prompt}\n\nPrevious attempt had format errors: ${hint}\nPlease output valid JSON.`,
+      systemPrompt: SYSTEM_PROMPT,
+      projectDir: context.projectDir,
+      timeoutMs: GOD_TIMEOUT_MS,
+    }),
+  );
+
+  const result = extracted && extracted.success
+    ? evaluateDecision(extracted.data, context, ruleEngine)
+    : makeLocalAutoDecision(context, ruleEngine);
+
   const entry: GodAuditEntry = {
     seq: context.seq,
     timestamp: new Date().toISOString(),
     round: context.round,
     decisionType: 'AUTO_DECISION',
     inputSummary: `waitingReason=${context.waitingReason}, taskGoal=${context.taskGoal}`.slice(0, 500),
-    outputSummary: JSON.stringify(decision).slice(0, 500),
-    decision: { ...decision, blocked },
+    outputSummary: JSON.stringify(result.decision).slice(0, 500),
+    decision: { ...result.decision, blocked: result.blocked },
   };
   appendAuditLog(context.sessionDir, entry);
 
-  return { decision, ruleCheck, blocked, reasoning };
+  return result;
 }

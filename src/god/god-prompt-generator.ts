@@ -38,6 +38,14 @@ export interface GodDecisionContext {
   lastReviewerOutput?: string;
   unresolvedIssues?: string[];
   convergenceLog?: ConvergenceLogEntry[];
+  currentPhaseId?: string;
+  currentPhaseType?: 'explore' | 'code' | 'discuss' | 'review' | 'debug';
+  phases?: {
+    id: string;
+    name: string;
+    type: 'explore' | 'code' | 'discuss' | 'review' | 'debug' | 'compound';
+    description: string;
+  }[];
 }
 
 export interface AuditOptions {
@@ -86,6 +94,8 @@ const DISCUSS_INSTRUCTIONS = `## Instructions
 - Evaluate the options and weigh their implications.
 - Provide a well-reasoned recommendation.`;
 
+const IMPLEMENTATION_KEYWORDS = /实现|开发|编写|修改|implement|build|write|code|create|fix|develop|modify/i;
+
 function getStrategyInstructions(taskType: string): string {
   switch (taskType) {
     case 'explore': return EXPLORE_INSTRUCTIONS;
@@ -97,6 +107,19 @@ function getStrategyInstructions(taskType: string): string {
   }
 }
 
+function resolveEffectiveType(
+  phaseType: string | undefined,
+  instruction: string | undefined,
+): string {
+  if (!instruction || !phaseType) return phaseType ?? 'code';
+
+  if ((phaseType === 'explore' || phaseType === 'discuss') && IMPLEMENTATION_KEYWORDS.test(instruction)) {
+    return 'code';
+  }
+
+  return phaseType;
+}
+
 // ── Prompt generators ──
 
 /**
@@ -104,10 +127,12 @@ function getStrategyInstructions(taskType: string): string {
  * Optionally writes a summary to audit log (FR-003c / AC-015).
  */
 export function generateCoderPrompt(ctx: PromptContext, audit?: AuditOptions): string {
-  // For compound type, use phaseType to determine strategy (FR-003a)
-  const effectiveType = ctx.taskType === 'compound' && ctx.phaseType
+  const rawPhaseType = ctx.taskType === 'compound' && ctx.phaseType
     ? ctx.phaseType
     : ctx.taskType;
+  const effectiveType = ctx.taskType === 'compound'
+    ? resolveEffectiveType(rawPhaseType, ctx.instruction)
+    : rawPhaseType;
 
   const sections: string[] = [];
 
@@ -250,6 +275,15 @@ export function generateGodDecisionPrompt(ctx: GodDecisionContext): string {
   sections.push(`## Decision Point: ${ctx.decisionPoint}`);
   sections.push(`## Task\n${ctx.taskGoal}`);
   sections.push(`## Round Info\nRound ${ctx.round} of ${ctx.maxRounds}`);
+
+  if (ctx.phases && ctx.phases.length > 0 && ctx.currentPhaseId) {
+    const phaseList = ctx.phases
+      .map((phase) => `${phase.id === ctx.currentPhaseId ? '->' : '  '} ${phase.id} (${phase.type}): ${phase.name} - ${phase.description}`)
+      .join('\n');
+    sections.push(
+      `## Compound Task Phases\nCurrent: ${ctx.currentPhaseId} (${ctx.currentPhaseType ?? 'unknown'})\n\n${phaseList}`,
+    );
+  }
 
   if (ctx.lastCoderOutput) {
     sections.push(`## Last Coder Output\n${ctx.lastCoderOutput}`);

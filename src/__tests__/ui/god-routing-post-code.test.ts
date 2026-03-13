@@ -21,7 +21,7 @@ function createMockGodAdapter(responseJson: Record<string, unknown>): CLIAdapter
   const jsonBlock = '```json\n' + JSON.stringify(responseJson) + '\n```';
   return {
     execute: vi.fn(async function* (): AsyncGenerator<OutputChunk> {
-      yield { type: 'text', content: jsonBlock };
+      yield { type: 'text', content: jsonBlock, timestamp: Date.now() };
     }),
     kill: vi.fn(async () => {}),
   } as unknown as CLIAdapter;
@@ -107,14 +107,15 @@ describe('AC-2: God decision → XState event mapping', () => {
     expect(result.event).toEqual({ type: 'ROUTE_TO_CODER' });
   });
 
-  it('request_user_input → NEEDS_USER_INPUT', async () => {
+  it('invalid request_user_input output falls back to continue_to_review', async () => {
     const adapter = createMockGodAdapter({
       action: 'request_user_input',
       reasoning: 'Coder has a question',
       question: 'Which database should I use?',
     });
     const result = await routePostCoder(adapter, 'Which database?', baseContext);
-    expect(result.event).toEqual({ type: 'NEEDS_USER_INPUT' });
+    expect(result.decision.action).toBe('continue_to_review');
+    expect(result.event).toEqual({ type: 'ROUTE_TO_REVIEW' });
   });
 });
 
@@ -149,7 +150,7 @@ describe('AC-3: God failure → fallback to v1', () => {
     // Adapter returns garbage (no JSON block)
     const adapter = {
       execute: vi.fn(async function* (): AsyncGenerator<OutputChunk> {
-        yield { type: 'text', content: 'no json here at all' };
+        yield { type: 'text', content: 'no json here at all', timestamp: Date.now() };
       }),
       kill: vi.fn(async () => {}),
     } as unknown as CLIAdapter;

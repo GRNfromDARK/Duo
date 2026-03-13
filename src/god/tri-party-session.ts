@@ -4,7 +4,8 @@
  *
  * Manages the three-way session coordination between Coder, Reviewer, and God.
  * - Extracts tri-party session IDs from SessionState
- * - Restores all three adapters independently with fault tolerance
+ * - Restores coder and reviewer adapters independently with fault tolerance
+ * - Leaves God stateless on resume, regardless of persisted legacy God session IDs
  * - Ensures session isolation when parties share the same CLI tool
  */
 
@@ -78,6 +79,7 @@ function restoreSingleParty(
  *
  * Each party is restored independently — if one fails, others are unaffected (AC-040).
  * Each party gets its own adapter instance, even when using the same CLI tool (AC-041a).
+ * God is intentionally not restored, because it must re-run with a fresh stateless system prompt.
  *
  * @param triParty - Extracted tri-party session IDs
  * @param config - Session config with adapter names for each role
@@ -91,9 +93,7 @@ export async function restoreTriPartySession(
   // Each call to adapterFactory creates a NEW instance — ensuring isolation (AC-041a)
   const coder = restoreSingleParty(triParty.coderSessionId, config.coder, adapterFactory);
   const reviewer = restoreSingleParty(triParty.reviewerSessionId, config.reviewer, adapterFactory);
-  const god = config.god
-    ? restoreSingleParty(triParty.godSessionId, config.god, adapterFactory)
-    : null;
+  const god = null;
 
   return { coder, reviewer, god };
 }

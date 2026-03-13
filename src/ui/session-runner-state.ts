@@ -58,8 +58,6 @@ export interface RestoredSessionRuntime {
   coderSessionId?: string;
   /** Persisted CLI session ID for the reviewer adapter */
   reviewerSessionId?: string;
-  /** Persisted CLI session ID for the God adapter */
-  godSessionId?: string;
   /** God task analysis restored from session (FR-011) */
   godTaskAnalysis?: GodTaskAnalysis;
   /** God convergence log restored from session (FR-011) */
@@ -182,7 +180,7 @@ export function resolveUserDecision(
   const trimmed = text.trim();
   const lower = trimmed.toLowerCase();
 
-  if (stateValue === 'WAITING_USER') {
+  if (stateValue === 'WAITING_USER' || stateValue === 'MANUAL_FALLBACK') {
     if (lower === 'a' || lower === 'accept') {
       return { type: 'confirm', action: 'accept' };
     }
@@ -286,7 +284,6 @@ export function buildRestoredSessionRuntime(
     tokenCount,
     coderSessionId: loaded.state.coderSessionId,
     reviewerSessionId: loaded.state.reviewerSessionId,
-    godSessionId: loaded.state.godSessionId,
     godTaskAnalysis: loaded.state.godTaskAnalysis,
     godConvergenceLog: loaded.state.godConvergenceLog,
     degradationState: loaded.state.degradationState,
@@ -512,6 +509,8 @@ function mapRestoreEvent(state: SessionState): RestoreEventType {
       return 'RESTORED_TO_REVIEWING';
     case 'interrupted':
       return 'RESTORED_TO_INTERRUPTED';
+    case 'god_deciding':
+    case 'manual_fallback':
     case 'routing_post_review':
     case 'evaluating':
     case 'waiting_user':

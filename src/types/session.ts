@@ -3,11 +3,13 @@
  * Source: FR-001 (AC-001, AC-002, AC-003, AC-004)
  */
 
+import type { GodAdapterName } from './god-adapter.js';
+
 export interface SessionConfig {
   projectDir: string;
   coder: string;
   reviewer: string;
-  god: string;
+  god: GodAdapterName;
   task: string;
 }
 

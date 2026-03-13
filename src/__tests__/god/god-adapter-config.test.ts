@@ -1,17 +1,14 @@
 /**
- * Tests for Card A.2: God Adapter Config + --god parameter
- * Source: FR-006 (AC-021, AC-022)
+ * Tests for dedicated God adapter config and selection.
  */
 
-import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { describe, expect, test } from 'vitest';
+import type { DetectedCLI } from '../../adapters/detect.js';
+import { createGodAdapter } from '../../god/god-adapter-factory.js';
 import {
   parseStartArgs,
   createSessionConfig,
 } from '../../session/session-starter.js';
-import { createAdapter } from '../../adapters/factory.js';
-import type { DetectedCLI } from '../../adapters/detect.js';
-
-// ── AC-1: --god parameter parsing ──────────────────────────────
 
 describe('parseStartArgs with --god', () => {
   test('parses --god option from argv', () => {
@@ -20,11 +17,11 @@ describe('parseStartArgs with --god', () => {
       '--dir', '/tmp/myapp',
       '--coder', 'claude-code',
       '--reviewer', 'codex',
-      '--god', 'gemini',
+      '--god', 'codex',
       '--task', 'implement login',
     ];
     const result = parseStartArgs(argv);
-    expect(result.god).toBe('gemini');
+    expect(result.god).toBe('codex');
     expect(result.coder).toBe('claude-code');
     expect(result.reviewer).toBe('codex');
   });
@@ -36,115 +33,80 @@ describe('parseStartArgs with --god', () => {
   });
 });
 
-// ── AC-2: --god defaults to --reviewer when omitted ────────────
-
-describe('createSessionConfig god defaults', () => {
-  const mockDetected: DetectedCLI[] = [
+describe('createSessionConfig God resolution', () => {
+  const supportedDetected: DetectedCLI[] = [
     { name: 'claude-code', displayName: 'Claude Code', command: 'claude', installed: true, version: '1.0.0' },
     { name: 'codex', displayName: 'Codex', command: 'codex', installed: true, version: '2.0.0' },
     { name: 'gemini', displayName: 'Gemini CLI', command: 'gemini', installed: true, version: '1.0.0' },
   ];
 
-  test('god defaults to reviewer when --god is omitted', async () => {
+  test('god defaults to reviewer when reviewer is a supported God adapter', async () => {
     const result = await createSessionConfig(
       { dir: '/tmp', coder: 'claude-code', reviewer: 'codex', task: 'fix bug' },
-      mockDetected,
+      supportedDetected,
     );
 
     expect(result.config).not.toBeNull();
     expect(result.config!.god).toBe('codex');
   });
 
-  test('god uses explicit value when --god is provided', async () => {
+  test('god uses explicit supported value when --god is provided', async () => {
     const result = await createSessionConfig(
-      { dir: '/tmp', coder: 'claude-code', reviewer: 'codex', god: 'gemini', task: 'fix bug' },
-      mockDetected,
+      { dir: '/tmp', coder: 'claude-code', reviewer: 'codex', god: 'claude-code', task: 'fix bug' },
+      supportedDetected,
     );
 
     expect(result.config).not.toBeNull();
-    expect(result.config!.god).toBe('gemini');
+    expect(result.config!.god).toBe('claude-code');
   });
 
-  test('existing config fields are unchanged after adding god', async () => {
+  test('falls back to an installed supported God adapter when reviewer cannot act as God', async () => {
     const result = await createSessionConfig(
-      { dir: '/tmp', coder: 'claude-code', reviewer: 'codex', task: 'fix bug' },
-      mockDetected,
+      { dir: '/tmp', coder: 'codex', reviewer: 'gemini', task: 'fix bug' },
+      [
+        { name: 'codex', displayName: 'Codex', command: 'codex', installed: true, version: '2.0.0' },
+        { name: 'claude-code', displayName: 'Claude Code', command: 'claude', installed: true, version: '1.0.0' },
+        { name: 'gemini', displayName: 'Gemini CLI', command: 'gemini', installed: true, version: '1.0.0' },
+      ],
     );
 
     expect(result.config).not.toBeNull();
-    expect(result.config!.projectDir).toBe('/tmp');
-    expect(result.config!.coder).toBe('claude-code');
-    expect(result.config!.reviewer).toBe('codex');
-    expect(result.config!.task).toBe('fix bug');
+    expect(result.config!.god).toBe('claude-code');
+    expect(result.validation.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("Reviewer 'gemini' cannot act as God"),
+    ]));
+  });
+
+  test('rejects unsupported explicit God adapters', async () => {
+    const result = await createSessionConfig(
+      { dir: '/tmp', coder: 'claude-code', reviewer: 'codex', god: 'gemini', task: 'fix bug' },
+      supportedDetected,
+    );
+
+    expect(result.config).toBeNull();
+    expect(result.validation.valid).toBe(false);
+    expect(result.validation.errors).toEqual(expect.arrayContaining([
+      expect.stringContaining("God adapter 'gemini' is not supported"),
+    ]));
   });
 });
 
-// ── AC-3: God adapter instance isolation ───────────────────────
+describe('Dedicated God adapter instances', () => {
+  test('God and coder using the same CLI still create isolated adapter instances', () => {
+    const godAdapter = createGodAdapter('claude-code');
+    const anotherGodAdapter = createGodAdapter('claude-code');
 
-describe('God adapter instance isolation', () => {
-  test('God and Coder using same CLI tool produce different instances', () => {
-    const godAdapter = createAdapter('claude-code');
-    const coderAdapter = createAdapter('claude-code');
-
-    // Different object references = independent sessions
-    expect(godAdapter).not.toBe(coderAdapter);
-    expect(godAdapter.name).toBe(coderAdapter.name);
+    expect(godAdapter).not.toBe(anotherGodAdapter);
+    expect(godAdapter.name).toBe(anotherGodAdapter.name);
   });
 
-  test('God adapter is a valid CLIAdapter with required methods', () => {
-    const godAdapter = createAdapter('claude-code');
+  test('dedicated God adapters expose the required runtime methods', () => {
+    const godAdapter = createGodAdapter('codex');
 
-    expect(godAdapter.name).toBe('claude-code');
+    expect(godAdapter.name).toBe('codex');
     expect(typeof godAdapter.isInstalled).toBe('function');
     expect(typeof godAdapter.execute).toBe('function');
     expect(typeof godAdapter.kill).toBe('function');
     expect(typeof godAdapter.isRunning).toBe('function');
-  });
-});
-
-// ── AC-4: God system prompt ────────────────────────────────────
-
-describe('God system prompt', () => {
-  // Dynamically import to test the module
-  test('buildGodSystemPrompt returns string with orchestrator role', async () => {
-    const { buildGodSystemPrompt } = await import('../../god/god-system-prompt.js');
-
-    const prompt = buildGodSystemPrompt({
-      task: 'implement login',
-      coderName: 'claude-code',
-      reviewerName: 'codex',
-    });
-
-    expect(typeof prompt).toBe('string');
-    expect(prompt.length).toBeGreaterThan(0);
-    // Must contain orchestrator/coordinator role instruction
-    expect(prompt).toMatch(/orchestrat|coordinat|编排/i);
-  });
-
-  test('buildGodSystemPrompt includes JSON format constraint', async () => {
-    const { buildGodSystemPrompt } = await import('../../god/god-system-prompt.js');
-
-    const prompt = buildGodSystemPrompt({
-      task: 'fix bug',
-      coderName: 'codex',
-      reviewerName: 'claude-code',
-    });
-
-    // Must instruct God to output JSON code blocks
-    expect(prompt).toMatch(/```json|JSON/i);
-  });
-
-  test('buildGodSystemPrompt distinguishes from Coder/Reviewer role', async () => {
-    const { buildGodSystemPrompt } = await import('../../god/god-system-prompt.js');
-
-    const prompt = buildGodSystemPrompt({
-      task: 'refactor module',
-      coderName: 'claude-code',
-      reviewerName: 'codex',
-    });
-
-    // Should NOT contain coder/reviewer execution role keywords
-    // Should contain orchestrator-level keywords
-    expect(prompt).toMatch(/orchestrat|coordinat|编排|decision|判断|路由/i);
   });
 });

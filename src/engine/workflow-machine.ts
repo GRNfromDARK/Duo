@@ -11,6 +11,7 @@ import { setup, assign } from 'xstate';
 export interface WorkflowContext {
   round: number;
   maxRounds: number;
+  consecutiveRouteToCoder: number;
   taskPrompt: string | null;
   activeProcess: 'coder' | 'reviewer' | null;
   lastError: string | null;
@@ -50,6 +51,7 @@ type LoopDetectedEvent = { type: 'LOOP_DETECTED' };
 type ReclassifyEvent = { type: 'RECLASSIFY' };
 type PhaseTransitionEvent = { type: 'PHASE_TRANSITION'; nextPhaseId: string; summary: string };
 type ClearPendingPhaseEvent = { type: 'CLEAR_PENDING_PHASE' };
+type ManualFallbackRequiredEvent = { type: 'MANUAL_FALLBACK_REQUIRED' };
 
 export type WorkflowEvent =
   | StartTaskEvent
@@ -78,7 +80,8 @@ export type WorkflowEvent =
   | LoopDetectedEvent
   | ReclassifyEvent
   | PhaseTransitionEvent
-  | ClearPendingPhaseEvent;
+  | ClearPendingPhaseEvent
+  | ManualFallbackRequiredEvent;
 
 export const workflowMachine = setup({
   types: {
@@ -89,6 +92,7 @@ export const workflowMachine = setup({
   guards: {
     canContinueRounds: ({ context }) => context.round < context.maxRounds,
     maxRoundsReached: ({ context }) => context.round >= context.maxRounds,
+    retryLimitReachedOnRouteToCoder: ({ context }) => context.consecutiveRouteToCoder + 1 >= 3,
     resumeAsCoder: ({ event }) =>
       (event as UserInputEvent).resumeAs === 'coder',
     resumeAsReviewer: ({ event }) =>
@@ -108,6 +112,7 @@ export const workflowMachine = setup({
   context: ({ input }) => ({
     round: input?.round ?? 0,
     maxRounds: input?.maxRounds ?? 10,
+    consecutiveRouteToCoder: input?.consecutiveRouteToCoder ?? 0,
     taskPrompt: input?.taskPrompt ?? null,
     activeProcess: input?.activeProcess ?? null,
     lastError: input?.lastError ?? null,
@@ -142,6 +147,7 @@ export const workflowMachine = setup({
           target: 'CODING',
           actions: assign({
             activeProcess: () => 'coder' as const,
+            consecutiveRouteToCoder: () => 0,
             maxRounds: ({ context, event }) => {
               const e = event as TaskInitCompleteEvent;
               return e.maxRounds ?? context.maxRounds;
@@ -152,6 +158,7 @@ export const workflowMachine = setup({
           target: 'CODING',
           actions: assign({
             activeProcess: () => 'coder' as const,
+            consecutiveRouteToCoder: () => 0,
           }),
         },
       },
@@ -199,23 +206,39 @@ export const workflowMachine = setup({
         },
         ROUTE_TO_CODER: [
           {
+            guard: 'retryLimitReachedOnRouteToCoder',
+            target: 'GOD_DECIDING',
+            actions: assign({
+              consecutiveRouteToCoder: () => 0,
+            }),
+          },
+          {
             guard: 'canContinueRounds',
             target: 'CODING',
             actions: assign({
               round: ({ context }) => context.round + 1,
               activeProcess: () => 'coder' as const,
+              consecutiveRouteToCoder: ({ context }) => context.consecutiveRouteToCoder + 1,
             }),
           },
           {
-            // maxRounds reached — go to WAITING_USER
-            target: 'WAITING_USER',
+            target: 'GOD_DECIDING',
+            actions: assign({
+              consecutiveRouteToCoder: () => 0,
+            }),
           },
         ],
         NEEDS_USER_INPUT: {
-          target: 'WAITING_USER',
+          target: 'GOD_DECIDING',
+          actions: assign({
+            consecutiveRouteToCoder: () => 0,
+          }),
         },
         CHOICE_DETECTED: {
-          target: 'WAITING_USER',
+          target: 'GOD_DECIDING',
+          actions: assign({
+            consecutiveRouteToCoder: () => 0,
+          }),
         },
         PROCESS_ERROR: {
           target: 'ERROR',
@@ -263,38 +286,64 @@ export const workflowMachine = setup({
       on: {
         ROUTE_TO_EVALUATE: {
           target: 'EVALUATING',
+          actions: assign({
+            consecutiveRouteToCoder: () => 0,
+          }),
         },
         ROUTE_TO_CODER: [
+          {
+            guard: 'retryLimitReachedOnRouteToCoder',
+            target: 'GOD_DECIDING',
+            actions: assign({
+              consecutiveRouteToCoder: () => 0,
+            }),
+          },
           {
             guard: 'canContinueRounds',
             target: 'CODING',
             actions: assign({
               round: ({ context }) => context.round + 1,
               activeProcess: () => 'coder' as const,
+              consecutiveRouteToCoder: ({ context }) => context.consecutiveRouteToCoder + 1,
             }),
           },
           {
-            // maxRounds reached — go to WAITING_USER
-            target: 'WAITING_USER',
+            target: 'GOD_DECIDING',
+            actions: assign({
+              consecutiveRouteToCoder: () => 0,
+            }),
           },
         ],
         CONVERGED: {
-          target: 'WAITING_USER',
+          target: 'GOD_DECIDING',
+          actions: assign({
+            consecutiveRouteToCoder: () => 0,
+          }),
         },
         NEEDS_USER_INPUT: {
-          target: 'WAITING_USER',
+          target: 'GOD_DECIDING',
+          actions: assign({
+            consecutiveRouteToCoder: () => 0,
+          }),
         },
         LOOP_DETECTED: {
-          target: 'WAITING_USER',
+          target: 'GOD_DECIDING',
+          actions: assign({
+            consecutiveRouteToCoder: () => 0,
+          }),
         },
         RECLASSIFY: {
-          target: 'WAITING_USER',
+          target: 'GOD_DECIDING',
+          actions: assign({
+            consecutiveRouteToCoder: () => 0,
+          }),
         },
         PHASE_TRANSITION: {
-          target: 'WAITING_USER',
+          target: 'GOD_DECIDING',
           actions: assign({
             pendingPhaseId: ({ event }) => (event as PhaseTransitionEvent).nextPhaseId,
             pendingPhaseSummary: ({ event }) => (event as PhaseTransitionEvent).summary,
+            consecutiveRouteToCoder: () => 0,
           }),
         },
         PROCESS_ERROR: {
@@ -310,7 +359,10 @@ export const workflowMachine = setup({
     EVALUATING: {
       on: {
         CONVERGED: {
-          target: 'WAITING_USER',
+          target: 'GOD_DECIDING',
+          actions: assign({
+            consecutiveRouteToCoder: () => 0,
+          }),
         },
         NOT_CONVERGED: [
           {
@@ -319,11 +371,14 @@ export const workflowMachine = setup({
             actions: assign({
               round: ({ context }) => context.round + 1,
               activeProcess: () => 'coder' as const,
+              consecutiveRouteToCoder: () => 0,
             }),
           },
           {
-            // maxRounds reached — go to WAITING_USER
-            target: 'WAITING_USER',
+            target: 'GOD_DECIDING',
+            actions: assign({
+              consecutiveRouteToCoder: () => 0,
+            }),
           },
         ],
         PROCESS_ERROR: {
@@ -336,7 +391,58 @@ export const workflowMachine = setup({
       },
     },
 
-    WAITING_USER: {
+    GOD_DECIDING: {
+      on: {
+        CLEAR_PENDING_PHASE: {
+          actions: assign({
+            pendingPhaseId: () => null,
+            pendingPhaseSummary: () => null,
+          }),
+        },
+        MANUAL_FALLBACK_REQUIRED: {
+          target: 'MANUAL_FALLBACK',
+        },
+        USER_CONFIRM: [
+          {
+            guard: 'confirmContinueWithPhase',
+            target: 'CODING',
+            actions: assign({
+              round: ({ context }) => context.round + 1,
+              activeProcess: () => 'coder' as const,
+              consecutiveRouteToCoder: () => 0,
+              taskPrompt: ({ context }) =>
+                context.pendingPhaseId
+                  ? `[Phase: ${context.pendingPhaseId}] ${(context.taskPrompt ?? '').replace(/^\[Phase: [^\]]*\] /, '')}`.trim()
+                  : context.taskPrompt,
+              pendingPhaseId: () => null,
+              pendingPhaseSummary: () => null,
+            }),
+          },
+          {
+            guard: 'confirmContinue',
+            target: 'CODING',
+            actions: assign({
+              round: ({ context }) => context.round + 1,
+              activeProcess: () => 'coder' as const,
+              consecutiveRouteToCoder: () => 0,
+            }),
+          },
+          {
+            guard: 'confirmAccept',
+            target: 'DONE',
+            actions: assign({
+              consecutiveRouteToCoder: () => 0,
+            }),
+          },
+          {
+            // Fallback: unrecognized action defaults to DONE
+            target: 'DONE',
+          },
+        ],
+      },
+    },
+
+    MANUAL_FALLBACK: {
       on: {
         CLEAR_PENDING_PHASE: {
           actions: assign({
@@ -351,9 +457,10 @@ export const workflowMachine = setup({
             actions: assign({
               round: ({ context }) => context.round + 1,
               activeProcess: () => 'coder' as const,
+              consecutiveRouteToCoder: () => 0,
               taskPrompt: ({ context }) =>
                 context.pendingPhaseId
-                  ? `[Phase: ${context.pendingPhaseId}] ${context.taskPrompt.replace(/^\[Phase: [^\]]*\] /, '')}`
+                  ? `[Phase: ${context.pendingPhaseId}] ${(context.taskPrompt ?? '').replace(/^\[Phase: [^\]]*\] /, '')}`.trim()
                   : context.taskPrompt,
               pendingPhaseId: () => null,
               pendingPhaseSummary: () => null,
@@ -365,14 +472,17 @@ export const workflowMachine = setup({
             actions: assign({
               round: ({ context }) => context.round + 1,
               activeProcess: () => 'coder' as const,
+              consecutiveRouteToCoder: () => 0,
             }),
           },
           {
             guard: 'confirmAccept',
             target: 'DONE',
+            actions: assign({
+              consecutiveRouteToCoder: () => 0,
+            }),
           },
           {
-            // Fallback: unrecognized action defaults to DONE
             target: 'DONE',
           },
         ],
@@ -398,11 +508,11 @@ export const workflowMachine = setup({
           },
           {
             guard: 'resumeAsDecision',
-            target: 'WAITING_USER',
+            target: 'GOD_DECIDING',
           },
           {
-            // Fallback: unrecognized resumeAs defaults to WAITING_USER
-            target: 'WAITING_USER',
+            // Fallback: unrecognized resumeAs defaults to GOD_DECIDING
+            target: 'GOD_DECIDING',
           },
         ],
       },
@@ -423,7 +533,7 @@ export const workflowMachine = setup({
           }),
         },
         RESTORED_TO_WAITING: {
-          target: 'WAITING_USER',
+          target: 'GOD_DECIDING',
         },
         RESTORED_TO_INTERRUPTED: {
           target: 'INTERRUPTED',
@@ -445,7 +555,10 @@ export const workflowMachine = setup({
     ERROR: {
       on: {
         RECOVERY: {
-          target: 'WAITING_USER',
+          target: 'GOD_DECIDING',
+          actions: assign({
+            consecutiveRouteToCoder: () => 0,
+          }),
         },
       },
     },

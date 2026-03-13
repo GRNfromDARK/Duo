@@ -194,7 +194,7 @@ describe('AC-4: phase_transition and loop_detected', () => {
     expect(result.event).toEqual({ type: 'LOOP_DETECTED' });
   });
 
-  it('request_user_input maps to NEEDS_USER_INPUT event', async () => {
+  it('invalid request_user_input output falls back to route_to_coder', async () => {
     const adapter = createMockGodAdapter({
       action: 'request_user_input',
       reasoning: 'Fundamental disagreement between coder and reviewer',
@@ -204,8 +204,9 @@ describe('AC-4: phase_transition and loop_detected', () => {
 
     const result = await routePostReviewer(adapter, 'Reviewer disagrees with approach', baseContext);
 
-    expect(result.decision.action).toBe('request_user_input');
-    expect(result.event).toEqual({ type: 'NEEDS_USER_INPUT' });
+    expect(result.decision.action).toBe('route_to_coder');
+    expect(result.event).toEqual({ type: 'ROUTE_TO_CODER' });
+    expect(result.decision.unresolvedIssues?.length).toBeGreaterThan(0);
   });
 });
 

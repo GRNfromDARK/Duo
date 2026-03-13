@@ -41,7 +41,7 @@ describe('createReclassifyState', () => {
   });
 });
 
-describe('canTriggerReclassify — AC-1: Ctrl+R in CODING/REVIEWING/WAITING_USER', () => {
+describe('canTriggerReclassify — AC-1: Ctrl+R in CODING/REVIEWING/GOD_DECIDING/MANUAL_FALLBACK', () => {
   it('should allow in CODING state', () => {
     expect(canTriggerReclassify('CODING')).toBe(true);
   });
@@ -50,8 +50,12 @@ describe('canTriggerReclassify — AC-1: Ctrl+R in CODING/REVIEWING/WAITING_USER
     expect(canTriggerReclassify('REVIEWING')).toBe(true);
   });
 
-  it('should allow in WAITING_USER state', () => {
-    expect(canTriggerReclassify('WAITING_USER')).toBe(true);
+  it('should allow in GOD_DECIDING state', () => {
+    expect(canTriggerReclassify('GOD_DECIDING')).toBe(true);
+  });
+
+  it('should allow in MANUAL_FALLBACK state', () => {
+    expect(canTriggerReclassify('MANUAL_FALLBACK')).toBe(true);
   });
 
   it('should not allow in IDLE state', () => {
@@ -67,7 +71,12 @@ describe('canTriggerReclassify — AC-1: Ctrl+R in CODING/REVIEWING/WAITING_USER
   });
 
   it('should export RECLASSIFY_ALLOWED_STATES with correct values', () => {
-    expect(RECLASSIFY_ALLOWED_STATES).toEqual(['CODING', 'REVIEWING', 'WAITING_USER']);
+    expect(RECLASSIFY_ALLOWED_STATES).toEqual([
+      'CODING',
+      'REVIEWING',
+      'GOD_DECIDING',
+      'MANUAL_FALLBACK',
+    ]);
   });
 });
 

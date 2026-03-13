@@ -202,15 +202,15 @@ describe('BUG-4: DriftDetector seq isolation', () => {
 });
 
 // ══════════════════════════════════════════════════════════════
-// BUG-5 (P1): WAITING_USER→CODING round increment
+// BUG-5 (P1): GOD_DECIDING→CODING round increment
 // ══════════════════════════════════════════════════════════════
 
-describe('BUG-5: WAITING_USER→CODING round increment', () => {
+describe('BUG-5: GOD_DECIDING→CODING round increment', () => {
   test('test_bug_5_user_confirm_continue_increments_round', () => {
     const actor = createActor(workflowMachine, { input: { round: 0, maxRounds: 10 } });
     actor.start();
 
-    // Navigate to WAITING_USER
+    // Navigate to GOD_DECIDING
     actor.send({ type: 'START_TASK', prompt: 'test' });
     actor.send({ type: 'TASK_INIT_SKIP' });
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
@@ -218,7 +218,7 @@ describe('BUG-5: WAITING_USER→CODING round increment', () => {
     actor.send({ type: 'REVIEW_COMPLETE', output: 'ok' });
     actor.send({ type: 'CONVERGED' });
 
-    expect(actor.getSnapshot().value).toBe('WAITING_USER');
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
     const roundBefore = actor.getSnapshot().context.round;
 
     actor.send({ type: 'USER_CONFIRM', action: 'continue' });
@@ -241,7 +241,7 @@ describe('BUG-5: WAITING_USER→CODING round increment', () => {
     const round1 = actor1.getSnapshot().context.round;
     actor1.stop();
 
-    // Path 2: WAITING_USER → CODING (via USER_CONFIRM continue)
+    // Path 2: GOD_DECIDING → CODING (via USER_CONFIRM continue)
     const actor2 = createActor(workflowMachine, { input: { round: 0, maxRounds: 10 } });
     actor2.start();
     actor2.send({ type: 'START_TASK', prompt: 'test' });
@@ -320,12 +320,12 @@ describe('BUG-7: god adapter validation', () => {
   });
 
   test('test_regression_7_valid_god_adapter_passes', () => {
-    const detectedWithGemini = [
+    const detectedWithCodex = [
       ...detected,
-      { name: 'gemini', displayName: 'Gemini', installed: true, version: '1.0', path: '/usr/bin/gemini' },
+      { name: 'claude-code', displayName: 'Claude Code', installed: true, version: '1.0', path: '/usr/bin/claude' },
     ] as any[];
 
-    const result = validateCLIChoices('claude-code', 'codex', detectedWithGemini, 'gemini');
+    const result = validateCLIChoices('claude-code', 'codex', detectedWithCodex, 'claude-code');
     expect(result.valid).toBe(true);
   });
 
@@ -533,7 +533,7 @@ describe('BUG-12: reasoning length limit', () => {
 
   test('test_regression_12_max_length_reasoning_accepted', () => {
     const result = GodAutoDecisionSchema.safeParse({
-      action: 'request_human',
+      action: 'accept',
       reasoning: 'x'.repeat(MAX_REASONING_LENGTH),
     });
     expect(result.success).toBe(true);
@@ -551,7 +551,7 @@ describe('Round2 BUG-1: God system prompt action names', () => {
     const prompt = buildGodSystemPrompt({ task: 'test', coderName: 'coder', reviewerName: 'reviewer' });
 
     // Prompt should mention all valid PostCoder actions from schema
-    const postCoderActions = ['continue_to_review', 'retry_coder', 'request_user_input'];
+    const postCoderActions = ['continue_to_review', 'retry_coder'];
     for (const action of postCoderActions) {
       expect(prompt).toContain(action);
     }
@@ -569,7 +569,7 @@ describe('Round2 BUG-1: God system prompt action names', () => {
     const prompt = buildGodSystemPrompt({ task: 'test', coderName: 'coder', reviewerName: 'reviewer' });
 
     // Prompt should mention all valid PostReviewer actions from schema
-    const postReviewerActions = ['route_to_coder', 'converged', 'phase_transition', 'loop_detected', 'request_user_input'];
+    const postReviewerActions = ['route_to_coder', 'converged', 'phase_transition', 'loop_detected'];
     for (const action of postReviewerActions) {
       expect(prompt).toContain(action);
     }
@@ -581,11 +581,11 @@ describe('Round2 BUG-1: God system prompt action names', () => {
 });
 
 // ══════════════════════════════════════════════════════════════
-// Round 2 BUG-2 (P1): God session ID restored on duo resume
+// Round 2 BUG-2 (P1): God session ID must NOT be restored on duo resume
 // ══════════════════════════════════════════════════════════════
 
 describe('Round2 BUG-2: God session ID in RestoredSessionRuntime', () => {
-  test('test_regression_r2_bug2_godSessionId_passed_through', async () => {
+  test('test_regression_r2_bug2_godSessionId_is_not_restored', async () => {
     const { buildRestoredSessionRuntime } = await import('../../ui/session-runner-state.js');
 
     const loaded = {
@@ -615,14 +615,14 @@ describe('Round2 BUG-2: God session ID in RestoredSessionRuntime', () => {
       projectDir: '/tmp/project',
       coder: 'claude-code',
       reviewer: 'codex',
-      god: 'gemini',
+      god: 'claude-code',
       task: 'Fix bug',
     });
 
-    expect(runtime.godSessionId).toBe('ses_god_123');
+    expect('godSessionId' in runtime).toBe(false);
   });
 
-  test('test_regression_r2_bug2_godSessionId_undefined_when_not_persisted', async () => {
+  test('test_regression_r2_bug2_missing_godSessionId_remains_absent', async () => {
     const { buildRestoredSessionRuntime } = await import('../../ui/session-runner-state.js');
 
     const loaded = {
@@ -651,7 +651,7 @@ describe('Round2 BUG-2: God session ID in RestoredSessionRuntime', () => {
       task: 'Fix bug',
     });
 
-    expect(runtime.godSessionId).toBeUndefined();
+    expect('godSessionId' in runtime).toBe(false);
   });
 });
 
@@ -1318,10 +1318,10 @@ describe('Round4 BUG-2: enforceTokenBudget multiplies by CHARS_PER_TOKEN', () =>
 });
 
 // ══════════════════════════════════════════════════════════════
-// Round 4 BUG-3 (P1): auto-decision accept/request_human skip rule engine
+// Round 4 BUG-3 (P1): auto-decision accept/local-fallback skip path-based rule checks
 // ══════════════════════════════════════════════════════════════
 
-describe('Round4 BUG-3: accept/request_human skip path-based rule checks', () => {
+describe('Round4 BUG-3: accept/local-fallback skip path-based rule checks', () => {
   test('test_bug_r4_3_accept_not_blocked_for_non_documents_project', async () => {
     const godOutput = `\`\`\`json\n{"action":"accept","reasoning":"Done"}\n\`\`\``;
     const mockAdapter = {
@@ -1350,7 +1350,7 @@ describe('Round4 BUG-3: accept/request_human skip path-based rule checks', () =>
     }
   });
 
-  test('test_bug_r4_3_request_human_not_blocked_for_non_documents_project', async () => {
+  test('test_bug_r4_3_invalid_request_human_falls_back_without_blocking', async () => {
     const godOutput = `\`\`\`json\n{"action":"request_human","reasoning":"Need input"}\n\`\`\``;
     const mockAdapter = {
       name: 'mock-god', displayName: 'Mock God', version: '1.0.0',
@@ -1371,7 +1371,8 @@ describe('Round4 BUG-3: accept/request_human skip path-based rule checks', () =>
       }, evaluateRules);
 
       expect(result.blocked).toBe(false);
-      expect(result.decision.action).toBe('request_human');
+      expect(result.decision.action).toBe('continue_with_instruction');
+      expect(result.reasoning).toContain('Local fallback');
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -2012,6 +2013,7 @@ describe('Round 8 BUG-1: saveState merges partial state', () => {
       projectDir: tmpDir,
       coder: 'claude-code',
       reviewer: 'claude-code',
+      god: 'claude-code',
       task: 'test task',
     });
 
@@ -2047,6 +2049,7 @@ describe('Round 8 BUG-1: saveState merges partial state', () => {
       projectDir: tmpDir,
       coder: 'claude-code',
       reviewer: 'claude-code',
+      god: 'claude-code',
       task: 'test task',
     });
 
@@ -2056,11 +2059,11 @@ describe('Round 8 BUG-1: saveState merges partial state', () => {
       status: 'running',
       currentRole: 'reviewer',
       godTaskAnalysis: {
-        taskType: 'feature',
-        complexity: 'medium',
-        estimatedRounds: 3,
-        acceptanceCriteria: ['tests pass'],
+        taskType: 'code',
         reasoning: 'test',
+        confidence: 0.8,
+        suggestedMaxRounds: 3,
+        terminationCriteria: ['tests pass'],
       },
       godConvergenceLog: [
         {
@@ -2084,7 +2087,7 @@ describe('Round 8 BUG-1: saveState merges partial state', () => {
 
     const loaded = mgr.loadSession(id);
     expect(loaded.state.godTaskAnalysis).toBeDefined();
-    expect(loaded.state.godTaskAnalysis?.taskType).toBe('feature');
+    expect(loaded.state.godTaskAnalysis?.taskType).toBe('code');
     expect(loaded.state.godConvergenceLog).toHaveLength(1);
   });
 });
@@ -2345,10 +2348,15 @@ describe('Round9 BUG-1: ROUTING_POST_CODE ROUTE_TO_CODER increments round', () =
       actor.send({ type: 'CODE_COMPLETE', output: 'bad output' });
       expect(actor.getSnapshot().value).toBe('ROUTING_POST_CODE');
       actor.send({ type: 'ROUTE_TO_CODER' });
-      expect(actor.getSnapshot().value).toBe('CODING');
+      expect(actor.getSnapshot().value).toBe(i < 2 ? 'CODING' : 'GOD_DECIDING');
     }
 
-    // After 3 ROUTE_TO_CODER transitions, round should be 3 (= maxRounds)
+    // After the third consecutive ROUTE_TO_CODER, retry breaker forces GOD_DECIDING.
+    expect(actor.getSnapshot().context.round).toBe(2);
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
+
+    actor.send({ type: 'USER_CONFIRM', action: 'continue' });
+    expect(actor.getSnapshot().value).toBe('CODING');
     expect(actor.getSnapshot().context.round).toBe(3);
 
     // Now go through review → evaluate → NOT_CONVERGED should hit maxRounds guard
@@ -2357,8 +2365,8 @@ describe('Round9 BUG-1: ROUTING_POST_CODE ROUTE_TO_CODER increments round', () =
     actor.send({ type: 'REVIEW_COMPLETE', output: 'still issues' });
     actor.send({ type: 'ROUTE_TO_EVALUATE' });
     actor.send({ type: 'NOT_CONVERGED' });
-    // maxRounds reached, should go to WAITING_USER instead of CODING
-    expect(actor.getSnapshot().value).toBe('WAITING_USER');
+    // maxRounds reached, should go to GOD_DECIDING instead of CODING
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
 
     actor.stop();
   });
@@ -2556,7 +2564,8 @@ describe('Round9 BUG-3: collectAdapterOutput includes error chunks', () => {
 
       // Auto-decision should have processed without losing the error chunk
       expect(result.decision).toBeDefined();
-      expect(result.decision.action).toBe('request_human');
+      expect(result.decision.action).toBe('continue_with_instruction');
+      expect(result.reasoning).toContain('Local fallback');
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -2604,8 +2613,6 @@ describe('Round9 BUG-3: collectAdapterOutput includes error chunks', () => {
 // ══════════════════════════════════════════════════════════════
 // Round 10 Bug Regressions
 // ══════════════════════════════════════════════════════════════
-
-import { AlertManager } from '../../god/alert-manager.js';
 
 // ── BUG-1 (R10-P1): AlertManager.checkProgress all-zero converged false positive ──
 
@@ -2739,9 +2746,9 @@ describe('R10-BUG-3: ROUTING_POST_CODE→ROUTE_TO_CODER respects maxRounds', () 
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
     expect(actor.getSnapshot().value).toBe('ROUTING_POST_CODE');
 
-    // ROUTE_TO_CODER should go to WAITING_USER because maxRounds reached
+    // ROUTE_TO_CODER should go to GOD_DECIDING because maxRounds reached
     actor.send({ type: 'ROUTE_TO_CODER' });
-    expect(actor.getSnapshot().value).toBe('WAITING_USER');
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
 
     actor.stop();
   });
@@ -3055,11 +3062,12 @@ describe('BUG-8: handleTaskAnalysisConfirm updates taskAnalysis.taskType', () =>
       phases: [{ id: 'phase-1' }],
     };
 
-    const userSelectedType = 'code';
     let currentPhaseId: string | null = null;
+    const shouldInitializePhase = (selectedType: 'code' | 'compound') =>
+      selectedType === 'compound' && taskAnalysis.phases && taskAnalysis.phases.length > 0;
 
     // With the fix, compound check uses userSelectedType, not taskAnalysis.taskType
-    if (userSelectedType === 'compound' && taskAnalysis.phases && taskAnalysis.phases.length > 0) {
+    if (shouldInitializePhase('code')) {
       currentPhaseId = taskAnalysis.phases[0].id;
     }
 

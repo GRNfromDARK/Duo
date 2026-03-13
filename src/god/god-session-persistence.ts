@@ -2,8 +2,9 @@
  * God Session Persistence — restore God CLI session on duo resume.
  * Source: FR-011 (AC-035, AC-036), AR-005
  *
- * Restores God adapter instance and session ID from persisted snapshot state.
- * Gracefully degrades when session data is missing or adapter unavailable.
+ * God now runs through a dedicated stateless GodAdapter interface.
+ * Persisted God session IDs remain readable in snapshots for backward compatibility,
+ * but runtime restore is intentionally disabled.
  */
 
 import type { CLIAdapter } from '../types/adapter.js';
@@ -22,22 +23,8 @@ export interface GodSessionRestoreResult {
  * @returns Restored adapter + sessionId, or null on graceful degradation
  */
 export async function restoreGodSession(
-  state: SessionState,
-  adapterFactory: (name: string) => CLIAdapter,
+  _state: SessionState,
+  _adapterFactory: (name: string) => CLIAdapter,
 ): Promise<GodSessionRestoreResult | null> {
-  // Graceful degradation: missing session ID or adapter name
-  if (!state.godSessionId || !state.godAdapter) {
-    return null;
-  }
-
-  try {
-    const adapter = adapterFactory(state.godAdapter);
-    return {
-      adapter,
-      sessionId: state.godSessionId,
-    };
-  } catch {
-    // Graceful degradation: adapter creation failed (e.g. unknown adapter)
-    return null;
-  }
+  return null;
 }

@@ -138,6 +138,12 @@ describe('validateCLIChoices', () => {
     expect(result.valid).toBe(false);
     expect(result.errors[0]).toContain('same');
   });
+
+  test('returns error when explicit God adapter is unsupported', () => {
+    const result = validateCLIChoices('claude-code', 'codex', mockDetected, 'gemini');
+    expect(result.valid).toBe(false);
+    expect(result.errors[0]).toContain('not supported');
+  });
 });
 
 // ─── AC-2: 交互式模式引导流程 & 综合 createSessionConfig ───
@@ -205,5 +211,42 @@ describe('createSessionConfig', () => {
 
     expect(result.detectedCLIs).toContain('claude-code');
     expect(result.detectedCLIs).not.toContain('gemini');
+  });
+
+  test('falls back to Claude Code when reviewer is not a supported God adapter', async () => {
+    const mockDetected: DetectedCLI[] = [
+      { name: 'claude-code', displayName: 'Claude Code', command: 'claude', installed: true, version: '1.0.0' },
+      { name: 'codex', displayName: 'Codex', command: 'codex', installed: true, version: '2.0.0' },
+      { name: 'gemini', displayName: 'Gemini CLI', command: 'gemini', installed: true, version: '1.5.0' },
+    ];
+
+    const result = await createSessionConfig(
+      { dir: '/tmp', coder: 'codex', reviewer: 'gemini', task: 'test' },
+      mockDetected,
+    );
+
+    expect(result.validation.valid).toBe(true);
+    expect(result.config?.god).toBe('claude-code');
+    expect(result.validation.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("Reviewer 'gemini' cannot act as God"),
+    ]));
+  });
+
+  test('fails when no supported God adapter is installed', async () => {
+    const mockDetected: DetectedCLI[] = [
+      { name: 'gemini', displayName: 'Gemini CLI', command: 'gemini', installed: true, version: '1.5.0' },
+      { name: 'copilot', displayName: 'GitHub Copilot', command: 'copilot', installed: true, version: '1.0.0' },
+    ];
+
+    const result = await createSessionConfig(
+      { dir: '/tmp', coder: 'gemini', reviewer: 'copilot', task: 'test' },
+      mockDetected,
+    );
+
+    expect(result.validation.valid).toBe(false);
+    expect(result.config).toBeNull();
+    expect(result.validation.errors).toEqual(expect.arrayContaining([
+      expect.stringContaining('No supported God adapter is installed'),
+    ]));
   });
 });

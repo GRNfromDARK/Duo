@@ -29,14 +29,14 @@ export const GodTaskAnalysisSchema = z.object({
 
 // GodPostCoderDecision — FR-004 Coder 输出后路由
 export const GodPostCoderDecisionSchema = z.object({
-  action: z.enum(['continue_to_review', 'retry_coder', 'request_user_input']),
+  action: z.enum(['continue_to_review', 'retry_coder']),
   reasoning: z.string(),
   retryHint: z.string().optional(), // retry_coder 时提供
 });
 
 // GodPostReviewerDecision — FR-004 Reviewer 输出后路由
 export const GodPostReviewerDecisionSchema = z.object({
-  action: z.enum(['route_to_coder', 'converged', 'phase_transition', 'loop_detected', 'request_user_input']),
+  action: z.enum(['route_to_coder', 'converged', 'phase_transition', 'loop_detected']),
   reasoning: z.string(),
   unresolvedIssues: z.array(z.string()).optional(), // route_to_coder 必须非空
   confidenceScore: z.number().min(0).max(1),
@@ -60,12 +60,12 @@ export const GodConvergenceJudgmentSchema = z.object({
   reviewerVerdict: z.string(),
 });
 
-// GodAutoDecision — FR-008 WAITING_USER 自主决策
+// GodAutoDecision — FR-008 GOD_DECIDING 自主决策
 /** Max reasoning length to prevent UI overflow in escape window preview */
 export const MAX_REASONING_LENGTH = 2000;
 
 export const GodAutoDecisionSchema = z.object({
-  action: z.enum(['accept', 'continue_with_instruction', 'request_human']),
+  action: z.enum(['accept', 'continue_with_instruction']),
   reasoning: z.string().max(MAX_REASONING_LENGTH),
   instruction: z.string().optional(), // continue_with_instruction 时提供
 });

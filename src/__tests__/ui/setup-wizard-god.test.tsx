@@ -2,7 +2,7 @@
  * Tests for Card A.1: SetupWizard God role selection step.
  *
  * AC-1: 6-step stepper (Project → Coder → Reviewer → God → Task → Confirm)
- * AC-2: God selection list includes "Same as Reviewer (default)" as first item
+ * AC-2: God selection list includes only supported God adapters, plus reviewer reuse when valid
  * AC-3: Selecting "Same as Reviewer" sets god = reviewer value
  * AC-4: Confirm screen shows God role
  */
@@ -20,6 +20,7 @@ import type { DetectedCLI } from '../../adapters/detect.js';
 
 const DETECTED: DetectedCLI[] = [
   { name: 'claude-code', displayName: 'Claude Code', command: 'claude', installed: true, version: '1.0' },
+  { name: 'codex', displayName: 'Codex', command: 'codex', installed: true, version: '1.1' },
   { name: 'gemini', displayName: 'Gemini', command: 'gemini', installed: true, version: '2.0' },
   { name: 'copilot', displayName: 'Copilot', command: 'copilot', installed: true, version: '3.0' },
 ];
@@ -49,12 +50,13 @@ describe('SetupWizard — God selection (Card A.1)', () => {
     expect(PHASE_LABELS['select-god']).toBe('God');
   });
 
-  // AC-2: GodSelector shows "Same as Reviewer (default)" as first option
+  // AC-2: GodSelector only shows supported God adapters
   describe('GodSelector', () => {
-    it('shows label with Claude Code as recommended and default-selected', () => {
+    it('shows label with supported God adapters and reviewer reuse when reviewer is supported', () => {
       const { lastFrame } = render(
         <GodSelector
           detected={DETECTED}
+          reviewer="codex"
           label="Select God (orchestrator):"
           onSelect={vi.fn()}
         />,
@@ -62,35 +64,51 @@ describe('SetupWizard — God selection (Card A.1)', () => {
       const output = lastFrame()!;
       expect(output).toContain('Select God (orchestrator):');
       expect(output).toContain('Claude Code');
-      expect(output).toContain('recommended');
+      expect(output).toContain('Codex');
       expect(output).toContain('Same as Reviewer');
     });
 
-    it('lists all installed CLIs after the default option', () => {
+    it('does not list unsupported CLIs as God options', () => {
       const { lastFrame } = render(
         <GodSelector
           detected={DETECTED}
+          reviewer="gemini"
           label="Select God (orchestrator):"
           onSelect={vi.fn()}
         />,
       );
       const output = lastFrame()!;
       expect(output).toContain('Claude');
-      expect(output).toContain('Gemini');
-      expect(output).toContain('Copilot');
+      expect(output).toContain('Codex');
+      expect(output).not.toContain('Gemini');
+      expect(output).not.toContain('Copilot');
+      expect(output).toContain("Reviewer 'gemini' cannot act as God");
     });
 
-    // AC-3: Default selection is Claude Code (recommended), pressing Enter selects it
-    it('calls onSelect with claude-code when Enter pressed on default selection', () => {
+    it('calls onSelect with SAME_AS_REVIEWER when reviewer is the default selection', () => {
       const onSelect = vi.fn();
       const { stdin } = render(
         <GodSelector
           detected={DETECTED}
+          reviewer="codex"
           label="Select God (orchestrator):"
           onSelect={onSelect}
         />,
       );
-      // Press Enter on the default item (Claude Code)
+      stdin.write('\r');
+      expect(onSelect).toHaveBeenCalledWith(SAME_AS_REVIEWER);
+    });
+
+    it('defaults to Claude Code when reviewer is unsupported for God', () => {
+      const onSelect = vi.fn();
+      const { stdin } = render(
+        <GodSelector
+          detected={DETECTED}
+          reviewer="gemini"
+          label="Select God (orchestrator):"
+          onSelect={onSelect}
+        />,
+      );
       stdin.write('\r');
       expect(onSelect).toHaveBeenCalledWith('claude-code');
     });
@@ -110,7 +128,7 @@ describe('SetupWizard — God selection (Card A.1)', () => {
             projectDir: '/tmp/test',
             coder: 'claude-code',
             reviewer: 'gemini',
-            god: 'copilot',
+            god: 'codex',
             task: 'test task',
           }}
           detected={DETECTED}
@@ -120,7 +138,7 @@ describe('SetupWizard — God selection (Card A.1)', () => {
       );
       const output = lastFrame()!;
       expect(output).toContain('God');
-      expect(output).toContain('Copilot');
+      expect(output).toContain('Codex');
     });
 
     it('shows "(same as Reviewer)" when god equals reviewer', () => {
@@ -129,8 +147,8 @@ describe('SetupWizard — God selection (Card A.1)', () => {
           config={{
             projectDir: '/tmp/test',
             coder: 'claude-code',
-            reviewer: 'gemini',
-            god: 'gemini',
+            reviewer: 'codex',
+            god: 'codex',
             task: 'test task',
           }}
           detected={DETECTED}

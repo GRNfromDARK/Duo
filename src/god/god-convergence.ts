@@ -9,12 +9,13 @@
  * - Exceptions: max_rounds and loop_detected can force termination
  */
 
-import type { CLIAdapter, OutputChunk } from '../types/adapter.js';
+import type { GodAdapter } from '../types/god-adapter.js';
 import type { GodConvergenceJudgment } from '../types/god-schemas.js';
 import { GodConvergenceJudgmentSchema } from '../types/god-schemas.js';
 import { extractWithRetry } from '../parsers/god-json-extractor.js';
 import { appendAuditLog, type GodAuditEntry } from './god-audit.js';
 import { checkConsistency } from './consistency-checker.js';
+import { collectGodAdapterOutput } from './god-call.js';
 
 // ── Types ──
 
@@ -48,6 +49,7 @@ export interface ConvergenceResult {
 // ── Exception reasons that bypass normal consistency checks ──
 
 const EXCEPTION_REASONS = new Set(['max_rounds', 'loop_detected']);
+const GOD_TIMEOUT_MS = 30_000;
 
 // ── Default fallback judgment ──
 
@@ -116,7 +118,7 @@ export function validateConvergenceConsistency(
  * 6. Otherwise → do not terminate
  */
 export async function evaluateConvergence(
-  godAdapter: CLIAdapter,
+  godAdapter: GodAdapter,
   reviewerOutput: string,
   context: ConvergenceContext,
 ): Promise<ConvergenceResult> {
@@ -134,7 +136,13 @@ export async function evaluateConvergence(
   // Call God adapter for convergence judgment
   const godPrompt = buildConvergencePrompt(reviewerOutput, context);
   const systemPrompt = buildConvergenceSystemPrompt();
-  const rawOutput = await collectAdapterOutput(godAdapter, godPrompt, systemPrompt, context.projectDir);
+  const rawOutput = await collectGodAdapterOutput({
+    adapter: godAdapter,
+    prompt: godPrompt,
+    systemPrompt,
+    projectDir: context.projectDir,
+    timeoutMs: GOD_TIMEOUT_MS,
+  });
 
   // Extract and validate God output
   const result = await extractWithRetry(
@@ -142,7 +150,13 @@ export async function evaluateConvergence(
     GodConvergenceJudgmentSchema,
     async (errorHint: string) => {
       const retryPrompt = `${godPrompt}\n\n[FORMAT ERROR] ${errorHint}\n\nPlease output a corrected JSON block.`;
-      return collectAdapterOutput(godAdapter, retryPrompt, systemPrompt, context.projectDir);
+      return collectGodAdapterOutput({
+        adapter: godAdapter,
+        prompt: retryPrompt,
+        systemPrompt,
+        projectDir: context.projectDir,
+        timeoutMs: GOD_TIMEOUT_MS,
+      });
     },
   );
 
@@ -341,50 +355,6 @@ Rules:
 - shouldTerminate: true ONLY if blockingIssueCount is 0 AND all criteriaProgress are satisfied.
 - classification: approved ONLY if Reviewer has no blocking issues.
 - Reviewer is the sole authority — trust Reviewer's assessment of blocking issues.`;
-}
-
-// ── Adapter Output Collection ──
-
-const GOD_TIMEOUT_MS = 30_000;
-
-async function collectAdapterOutput(
-  adapter: CLIAdapter,
-  prompt: string,
-  systemPrompt: string,
-  projectDir?: string,
-): Promise<string> {
-  // God calls are stateless — clear any captured session ID to ensure --system-prompt is always passed
-  if ('hasActiveSession' in adapter && (adapter as any).hasActiveSession?.()) {
-    (adapter as any).lastSessionId = null;
-  }
-  // Adapters that don't support --system-prompt (e.g. Codex): embed it into the user prompt
-  const supportsSystemPrompt = adapter.name === 'claude-code';
-  const effectivePrompt = supportsSystemPrompt
-    ? prompt
-    : `${systemPrompt}\n\n---\n\n${prompt}`;
-  const chunks: string[] = [];
-
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => {
-      adapter.kill().catch(() => {});
-      reject(new Error(`God adapter timed out after ${GOD_TIMEOUT_MS}ms`));
-    }, GOD_TIMEOUT_MS);
-  });
-
-  const collectPromise = (async () => {
-    for await (const chunk of adapter.execute(effectivePrompt, {
-      cwd: projectDir ?? process.cwd(),
-      systemPrompt: supportsSystemPrompt ? systemPrompt : undefined,
-      disableTools: true,
-    })) {
-      if (chunk.type === 'text' || chunk.type === 'code' || chunk.type === 'error') {
-        chunks.push(chunk.content);
-      }
-    }
-    return chunks.join('');
-  })();
-
-  return Promise.race([collectPromise, timeoutPromise]);
 }
 
 // ── Audit Log ──

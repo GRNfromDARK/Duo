@@ -9,7 +9,7 @@
  * - L4: 3 consecutive failures → disable God for session, full fallback
  *
  * Fallback: switch to old components (ContextManager + ConvergenceService + ChoiceDetector).
- * Three-layer safety: God → fallback → ERROR → WAITING_USER → duo resume.
+ * Three-layer safety: God → fallback → ERROR → GOD_DECIDING/MANUAL_FALLBACK → duo resume.
  */
 
 import type { ContextManager } from '../session/context-manager.js';

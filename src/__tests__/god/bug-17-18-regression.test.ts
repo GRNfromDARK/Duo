@@ -88,7 +88,7 @@ describe('BUG-17 regression: generateReviewerPrompt instruction support', () => 
 // ══════════════════════════════════════════════════════════════════
 
 function startActor() {
-  const actor = createActor(workflowMachine, {});
+  const actor = createActor(workflowMachine, { input: {} });
   actor.start();
   return actor;
 }

@@ -26,12 +26,12 @@ export interface GodFallbackResult<T> {
  * 4. Retry fails → handleGodFailure again → fallback
  * 5. Non-retryable → fallback immediately
  */
-export async function withGodFallback<T>(
+export async function withGodFallback<TGod, TFallback>(
   dm: DegradationManager,
-  godCall: () => Promise<T>,
-  fallbackCall: () => T,
+  godCall: () => Promise<TGod>,
+  fallbackCall: () => TFallback,
   errorKind: GodErrorKind,
-): Promise<GodFallbackResult<T>> {
+): Promise<GodFallbackResult<TGod | TFallback>> {
   if (!dm.isGodAvailable()) {
     return { result: fallbackCall(), usedGod: false };
   }
@@ -79,12 +79,12 @@ export async function withGodFallback<T>(
  * Synchronous version of withGodFallback for prompt generation.
  * No retry support — prompt generation failures are schema/logic errors.
  */
-export function withGodFallbackSync<T>(
+export function withGodFallbackSync<TGod, TFallback>(
   dm: DegradationManager,
-  godCall: () => T,
-  fallbackCall: () => T,
+  godCall: () => TGod,
+  fallbackCall: () => TFallback,
   errorKind: GodErrorKind = 'schema_validation',
-): GodFallbackResult<T> {
+): GodFallbackResult<TGod | TFallback> {
   if (!dm.isGodAvailable()) {
     return { result: fallbackCall(), usedGod: false };
   }

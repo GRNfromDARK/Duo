@@ -41,6 +41,7 @@ describe('WorkflowMachine', () => {
       const ctx = actor.getSnapshot().context;
       expect(ctx.round).toBe(0);
       expect(ctx.maxRounds).toBe(10);
+      expect(ctx.consecutiveRouteToCoder).toBe(0);
       expect(ctx.activeProcess).toBeNull();
       expect(ctx.lastError).toBeNull();
       actor.stop();
@@ -84,12 +85,12 @@ describe('WorkflowMachine', () => {
       actor.stop();
     });
 
-    it('ROUTING_POST_CODE → WAITING_USER on CHOICE_DETECTED', () => {
+    it('ROUTING_POST_CODE → GOD_DECIDING on CHOICE_DETECTED', () => {
       const actor = startActor();
       sendStartAndSkipInit(actor, 'test');
       actor.send({ type: 'CODE_COMPLETE', output: 'done coding' });
       actor.send({ type: 'CHOICE_DETECTED', choices: ['A', 'B'] });
-      expect(actor.getSnapshot().value).toBe('WAITING_USER');
+      expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
       actor.stop();
     });
 
@@ -138,7 +139,7 @@ describe('WorkflowMachine', () => {
       actor.stop();
     });
 
-    it('EVALUATING → WAITING_USER on CONVERGED', () => {
+    it('EVALUATING → GOD_DECIDING on CONVERGED', () => {
       const actor = startActor();
       sendStartAndSkipInit(actor, 'test');
       actor.send({ type: 'CODE_COMPLETE', output: 'done' });
@@ -146,11 +147,11 @@ describe('WorkflowMachine', () => {
       actor.send({ type: 'REVIEW_COMPLETE', output: 'ok' });
       actor.send({ type: 'ROUTE_TO_EVALUATE' });
       actor.send({ type: 'CONVERGED' });
-      expect(actor.getSnapshot().value).toBe('WAITING_USER');
+      expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
       actor.stop();
     });
 
-    it('EVALUATING → WAITING_USER on NOT_CONVERGED when maxRounds reached', () => {
+    it('EVALUATING → GOD_DECIDING on NOT_CONVERGED when maxRounds reached', () => {
       const actor = startActor({ maxRounds: 1, round: 1 });
       sendStartAndSkipInit(actor, 'test');
       actor.send({ type: 'CODE_COMPLETE', output: 'done' });
@@ -158,11 +159,11 @@ describe('WorkflowMachine', () => {
       actor.send({ type: 'REVIEW_COMPLETE', output: 'ok' });
       actor.send({ type: 'ROUTE_TO_EVALUATE' });
       actor.send({ type: 'NOT_CONVERGED' });
-      expect(actor.getSnapshot().value).toBe('WAITING_USER');
+      expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
       actor.stop();
     });
 
-    it('WAITING_USER → CODING on USER_CONFIRM continue', () => {
+    it('GOD_DECIDING → CODING on USER_CONFIRM continue', () => {
       const actor = startActor();
       sendStartAndSkipInit(actor, 'test');
       actor.send({ type: 'CODE_COMPLETE', output: 'done' });
@@ -175,7 +176,7 @@ describe('WorkflowMachine', () => {
       actor.stop();
     });
 
-    it('WAITING_USER → DONE on USER_CONFIRM accept', () => {
+    it('GOD_DECIDING → DONE on USER_CONFIRM accept', () => {
       const actor = startActor();
       sendStartAndSkipInit(actor, 'test');
       actor.send({ type: 'CODE_COMPLETE', output: 'done' });
@@ -215,12 +216,25 @@ describe('WorkflowMachine', () => {
       actor.send({ type: 'REVIEW_COMPLETE', output: 'good' });
       actor.send({ type: 'ROUTE_TO_EVALUATE' });
       actor.send({ type: 'CONVERGED' });
-      expect(actor.getSnapshot().value).toBe('WAITING_USER');
+      expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
 
       actor.send({ type: 'USER_CONFIRM', action: 'accept' });
       expect(actor.getSnapshot().value).toBe('DONE');
       expect(actor.getSnapshot().context.round).toBe(1);
 
+      actor.stop();
+    });
+    it('GOD_DECIDING → MANUAL_FALLBACK on MANUAL_FALLBACK_REQUIRED', () => {
+      const actor = startActor();
+      sendStartAndSkipInit(actor, 'test');
+      actor.send({ type: 'CODE_COMPLETE', output: 'done' });
+      actor.send({ type: 'ROUTE_TO_REVIEW' });
+      actor.send({ type: 'REVIEW_COMPLETE', output: '[APPROVED]' });
+      actor.send({ type: 'ROUTE_TO_EVALUATE' });
+      actor.send({ type: 'CONVERGED' });
+
+      actor.send({ type: 'MANUAL_FALLBACK_REQUIRED' } as any);
+      expect(actor.getSnapshot().value).toBe('MANUAL_FALLBACK');
       actor.stop();
     });
   });
@@ -382,12 +396,12 @@ describe('WorkflowMachine', () => {
       actor.stop();
     });
 
-    it('ERROR → WAITING_USER on RECOVERY', () => {
+    it('ERROR → GOD_DECIDING on RECOVERY', () => {
       const actor = startActor();
       sendStartAndSkipInit(actor, 'test');
       actor.send({ type: 'PROCESS_ERROR', error: 'crash' });
       actor.send({ type: 'RECOVERY' });
-      expect(actor.getSnapshot().value).toBe('WAITING_USER');
+      expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
       actor.stop();
     });
 
@@ -428,12 +442,12 @@ describe('WorkflowMachine', () => {
       actor.stop();
     });
 
-    it('INTERRUPTED → WAITING_USER on USER_INPUT with resume_as=decision', () => {
+    it('INTERRUPTED → GOD_DECIDING on USER_INPUT with resume_as=decision', () => {
       const actor = startActor();
       sendStartAndSkipInit(actor, 'test');
       actor.send({ type: 'USER_INTERRUPT' });
       actor.send({ type: 'USER_INPUT', input: 'decide', resumeAs: 'decision' });
-      expect(actor.getSnapshot().value).toBe('WAITING_USER');
+      expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
       actor.stop();
     });
   });
@@ -465,11 +479,11 @@ describe('WorkflowMachine', () => {
       actor.stop();
     });
 
-    it('RESUMING → WAITING_USER on RESTORED_TO_WAITING', () => {
+    it('RESUMING → GOD_DECIDING on RESTORED_TO_WAITING', () => {
       const actor = startActor();
       actor.send({ type: 'RESUME_SESSION', sessionId: 'abc' });
       actor.send({ type: 'RESTORED_TO_WAITING' });
-      expect(actor.getSnapshot().value).toBe('WAITING_USER');
+      expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
       actor.stop();
     });
   });
@@ -478,15 +492,15 @@ describe('WorkflowMachine', () => {
   // test_regression_bug1: ROUTING_POST_REVIEW → ROUTE_TO_CODER respects maxRounds
   // ──────────────────────────────────────────────
   describe('test_regression_bug1: ROUTING_POST_REVIEW maxRounds guard', () => {
-    it('ROUTING_POST_REVIEW → WAITING_USER on ROUTE_TO_CODER when maxRounds reached', () => {
+    it('ROUTING_POST_REVIEW → GOD_DECIDING on ROUTE_TO_CODER when maxRounds reached', () => {
       const actor = startActor({ maxRounds: 1, round: 1 });
       sendStartAndSkipInit(actor, 'test');
       actor.send({ type: 'CODE_COMPLETE', output: 'done' });
       actor.send({ type: 'ROUTE_TO_REVIEW' });
       actor.send({ type: 'REVIEW_COMPLETE', output: 'fix this' });
-      // round (1) >= maxRounds (1), should go to WAITING_USER not CODING
+      // round (1) >= maxRounds (1), should go to GOD_DECIDING not CODING
       actor.send({ type: 'ROUTE_TO_CODER' });
-      expect(actor.getSnapshot().value).toBe('WAITING_USER');
+      expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
       actor.stop();
     });
 
@@ -509,7 +523,7 @@ describe('WorkflowMachine', () => {
       actor.send({ type: 'ROUTE_TO_REVIEW' });
       actor.send({ type: 'REVIEW_COMPLETE', output: 'issues' });
       actor.send({ type: 'ROUTE_TO_CODER' });
-      expect(actor.getSnapshot().value).toBe('WAITING_USER');
+      expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
       // round should NOT have been incremented
       expect(actor.getSnapshot().context.round).toBe(3);
       actor.stop();
@@ -528,7 +542,7 @@ describe('WorkflowMachine', () => {
       actor.send({ type: 'REVIEW_COMPLETE', output: 'phase 1 complete' });
       actor.send({ type: 'PHASE_TRANSITION', nextPhaseId: 'p2', summary: 'Moving to implementation phase' });
 
-      expect(actor.getSnapshot().value).toBe('WAITING_USER');
+      expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
       expect(actor.getSnapshot().context.pendingPhaseId).toBe('p2');
       expect(actor.getSnapshot().context.pendingPhaseSummary).toBe('Moving to implementation phase');
       actor.stop();
@@ -555,7 +569,7 @@ describe('WorkflowMachine', () => {
       const actor2 = createActor(workflowMachine, { snapshot, input: {} });
       actor2.start();
 
-      expect(actor2.getSnapshot().value).toBe('WAITING_USER');
+      expect(actor2.getSnapshot().value).toBe('GOD_DECIDING');
       expect(actor2.getSnapshot().context.pendingPhaseId).toBe('p3');
       expect(actor2.getSnapshot().context.pendingPhaseSummary).toBe('Final review');
       actor2.stop();
@@ -574,7 +588,7 @@ describe('WorkflowMachine', () => {
       actor.send({ type: 'REVIEW_COMPLETE', output: 'phase 1 complete' });
       actor.send({ type: 'PHASE_TRANSITION', nextPhaseId: 'p2', summary: 'Implementation phase' });
 
-      expect(actor.getSnapshot().value).toBe('WAITING_USER');
+      expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
       expect(actor.getSnapshot().context.pendingPhaseId).toBe('p2');
 
       // User confirms continue — pendingPhaseId should be consumed and cleared
@@ -717,10 +731,56 @@ describe('WorkflowMachine', () => {
       actor.stop();
     });
 
-    it('should ignore USER_CONFIRM when not in WAITING_USER', () => {
+    it('should ignore USER_CONFIRM when not in GOD_DECIDING', () => {
       const actor = startActor();
       actor.send({ type: 'USER_CONFIRM', action: 'accept' });
       expect(actor.getSnapshot().value).toBe('IDLE');
+      actor.stop();
+    });
+  });
+
+  describe('retry circuit breaker', () => {
+    it('increments consecutiveRouteToCoder when looping back to coding', () => {
+      const actor = startActor({ consecutiveRouteToCoder: 0 } as Partial<WorkflowContext>);
+      sendStartAndSkipInit(actor, 'test');
+      actor.send({ type: 'CODE_COMPLETE', output: 'done' });
+      actor.send({ type: 'ROUTE_TO_REVIEW' });
+      actor.send({ type: 'REVIEW_COMPLETE', output: 'fix this' });
+      actor.send({ type: 'ROUTE_TO_CODER' });
+
+      expect(actor.getSnapshot().value).toBe('CODING');
+      expect(actor.getSnapshot().context.consecutiveRouteToCoder).toBe(1);
+      actor.stop();
+    });
+
+    it('does not reset consecutiveRouteToCoder merely by reaching review', () => {
+      const actor = startActor();
+      sendStartAndSkipInit(actor, 'test');
+
+      actor.send({ type: 'CODE_COMPLETE', output: 'retry-1' });
+      actor.send({ type: 'ROUTE_TO_CODER' });
+      actor.send({ type: 'CODE_COMPLETE', output: 'retry-2' });
+      actor.send({ type: 'ROUTE_TO_CODER' });
+      actor.send({ type: 'CODE_COMPLETE', output: 'done' });
+      actor.send({ type: 'ROUTE_TO_REVIEW' });
+
+      expect(actor.getSnapshot().value).toBe('REVIEWING');
+      expect(actor.getSnapshot().context.consecutiveRouteToCoder).toBe(2);
+      actor.stop();
+    });
+
+    it('breaks the loop after 3 consecutive ROUTE_TO_CODER decisions', () => {
+      const actor = startActor();
+      sendStartAndSkipInit(actor, 'test');
+      actor.send({ type: 'CODE_COMPLETE', output: 'retry-1' });
+      actor.send({ type: 'ROUTE_TO_CODER' });
+      actor.send({ type: 'CODE_COMPLETE', output: 'retry-2' });
+      actor.send({ type: 'ROUTE_TO_CODER' });
+      actor.send({ type: 'CODE_COMPLETE', output: 'retry-3' });
+      actor.send({ type: 'ROUTE_TO_CODER' });
+
+      expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
+      expect(actor.getSnapshot().context.consecutiveRouteToCoder).toBe(0);
       actor.stop();
     });
   });

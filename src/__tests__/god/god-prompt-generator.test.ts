@@ -260,6 +260,60 @@ describe('FR-003c: Prompt quality assurance', () => {
   });
 });
 
+describe('generateGodDecisionPrompt (AI-driven)', () => {
+  test('includes phase context in POST_REVIEWER prompt', () => {
+    const prompt = generateGodDecisionPrompt({
+      decisionPoint: 'POST_REVIEWER',
+      round: 2,
+      maxRounds: 10,
+      taskGoal: 'implement feature',
+      lastReviewerOutput: '[APPROVED]',
+      currentPhaseId: 'phase-1',
+      currentPhaseType: 'explore',
+      phases: [
+        { id: 'phase-1', name: 'Explore', type: 'explore', description: 'explore the codebase' },
+        { id: 'phase-2', name: 'Code', type: 'code', description: 'implement changes' },
+      ],
+    });
+
+    expect(prompt).toContain('phase-1');
+    expect(prompt).toContain('phase-2');
+    expect(prompt).toContain('Explore');
+    expect(prompt).toContain('->');
+  });
+});
+
+describe('generateCoderPrompt (phase conflict resolution)', () => {
+  test('uses code instructions when God instruction implies implementation in explore phase', () => {
+    const prompt = generateCoderPrompt({
+      taskType: 'compound',
+      round: 3,
+      maxRounds: 10,
+      taskGoal: 'build feature',
+      phaseId: 'phase-1',
+      phaseType: 'explore',
+      instruction: '同意，请开始实现',
+    });
+
+    expect(prompt).not.toContain('Do NOT modify any files');
+    expect(prompt).toContain('Implement');
+  });
+
+  test('keeps explore instructions when God instruction is non-conflicting', () => {
+    const prompt = generateCoderPrompt({
+      taskType: 'compound',
+      round: 1,
+      maxRounds: 10,
+      taskGoal: 'analyze codebase',
+      phaseId: 'phase-1',
+      phaseType: 'explore',
+      instruction: '请更深入地分析数据库模块',
+    });
+
+    expect(prompt).toContain('Do NOT modify any files');
+  });
+});
+
 // ══════════════════════════════════════════════════════════════════
 // God Decision Prompt
 // ══════════════════════════════════════════════════════════════════

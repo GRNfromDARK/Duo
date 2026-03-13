@@ -3,10 +3,11 @@
  * and confirmation screen before session launch.
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { DirectoryPicker } from './DirectoryPicker.js';
 import type { DetectedCLI } from '../../adapters/detect.js';
+import { getInstalledGodAdapters, isSupportedGodAdapterName } from '../../god/god-adapter-config.js';
 import type { SessionConfig } from '../../types/session.js';
 
 // ── Setup phases ──
@@ -135,28 +136,28 @@ export const SAME_AS_REVIEWER = '__same_as_reviewer__';
 
 export function GodSelector({
   detected,
+  reviewer,
   onSelect,
   label,
 }: {
   detected: DetectedCLI[];
+  reviewer?: string;
   onSelect: (name: string) => void;
   label: string;
 }): React.ReactElement {
-  const cliItems = detected.filter((d) => d.installed);
-  const RECOMMENDED = 'claude-code';
-  // Build items list: all installed CLIs + "Same as Reviewer" fallback
-  // Claude Code is recommended because God needs --system-prompt and --tools "" support
+  const cliItems = getInstalledGodAdapters(detected);
+  const canReuseReviewer = reviewer ? isSupportedGodAdapterName(reviewer) : false;
+  const DEFAULT_GOD = canReuseReviewer ? SAME_AS_REVIEWER : 'claude-code';
   const items: { key: string; display: string; version?: string | null; recommended?: boolean }[] = [
+    ...(canReuseReviewer ? [{ key: SAME_AS_REVIEWER, display: 'Same as Reviewer' }] : []),
     ...cliItems.map((d) => ({
       key: d.name,
       display: d.displayName,
       version: d.version,
-      recommended: d.name === RECOMMENDED,
+      recommended: d.name === 'claude-code',
     })),
-    { key: SAME_AS_REVIEWER, display: 'Same as Reviewer' },
   ];
-  // Default selection: Claude Code if available, otherwise first item
-  const defaultIndex = Math.max(0, items.findIndex((d) => d.key === RECOMMENDED));
+  const defaultIndex = Math.max(0, items.findIndex((d) => d.key === DEFAULT_GOD));
   const [selected, setSelected] = useState(defaultIndex);
 
   useInput((input, key) => {
@@ -169,7 +170,17 @@ export function GodSelector({
     <Box flexDirection="column" paddingX={1}>
       <Text bold>{label}</Text>
       <Text dimColor>  Use arrow keys to navigate, Enter to select</Text>
-      <Text dimColor color="yellow">  Claude Code recommended — supports --system-prompt and --tools for God</Text>
+      <Text dimColor color="yellow">
+        {'  Supported God adapters: Claude Code and Codex. God runs statelessly with tools disabled.'}
+      </Text>
+      {!canReuseReviewer && reviewer && (
+        <Text dimColor color="yellow">
+          {`  Reviewer '${reviewer}' cannot act as God. Choose Claude Code or Codex.`}
+        </Text>
+      )}
+      {items.length === 0 && (
+        <Text color="red">  No supported God adapters installed. Install Claude Code or Codex.</Text>
+      )}
       <Box flexDirection="column" marginTop={1}>
         {items.map((item, i) => {
           const isSelected = i === selected;
@@ -359,9 +370,10 @@ export function SetupWizard({
         {phase === 'select-god' && (
           <GodSelector
             detected={detected}
+            reviewer={config.reviewer}
             label="Select God (orchestrator):"
             onSelect={(name) => {
-              const godValue = name === SAME_AS_REVIEWER ? config.reviewer! : name;
+              const godValue = (name === SAME_AS_REVIEWER ? config.reviewer! : name) as SessionConfig['god'];
               setConfig((prev) => ({ ...prev, god: godValue }));
               setPhase('enter-task');
             }}

@@ -1,9 +1,9 @@
 /**
- * Card C.1: WAITING_USER God auto-decision integration tests.
+ * Card C.1: GOD_DECIDING auto-decision integration tests.
  *
- * Tests the God auto-decision logic integrated into the WAITING_USER useEffect.
- * Verifies: AC-1 through AC-7 (auto-decision, rule engine block, escape window,
- * cancel, execute, audit logging, degradation fallback).
+ * Tests the autonomous decision logic that now runs immediately in GOD_DECIDING.
+ * Verifies: auto-decision, rule engine block, immediate execution banner state,
+ * audit logging, and degradation fallback.
  *
  * These tests exercise the God modules directly (same pattern as god-routing-post-code.test.ts),
  * since App.tsx component-level tests are covered by the pure state logic tests and
@@ -66,7 +66,7 @@ const baseContext: AutoDecisionContext = {
   taskGoal: 'Fix the login bug',
   sessionDir: '/tmp/test-session-auto-decision',
   seq: 1,
-  waitingReason: 'awaiting_user_decision',
+  waitingReason: 'god_deciding',
   projectDir: process.env.HOME + '/Documents/test-project',
 };
 
@@ -82,9 +82,9 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// ── AC-1: God makes auto-decision in WAITING_USER ──
+// ── AC-1: God makes auto-decision in GOD_DECIDING ──
 
-describe('AC-1: God auto-decision in WAITING_USER', () => {
+describe('AC-1: God auto-decision in GOD_DECIDING', () => {
   it('returns accept decision from God', async () => {
     const adapter = createMockGodAdapter({
       action: 'accept',
@@ -112,7 +112,7 @@ describe('AC-1: God auto-decision in WAITING_USER', () => {
     expect(result.blocked).toBe(false);
   });
 
-  it('returns request_human decision (stays manual)', async () => {
+  it('request_human-style output falls back to a deterministic autonomous decision', async () => {
     const adapter = createMockGodAdapter({
       action: 'request_human',
       reasoning: 'Ambiguous requirement',
@@ -120,7 +120,8 @@ describe('AC-1: God auto-decision in WAITING_USER', () => {
 
     const result = await makeAutoDecision(adapter, baseContext, evaluateRules);
 
-    expect(result.decision.action).toBe('request_human');
+    expect(result.decision.action).toBe('continue_with_instruction');
+    expect(result.reasoning).toContain('Local fallback');
     expect(result.blocked).toBe(false);
   });
 });
@@ -152,30 +153,30 @@ describe('AC-2: Rule engine block', () => {
   });
 });
 
-// ── AC-3/4/5: Escape window banner state ──
+// ── AC-3/4/5: Immediate execution banner state ──
 
-describe('AC-3/4/5: Escape window banner', () => {
-  it('AC-3: shows banner with 2s countdown', () => {
+describe('AC-3/4/5: Immediate execution banner', () => {
+  it('starts already executed with no countdown', () => {
     const state = createGodDecisionBannerState({
       action: 'accept',
       reasoning: 'All good',
     });
     expect(state.countdown).toBe(ESCAPE_WINDOW_MS);
-    expect(state.executed).toBe(false);
+    expect(state.executed).toBe(true);
     expect(state.cancelled).toBe(false);
   });
 
-  it('AC-4: Esc cancels to manual mode', () => {
+  it('escape is a no-op after immediate execution', () => {
     const state = createGodDecisionBannerState({
       action: 'accept',
       reasoning: 'All good',
     });
     const next = handleBannerKeyPress(state, 'escape');
-    expect(next.cancelled).toBe(true);
-    expect(next.executed).toBe(false);
+    expect(next.cancelled).toBe(false);
+    expect(next.executed).toBe(true);
   });
 
-  it('AC-5: Space executes immediately', () => {
+  it('space leaves the already-executed state unchanged', () => {
     const state = createGodDecisionBannerState({
       action: 'accept',
       reasoning: 'All good',
@@ -184,7 +185,7 @@ describe('AC-3/4/5: Escape window banner', () => {
     expect(next.executed).toBe(true);
   });
 
-  it('AC-5: Countdown to 0 auto-executes', () => {
+  it('countdown ticks are inert once execution is immediate', () => {
     let state = createGodDecisionBannerState({
       action: 'accept',
       reasoning: 'All good',
@@ -268,7 +269,7 @@ describe('AC-7: Degradation on God failure', () => {
 // ── Integration: End-to-end auto-decision flow ──
 
 describe('Integration: full auto-decision flow', () => {
-  it('accept flow: God decides accept → banner executes → CONVERGED event expected', async () => {
+  it('accept flow: God decides accept → banner state is already executed', async () => {
     const adapter = createMockGodAdapter({
       action: 'accept',
       reasoning: 'Task complete',
@@ -284,13 +285,13 @@ describe('Integration: full auto-decision flow', () => {
     dm.handleGodSuccess();
     expect(dm.getState().consecutiveFailures).toBe(0);
 
-    // Banner state: execute → maps to USER_CONFIRM accept in App.tsx
+    // Banner state remains available for rendering, but execution is immediate.
     const bannerState = createGodDecisionBannerState(result.decision);
     const executed = handleBannerKeyPress(bannerState, 'space');
     expect(executed.executed).toBe(true);
   });
 
-  it('continue flow: God decides continue → banner executes → USER_CONFIRM continue expected', async () => {
+  it('continue flow: God decides continue → banner state is already executed', async () => {
     const adapter = createMockGodAdapter({
       action: 'continue_with_instruction',
       reasoning: 'Need edge case testing',
@@ -303,7 +304,7 @@ describe('Integration: full auto-decision flow', () => {
     expect(result.decision.action).toBe('continue_with_instruction');
     expect(result.decision.instruction).toBe('Add tests for empty input');
 
-    // Banner timeout flow
+    // No escape window remains, so countdown is inert.
     let bannerState = createGodDecisionBannerState(result.decision);
     const totalTicks = ESCAPE_WINDOW_MS / TICK_INTERVAL_MS;
     for (let i = 0; i < totalTicks; i++) {

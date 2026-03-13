@@ -2,6 +2,7 @@
 import React from 'react';
 import { render } from 'ink';
 import { VERSION } from './index.js';
+import { sanitizeGodAdapterForResume } from './god/god-adapter-config.js';
 import { parseStartArgs, createSessionConfig } from './session/session-starter.js';
 import { detectInstalledCLIs } from './adapters/detect.js';
 import { handleResumeList, handleResume, handleLog } from './cli-commands.js';
@@ -75,11 +76,20 @@ if (command === 'start') {
       }
 
       const detected = await detectInstalledCLIs();
+      const resolvedGod = sanitizeGodAdapterForResume(
+        result.session.metadata.reviewer,
+        detected,
+        result.session.metadata.god,
+      );
+      for (const warn of resolvedGod.warnings) {
+        console.warn(`Warning: ${warn}`);
+      }
+
       const initialConfig: SessionConfig = {
         projectDir: result.session.metadata.projectDir,
         coder: result.session.metadata.coder,
         reviewer: result.session.metadata.reviewer,
-        god: result.session.metadata.god ?? result.session.metadata.reviewer,
+        god: resolvedGod.god,
         task: result.session.metadata.task,
       };
 

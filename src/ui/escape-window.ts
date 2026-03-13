@@ -1,11 +1,9 @@
 /**
- * Escape Window — 2秒逃生窗口 UI 状态管理
+ * Escape Window — legacy pure state wrapper for God auto-decisions.
  * Source: FR-008 (AC-025, AC-026, AC-027)
  *
- * 2-second escape window with:
- * - Progress bar + God decision preview
- * - [Space] immediate execute
- * - [Esc] cancel → standard WAITING_USER manual mode (AC-026)
+ * AI-driven mode executes immediately, so the legacy "escape window"
+ * now resolves as confirmed on creation and key/countdown handlers are inert.
  */
 
 import type { GodAutoDecision } from '../types/god-schemas.js';
@@ -14,7 +12,7 @@ import type { GodAutoDecision } from '../types/god-schemas.js';
 
 export interface EscapeWindowState {
   visible: boolean;
-  countdown: number;     // seconds remaining (starts at 2)
+  countdown: number;
   decision: GodAutoDecision;
   decisionPreview: string;
   confirmed: boolean;
@@ -25,11 +23,11 @@ export interface EscapeWindowState {
 
 export function createEscapeWindowState(decision: GodAutoDecision): EscapeWindowState {
   return {
-    visible: true,
-    countdown: 2,
+    visible: false,
+    countdown: 0,
     decision,
     decisionPreview: `[${decision.action}] ${decision.reasoning}`,
-    confirmed: false,
+    confirmed: true,
     cancelled: false,
   };
 }
@@ -37,10 +35,8 @@ export function createEscapeWindowState(decision: GodAutoDecision): EscapeWindow
 // ── Key handler ──
 
 /**
- * Handle key input during escape window.
- * - 'escape': cancel → enter manual WAITING_USER mode (AC-026)
- * - 'space': immediate confirm
- * - other keys: ignored
+ * Handle key input during the legacy escape window.
+ * In AI-driven mode the decision is already confirmed, so this is a no-op.
  */
 export function handleEscapeKey(state: EscapeWindowState, key: string): EscapeWindowState {
   // Once resolved, state is immutable
@@ -63,7 +59,7 @@ export function handleEscapeKey(state: EscapeWindowState, key: string): EscapeWi
 
 /**
  * Decrement countdown by 1 second.
- * When countdown reaches 0, auto-confirm the decision.
+ * In AI-driven mode countdown is already resolved at creation time.
  */
 export function tickEscapeCountdown(state: EscapeWindowState): EscapeWindowState {
   // Don't tick if already resolved

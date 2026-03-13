@@ -6,14 +6,15 @@
  * Maps God actions to XState events.
  */
 
-import type { CLIAdapter, OutputChunk } from '../types/adapter.js';
+import type { GodAdapter } from '../types/god-adapter.js';
 import type { GodPostCoderDecision, GodPostReviewerDecision } from '../types/god-schemas.js';
 import { GodPostCoderDecisionSchema, GodPostReviewerDecisionSchema } from '../types/god-schemas.js';
-import { extractGodJson, extractWithRetry } from '../parsers/god-json-extractor.js';
+import { extractWithRetry } from '../parsers/god-json-extractor.js';
 import { generateGodDecisionPrompt, type GodDecisionContext, type ConvergenceLogEntry } from './god-prompt-generator.js';
 import { appendAuditLog, type GodAuditEntry } from './god-audit.js';
 import { checkConsistency } from './consistency-checker.js';
 import type { WorkflowEvent } from '../engine/workflow-machine.js';
+import { collectGodAdapterOutput } from './god-call.js';
 
 // ── Types ──
 
@@ -57,7 +58,7 @@ function defaultPostReviewer(reviewerOutput: string): GodPostReviewerDecision {
   };
 }
 
-// ── God action → XState event mapping (7 mappings per FR-004) ──
+// ── God action → XState event mapping ──
 
 export function godActionToEvent(
   decision: GodPostCoderDecision | GodPostReviewerDecision,
@@ -79,8 +80,6 @@ export function godActionToEvent(
         summary: d.reasoning ?? '',
       };
     }
-    case 'request_user_input':
-      return { type: 'NEEDS_USER_INPUT' };
     case 'loop_detected':
       return { type: 'LOOP_DETECTED' };
     default:
@@ -88,50 +87,7 @@ export function godActionToEvent(
   }
 }
 
-// ── Collect adapter output ──
-
 const GOD_TIMEOUT_MS = 30_000;
-
-async function collectAdapterOutput(
-  adapter: CLIAdapter,
-  prompt: string,
-  systemPrompt: string,
-  projectDir?: string,
-): Promise<string> {
-  // God calls are stateless — clear any captured session ID to ensure --system-prompt is always passed
-  if ('hasActiveSession' in adapter && (adapter as any).hasActiveSession?.()) {
-    (adapter as any).lastSessionId = null;
-  }
-  // Adapters that don't support --system-prompt (e.g. Codex): embed it into the user prompt
-  const supportsSystemPrompt = adapter.name === 'claude-code';
-  const effectivePrompt = supportsSystemPrompt
-    ? prompt
-    : `${systemPrompt}\n\n---\n\n${prompt}`;
-  const chunks: string[] = [];
-
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => {
-      adapter.kill().catch(() => {});
-      reject(new Error(`God adapter timed out after ${GOD_TIMEOUT_MS}ms`));
-    }, GOD_TIMEOUT_MS);
-  });
-
-  const collectPromise = (async () => {
-    for await (const chunk of adapter.execute(effectivePrompt, {
-      cwd: projectDir ?? process.cwd(),
-      systemPrompt: supportsSystemPrompt ? systemPrompt : undefined,
-      disableTools: true,
-    })) {
-      if (chunk.type === 'text' || chunk.type === 'code' || chunk.type === 'error') {
-        chunks.push(chunk.content);
-      }
-    }
-    return chunks.join('');
-  })();
-
-  return Promise.race([collectPromise, timeoutPromise]);
-}
-
 // ── ROUTING_POST_CODE ──
 
 /**
@@ -140,7 +96,7 @@ async function collectAdapterOutput(
  * Falls back to continue_to_review if extraction fails.
  */
 export async function routePostCoder(
-  godAdapter: CLIAdapter,
+  godAdapter: GodAdapter,
   coderOutput: string,
   context: RoutingContext,
 ): Promise<PostCoderRoutingResult> {
@@ -154,14 +110,26 @@ export async function routePostCoder(
   });
 
   const systemPrompt = buildRoutingSystemPrompt('POST_CODER');
-  const rawOutput = await collectAdapterOutput(godAdapter, godPrompt, systemPrompt, context.projectDir);
+  const rawOutput = await collectGodAdapterOutput({
+    adapter: godAdapter,
+    prompt: godPrompt,
+    systemPrompt,
+    projectDir: context.projectDir,
+    timeoutMs: GOD_TIMEOUT_MS,
+  });
 
   const result = await extractWithRetry(
     rawOutput,
     GodPostCoderDecisionSchema,
     async (errorHint: string) => {
       const retryPrompt = `${godPrompt}\n\n[FORMAT ERROR] ${errorHint}\n\nPlease output a corrected JSON block.`;
-      return collectAdapterOutput(godAdapter, retryPrompt, systemPrompt, context.projectDir);
+      return collectGodAdapterOutput({
+        adapter: godAdapter,
+        prompt: retryPrompt,
+        systemPrompt,
+        projectDir: context.projectDir,
+        timeoutMs: GOD_TIMEOUT_MS,
+      });
     },
   );
 
@@ -189,7 +157,7 @@ export async function routePostCoder(
  * Falls back to route_to_coder if extraction fails.
  */
 export async function routePostReviewer(
-  godAdapter: CLIAdapter,
+  godAdapter: GodAdapter,
   reviewerOutput: string,
   context: RoutingContext,
 ): Promise<PostReviewerRoutingResult> {
@@ -204,14 +172,26 @@ export async function routePostReviewer(
   });
 
   const systemPrompt = buildRoutingSystemPrompt('POST_REVIEWER');
-  const rawOutput = await collectAdapterOutput(godAdapter, godPrompt, systemPrompt, context.projectDir);
+  const rawOutput = await collectGodAdapterOutput({
+    adapter: godAdapter,
+    prompt: godPrompt,
+    systemPrompt,
+    projectDir: context.projectDir,
+    timeoutMs: GOD_TIMEOUT_MS,
+  });
 
   const result = await extractWithRetry(
     rawOutput,
     GodPostReviewerDecisionSchema,
     async (errorHint: string) => {
       const retryPrompt = `${godPrompt}\n\n[FORMAT ERROR] ${errorHint}\n\nPlease output a corrected JSON block.`;
-      return collectAdapterOutput(godAdapter, retryPrompt, systemPrompt, context.projectDir);
+      return collectGodAdapterOutput({
+        adapter: godAdapter,
+        prompt: retryPrompt,
+        systemPrompt,
+        projectDir: context.projectDir,
+        timeoutMs: GOD_TIMEOUT_MS,
+      });
     },
   );
 
@@ -258,11 +238,12 @@ export async function routePostReviewer(
 function buildRoutingSystemPrompt(decisionPoint: 'POST_CODER' | 'POST_REVIEWER'): string {
   if (decisionPoint === 'POST_CODER') {
     return `You are the God orchestrator. Analyze the Coder's output and decide the next routing action.
+You are fully autonomous and never defer to humans.
 
 Output a JSON code block with your decision:
 \`\`\`json
 {
-  "action": "continue_to_review" | "retry_coder" | "request_user_input",
+  "action": "continue_to_review" | "retry_coder",
   "reasoning": "...",
   "retryHint": "..." // only if action is retry_coder
 }
@@ -270,16 +251,18 @@ Output a JSON code block with your decision:
 
 Actions:
 - continue_to_review: Default. Coder produced substantive output, send to Reviewer.
-- retry_coder: Coder crashed or produced empty/garbage output.
-- request_user_input: Coder's output contains a question requiring user answer.`;
+- retry_coder: Coder crashed or produced empty or unusable output.
+
+If the Coder asks a question or proposes options, choose the best direction yourself and continue the flow.`;
   }
 
   return `You are the God orchestrator. Analyze the Reviewer's output and decide the next routing action.
+You are fully autonomous and never defer to humans.
 
 Output a JSON code block with your decision:
 \`\`\`json
 {
-  "action": "route_to_coder" | "converged" | "phase_transition" | "loop_detected" | "request_user_input",
+  "action": "route_to_coder" | "converged" | "phase_transition" | "loop_detected",
   "reasoning": "...",
   "unresolvedIssues": ["..."],  // required if action is route_to_coder
   "confidenceScore": 0.0-1.0,
@@ -293,7 +276,8 @@ Actions:
 - converged: Reviewer approved and all termination criteria are met.
 - phase_transition: Current phase criteria met, transition to next phase. Use nextPhaseId to specify the target phase.
 - loop_detected: Same issues recurring without progress.
-- request_user_input: Fundamental disagreement needing user arbitration.`;
+
+If Coder and Reviewer disagree, you arbitrate and decide the next action yourself.`;
 }
 
 function writeHallucinationAudit(
