@@ -1,0 +1,8 @@
+[
+  {
+    "round": 0,
+    "role": "coder",
+    "content": "[Bash] List project root directory\n[Bash result] 11 lines\n[Glob] {\n[Glob result] 101 lines\n[Glob] {\n[Glob result] 101 lines\n当前项目 **duo** 使用 **TypeScript** 编写，配合 **React (TSX)** 用于 UI 组件。\n\n关键特征：\n- `tsconfig.json` — TypeScript 配置\n- `vitest.config.ts` — 使用 Vitest 作为测试框架\n- `package.json` + `node_modules` — Node.js 生态\n- `src/` 下的源码为 `.ts` 和 `.tsx` 文件",
+    "timestamp": 1773134720647
+  }
+]

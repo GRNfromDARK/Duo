@@ -1,0 +1,35 @@
+{
+  "name": "duo",
+  "version": "1.0.0",
+  "description": "Multi AI coding assistant collaboration platform",
+  "type": "module",
+  "main": "dist/cli.js",
+  "bin": {
+    "duo": "dist/cli.js"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "build": "tsup src/cli.ts --format esm",
+    "dev": "tsx src/cli.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@xstate/react": "^6.1.0",
+    "ink": "^6.8.0",
+    "react": "^19.2.4",
+    "xstate": "^5.28.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.4.0",
+    "@types/react": "^19.2.14",
+    "eslint": "^10.0.3",
+    "ink-testing-library": "^4.0.0",
+    "tsup": "^8.5.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "metadata": {
+    "id": "b571816c-4365-42fe-84cc-d1704c290642",
+    "projectDir": "/Users/rex/Documents/Program2026/duo/",
+    "coder": "claude-code",
+    "reviewer": "codex",
+    "task": "当前项目有多少个文件",
+    "createdAt": 1773216776040,
+    "updatedAt": 1773305794948
+  },
+  "state": {
+    "round": 0,
+    "status": "interrupted",
+    "currentRole": "coder",
+    "coderSessionId": "66226da6-a723-49ca-a372-094b0912cf94",
+    "reviewerSessionId": "019cdbf5-07e1-7440-8283-43b938dd9889"
+  }
+}

@@ -1,0 +1,314 @@
+/**
+ * Tests for Card B.1: 动态 Prompt 生成 Reviewer-Driven
+ * Source: FR-003 (AC-013, AC-014, AC-015), FR-003a, FR-003b, FR-003c
+ */
+
+import { describe, test, expect, vi, beforeEach } from 'vitest';
+import type { GodAuditEntry } from '../../god/god-audit.js';
+
+// ── Types expected from god-prompt-generator ──
+
+import type { PromptContext, GodDecisionContext } from '../../god/god-prompt-generator.js';
+import {
+  generateCoderPrompt,
+  generateGodDecisionPrompt,
+  generateReviewerPrompt,
+  MAX_PROMPT_LENGTH,
+} from '../../god/god-prompt-generator.js';
+
+// ── Mock audit log ──
+vi.mock('../../god/god-audit.js', () => ({
+  appendAuditLog: vi.fn(),
+}));
+
+import { appendAuditLog } from '../../god/god-audit.js';
+const mockAppendAuditLog = vi.mocked(appendAuditLog);
+
+// ── Helpers ──
+
+function makePromptContext(overrides: Partial<PromptContext> = {}): PromptContext {
+  return {
+    taskType: 'code',
+    round: 1,
+    maxRounds: 5,
+    taskGoal: 'Implement user authentication',
+    ...overrides,
+  };
+}
+
+function makeGodDecisionContext(overrides: Partial<GodDecisionContext> = {}): GodDecisionContext {
+  return {
+    decisionPoint: 'POST_REVIEWER',
+    round: 2,
+    maxRounds: 5,
+    taskGoal: 'Implement user authentication',
+    lastCoderOutput: 'Added login endpoint',
+    lastReviewerOutput: 'Missing input validation',
+    ...overrides,
+  };
+}
+
+// ══════════════════════════════════════════════════════════════════
+// FR-003a: 任务类型 → Prompt 策略映射
+// ══════════════════════════════════════════════════════════════════
+
+describe('FR-003a: Task type → Prompt strategy mapping', () => {
+  // AC-1: explore 型 prompt 不包含 implement/create/write code 等执行动词
+  test('AC-1: explore prompt does NOT contain execution verbs (implement/create/write code)', () => {
+    const ctx = makePromptContext({ taskType: 'explore', taskGoal: 'Understand the authentication flow' });
+    const prompt = generateCoderPrompt(ctx);
+
+    const executionVerbs = ['implement', 'create', 'write code', 'build', 'develop'];
+    for (const verb of executionVerbs) {
+      expect(prompt.toLowerCase()).not.toContain(verb);
+    }
+    // Should contain analysis-oriented language
+    expect(prompt.toLowerCase()).toMatch(/analy[sz]e|investigate|explore|suggest|recommend|examine/);
+  });
+
+  // AC-2: code 型 prompt 包含编码指令和质量要求
+  test('AC-2: code prompt contains coding instructions and quality requirements', () => {
+    const ctx = makePromptContext({ taskType: 'code' });
+    const prompt = generateCoderPrompt(ctx);
+
+    // Should contain coding-related instructions
+    expect(prompt.toLowerCase()).toMatch(/implement|code|write|build|develop/);
+    // Should contain quality requirements
+    expect(prompt.toLowerCase()).toMatch(/quality|test|clean|robust|correct/);
+  });
+
+  test('review prompt contains review-specific instructions', () => {
+    const ctx = makePromptContext({ taskType: 'review' });
+    const prompt = generateCoderPrompt(ctx);
+
+    expect(prompt.toLowerCase()).toMatch(/review|audit|check|inspect|examine/);
+  });
+
+  test('debug prompt contains debugging instructions', () => {
+    const ctx = makePromptContext({ taskType: 'debug' });
+    const prompt = generateCoderPrompt(ctx);
+
+    expect(prompt.toLowerCase()).toMatch(/debug|diagnose|fix|trace|root cause/);
+  });
+
+  test('discuss prompt contains discussion instructions', () => {
+    const ctx = makePromptContext({ taskType: 'discuss' });
+    const prompt = generateCoderPrompt(ctx);
+
+    expect(prompt.toLowerCase()).toMatch(/discuss|consider|evaluate|weigh|pros|cons/);
+  });
+
+  // compound 型随阶段切换 prompt 策略
+  test('AC-compound: compound type switches strategy based on phaseId type', () => {
+    const ctx = makePromptContext({
+      taskType: 'compound',
+      phaseId: 'phase-1',
+      phaseType: 'explore',
+      taskGoal: 'Understand the authentication flow',
+    });
+    const prompt = generateCoderPrompt(ctx);
+
+    // Should follow explore strategy for explore phase
+    const executionVerbs = ['implement', 'create', 'write code'];
+    for (const verb of executionVerbs) {
+      expect(prompt.toLowerCase()).not.toContain(verb);
+    }
+  });
+
+  test('compound type uses code strategy for code phase', () => {
+    const ctx = makePromptContext({
+      taskType: 'compound',
+      phaseId: 'phase-2',
+      phaseType: 'code',
+    });
+    const prompt = generateCoderPrompt(ctx);
+
+    expect(prompt.toLowerCase()).toMatch(/implement|code|write|build/);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════
+// FR-003b: Reviewer-Driven Prompt 组装优先级
+// ══════════════════════════════════════════════════════════════════
+
+describe('FR-003b: Reviewer-Driven prompt assembly priority', () => {
+  // AC-3: unresolvedIssues 列为 Coder 首要待办
+  test('AC-3: unresolvedIssues appear as top-priority TODO list in coder prompt', () => {
+    const ctx = makePromptContext({
+      taskType: 'code',
+      round: 3,
+      unresolvedIssues: [
+        'Missing null check on user input',
+        'SQL injection vulnerability in query builder',
+      ],
+    });
+    const prompt = generateCoderPrompt(ctx);
+
+    // Issues should appear in the prompt
+    expect(prompt).toContain('Missing null check on user input');
+    expect(prompt).toContain('SQL injection vulnerability in query builder');
+
+    // Issues should appear before suggestions (priority check)
+    const issuesIndex = prompt.indexOf('Missing null check on user input');
+    expect(issuesIndex).toBeGreaterThan(-1);
+  });
+
+  test('unresolvedIssues appear before suggestions in prompt', () => {
+    const ctx = makePromptContext({
+      taskType: 'code',
+      round: 3,
+      unresolvedIssues: ['Fix null check'],
+      suggestions: ['Consider using optional chaining'],
+    });
+    const prompt = generateCoderPrompt(ctx);
+
+    const issuesIndex = prompt.indexOf('Fix null check');
+    const suggestionsIndex = prompt.indexOf('Consider using optional chaining');
+    expect(issuesIndex).toBeLessThan(suggestionsIndex);
+  });
+
+  test('suggestions appear as non-blocking recommendations', () => {
+    const ctx = makePromptContext({
+      taskType: 'code',
+      suggestions: ['Use consistent naming convention'],
+    });
+    const prompt = generateCoderPrompt(ctx);
+
+    expect(prompt).toContain('Use consistent naming convention');
+  });
+
+  test('task goal is always included', () => {
+    const ctx = makePromptContext({ taskGoal: 'Build REST API' });
+    const prompt = generateCoderPrompt(ctx);
+
+    expect(prompt).toContain('Build REST API');
+  });
+
+  test('round info is included', () => {
+    const ctx = makePromptContext({ round: 3, maxRounds: 10 });
+    const prompt = generateCoderPrompt(ctx);
+
+    expect(prompt).toContain('3');
+    expect(prompt).toContain('10');
+  });
+
+  test('convergenceLog trend is included when provided', () => {
+    const ctx = makePromptContext({
+      convergenceLog: [
+        { round: 1, timestamp: new Date().toISOString(), classification: 'changes_requested', shouldTerminate: false, blockingIssueCount: 5, criteriaProgress: [], summary: 'blocking=5' },
+        { round: 2, timestamp: new Date().toISOString(), classification: 'approved', shouldTerminate: false, blockingIssueCount: 0, criteriaProgress: [], summary: 'blocking=0' },
+      ],
+    });
+    const prompt = generateCoderPrompt(ctx);
+
+    // Should mention convergence trend
+    expect(prompt.toLowerCase()).toMatch(/trend|progress|convergence|improving/);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════
+// FR-003c: Prompt 质量保证
+// ══════════════════════════════════════════════════════════════════
+
+describe('FR-003c: Prompt quality assurance', () => {
+  // AC-4: prompt 长度不超过合理限制
+  test('AC-4: prompt length does not exceed MAX_PROMPT_LENGTH', () => {
+    const ctx = makePromptContext({
+      taskGoal: 'A'.repeat(50000),
+      unresolvedIssues: Array.from({ length: 100 }, (_, i) => `Issue ${i}: ${'x'.repeat(500)}`),
+    });
+    const prompt = generateCoderPrompt(ctx);
+
+    expect(prompt.length).toBeLessThanOrEqual(MAX_PROMPT_LENGTH);
+  });
+
+  // AC-5: prompt 摘要写入 audit log
+  test('AC-5: prompt summary is written to audit log', () => {
+    mockAppendAuditLog.mockClear();
+
+    const ctx = makePromptContext({ taskType: 'code' });
+    generateCoderPrompt(ctx, { sessionDir: '/tmp/test-session', seq: 1 });
+
+    expect(mockAppendAuditLog).toHaveBeenCalledOnce();
+    const call = mockAppendAuditLog.mock.calls[0];
+    expect(call[0]).toBe('/tmp/test-session');
+
+    const entry: GodAuditEntry = call[1];
+    expect(entry.decisionType).toBe('PROMPT_GENERATION');
+    expect(entry.outputSummary.length).toBeLessThanOrEqual(500);
+  });
+
+  test('audit log entry contains prompt summary truncated to 500 chars', () => {
+    mockAppendAuditLog.mockClear();
+
+    const ctx = makePromptContext({
+      taskGoal: 'X'.repeat(1000),
+    });
+    generateCoderPrompt(ctx, { sessionDir: '/tmp/test-session', seq: 2 });
+
+    const entry: GodAuditEntry = mockAppendAuditLog.mock.calls[0][1];
+    expect(entry.outputSummary.length).toBeLessThanOrEqual(500);
+  });
+
+  test('no audit log when sessionDir not provided', () => {
+    mockAppendAuditLog.mockClear();
+
+    const ctx = makePromptContext({ taskType: 'code' });
+    generateCoderPrompt(ctx);
+
+    expect(mockAppendAuditLog).not.toHaveBeenCalled();
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════
+// God Decision Prompt
+// ══════════════════════════════════════════════════════════════════
+
+describe('generateGodDecisionPrompt', () => {
+  test('generates decision prompt with context', () => {
+    const ctx = makeGodDecisionContext();
+    const prompt = generateGodDecisionPrompt(ctx);
+
+    expect(prompt).toContain('POST_REVIEWER');
+    expect(prompt).toContain('Implement user authentication');
+  });
+
+  test('includes reviewer output in POST_REVIEWER context', () => {
+    const ctx = makeGodDecisionContext({
+      decisionPoint: 'POST_REVIEWER',
+      lastReviewerOutput: 'Needs error handling',
+    });
+    const prompt = generateGodDecisionPrompt(ctx);
+
+    expect(prompt).toContain('Needs error handling');
+  });
+
+  test('includes coder output in POST_CODER context', () => {
+    const ctx = makeGodDecisionContext({
+      decisionPoint: 'POST_CODER',
+      lastCoderOutput: 'Implemented login flow',
+    });
+    const prompt = generateGodDecisionPrompt(ctx);
+
+    expect(prompt).toContain('Implemented login flow');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════
+// Reviewer Prompt
+// ══════════════════════════════════════════════════════════════════
+
+describe('generateReviewerPrompt', () => {
+  test('generates reviewer prompt with coder output', () => {
+    const prompt = generateReviewerPrompt({
+      taskType: 'code',
+      round: 2,
+      maxRounds: 5,
+      taskGoal: 'Build API',
+      lastCoderOutput: 'Added endpoint',
+    });
+
+    expect(prompt).toContain('Build API');
+    expect(prompt).toContain('Added endpoint');
+  });
+});

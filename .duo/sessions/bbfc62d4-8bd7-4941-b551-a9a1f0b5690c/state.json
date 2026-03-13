@@ -1,0 +1,18 @@
+{
+  "round": 0,
+  "status": "interrupted",
+  "currentRole": "coder",
+  "godAdapter": "claude-code",
+  "godConvergenceLog": [],
+  "degradationState": {
+    "level": "L4",
+    "consecutiveFailures": 3,
+    "godDisabled": true,
+    "fallbackActive": true,
+    "lastError": "No taskAnalysis available"
+  },
+  "currentPhaseId": null,
+  "godSessionId": "3d38f79b-ac02-4d21-8749-88f0cd961e8b",
+  "coderSessionId": "f84372c1-5caf-4a33-afdd-579c236017c3",
+  "reviewerSessionId": "019ce522-add7-7ee2-80dd-643a0613e983"
+}

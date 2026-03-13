@@ -1,0 +1,29 @@
+{
+  "metadata": {
+    "id": "e2fef9c0-1eed-47f6-8966-113a8acac9ef",
+    "projectDir": "/Users/rex/Documents/Program2026/duo/",
+    "coder": "claude-code",
+    "reviewer": "codex",
+    "god": "codex",
+    "task": "当前代码库有多少个文件",
+    "createdAt": 1773319567612,
+    "updatedAt": 1773321108963
+  },
+  "state": {
+    "round": 1,
+    "status": "interrupted",
+    "currentRole": "coder",
+    "godAdapter": "codex",
+    "godConvergenceLog": [],
+    "degradationState": {
+      "level": "L4",
+      "consecutiveFailures": 3,
+      "godDisabled": true,
+      "fallbackActive": true,
+      "lastError": "No taskAnalysis available"
+    },
+    "godSessionId": "019ce215-4247-7df0-84d2-3239d4c70b31",
+    "coderSessionId": "2440b863-4357-45a5-8950-8e21a2889e35",
+    "reviewerSessionId": "019ce21e-6c3c-7ab1-a7cd-ee16ebc50bb4"
+  }
+}

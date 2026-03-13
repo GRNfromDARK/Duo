@@ -1,0 +1,16 @@
+{
+  "round": 0,
+  "status": "interrupted",
+  "currentRole": "coder",
+  "godAdapter": "codex",
+  "godConvergenceLog": [],
+  "degradationState": {
+    "level": "L2",
+    "consecutiveFailures": 1,
+    "godDisabled": false,
+    "fallbackActive": false,
+    "lastError": "TASK_INIT returned null (extraction/validation failed)"
+  },
+  "currentPhaseId": null,
+  "godSessionId": "019ce53a-5285-7c63-87a9-badf468b6b35"
+}

@@ -1,0 +1,10 @@
+{
+  "taskType": "explore",
+  "reasoning": "User wants to know how many files are in the current project - this is a simple exploration/discovery task.",
+  "phases": [],
+  "confidence": 0.95,
+  "suggestedMaxRounds": 2,
+  "terminationCriteria": [
+    "File count of the project is reported to the user"
+  ]
+}

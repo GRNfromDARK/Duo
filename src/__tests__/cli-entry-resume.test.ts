@@ -1,0 +1,109 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { LoadedSession } from '../session/session-manager.js';
+
+const renderMock = vi.fn(() => ({
+  waitUntilExit: vi.fn().mockResolvedValue(undefined),
+}));
+const handleResumeMock = vi.fn();
+const detectInstalledCLIsMock = vi.fn();
+
+vi.mock('ink', () => ({
+  render: renderMock,
+}));
+
+vi.mock('../cli-commands.js', () => ({
+  handleResume: handleResumeMock,
+  handleResumeList: vi.fn(),
+}));
+
+vi.mock('../adapters/detect.js', () => ({
+  detectInstalledCLIs: detectInstalledCLIsMock,
+}));
+
+vi.mock('../ui/components/App.js', () => ({
+  App: function AppMock() {
+    return null;
+  },
+}));
+
+describe('cli resume entry', () => {
+  const originalArgv = process.argv;
+  const originalExit = process.exit;
+  const originalLog = console.log;
+  const originalError = console.error;
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    process.argv = ['node', 'src/cli.ts', 'resume', 'session-123'];
+    process.exit = vi.fn() as never;
+    console.log = vi.fn();
+    console.error = vi.fn();
+  });
+
+  afterEach(() => {
+    process.argv = originalArgv;
+    process.exit = originalExit;
+    console.log = originalLog;
+    console.error = originalError;
+  });
+
+  it('renders the App with the loaded session when resuming a specific session', async () => {
+    const session: LoadedSession = {
+      metadata: {
+        id: 'session-123',
+        projectDir: '/tmp/project',
+        coder: 'claude-code',
+        reviewer: 'codex',
+        task: 'Fix login',
+        createdAt: 1,
+        updatedAt: 2,
+      },
+      state: {
+        round: 1,
+        status: 'reviewing',
+        currentRole: 'reviewer',
+      },
+      history: [],
+    };
+
+    handleResumeMock.mockReturnValue({
+      success: true,
+      session,
+    });
+    detectInstalledCLIsMock.mockResolvedValue([
+      {
+        name: 'claude-code',
+        displayName: 'Claude Code',
+        command: 'claude',
+        installed: true,
+        version: '1.0.0',
+      },
+      {
+        name: 'codex',
+        displayName: 'Codex',
+        command: 'codex',
+        installed: true,
+        version: '1.0.0',
+      },
+    ]);
+
+    await import('../cli.js');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(renderMock).toHaveBeenCalledTimes(1);
+    const renderCalls = renderMock.mock.calls as unknown as Array<
+      [{ props: Record<string, unknown> }]
+    >;
+    const renderedElement = renderCalls[0]![0];
+    expect(renderedElement.props.initialConfig).toEqual({
+      projectDir: '/tmp/project',
+      coder: 'claude-code',
+      reviewer: 'codex',
+      god: 'codex',
+      task: 'Fix login',
+    });
+    expect(renderedElement.props.resumeSession).toEqual(session);
+  });
+});

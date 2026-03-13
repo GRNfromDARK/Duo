@@ -1,0 +1,19 @@
+{
+  "metadata": {
+    "id": "c5f69c31-326d-46c4-8f15-c1e250e3eec1",
+    "projectDir": "/Users/rex/Documents/Program2026/duo/",
+    "coder": "claude-code",
+    "reviewer": "codex",
+    "god": "codex",
+    "task": "go",
+    "createdAt": 1773308315453,
+    "updatedAt": 1773308332417
+  },
+  "state": {
+    "round": 0,
+    "status": "interrupted",
+    "currentRole": "coder",
+    "coderSessionId": "11cb8c7d-e272-4a2f-9659-ee9fb02b6380",
+    "reviewerSessionId": "019ce169-c25f-7992-bfb0-ff860257a7d2"
+  }
+}

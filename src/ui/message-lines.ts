@@ -1,0 +1,280 @@
+import { parseMarkdown, type MarkdownSegment } from './markdown-parser.js';
+import type { DisplayMode } from './display-mode.js';
+import { getRoleStyle } from '../types/ui.js';
+import type { Message, RoleName } from '../types/ui.js';
+
+export interface LineSpan {
+  text: string;
+  color?: string;
+  bold?: boolean;
+  dimColor?: boolean;
+}
+
+export interface RenderedMessageLine {
+  key: string;
+  spans: LineSpan[];
+}
+
+const MIN_BODY_WIDTH = 16;
+
+export function buildRenderedMessageLines(
+  messages: Message[],
+  displayMode: DisplayMode,
+  columns: number,
+): RenderedMessageLine[] {
+  const bodyWidth = Math.max(MIN_BODY_WIDTH, columns - 2);
+  const lines: RenderedMessageLine[] = [];
+
+  for (const message of messages) {
+    lines.push(buildHeaderLine(message, displayMode));
+
+    if (displayMode === 'verbose' && message.metadata?.cliCommand) {
+      for (const line of wrapText(message.metadata.cliCommand, bodyWidth)) {
+        lines.push(buildBodyLine(message.role, `${'$ '}${line}`, { dimColor: true }, message.id, lines.length));
+      }
+    }
+
+    for (const line of renderMessageBody(message.content, displayMode, bodyWidth)) {
+      lines.push(buildBodyLine(message.role, line.text, line.style, message.id, lines.length));
+    }
+
+    lines.push({
+      key: `${message.id}-spacer`,
+      spans: [{ text: '' }],
+    });
+  }
+
+  return lines;
+}
+
+function buildHeaderLine(
+  message: Message,
+  displayMode: DisplayMode,
+): RenderedMessageLine {
+  const style = getRoleStyle(message.role);
+  const label = message.roleLabel
+    ? `${style.displayName} · ${message.roleLabel}`
+    : style.displayName;
+  const time = formatTime(message.timestamp, displayMode === 'verbose');
+
+  const spans: LineSpan[] = [
+    { text: `${style.border} `, color: style.color },
+    { text: `[${label}]`, color: style.color, bold: true },
+    { text: ` ${time}`, color: 'gray' },
+  ];
+
+  if (displayMode === 'verbose' && message.metadata?.tokenCount != null) {
+    spans.push({ text: ` [${formatTokenCount(message.metadata.tokenCount)} tokens]`, color: 'gray' });
+  }
+
+  return {
+    key: `${message.id}-header`,
+    spans,
+  };
+}
+
+function buildBodyLine(
+  role: RoleName,
+  text: string,
+  style: Pick<LineSpan, 'color' | 'bold' | 'dimColor'>,
+  messageId: string,
+  lineIndex: number,
+): RenderedMessageLine {
+  const roleStyle = getRoleStyle(role);
+
+  return {
+    key: `${messageId}-body-${lineIndex}`,
+    spans: [
+      { text: `${roleStyle.border} `, color: roleStyle.color },
+      { text, ...style },
+    ],
+  };
+}
+
+function renderMessageBody(
+  content: string,
+  displayMode: DisplayMode,
+  width: number,
+): Array<{ text: string; style: Pick<LineSpan, 'color' | 'bold' | 'dimColor'> }> {
+  const segments = parseMarkdown(content);
+  const blocks = segmentsToBlocks(segments, displayMode);
+  const lines: Array<{ text: string; style: Pick<LineSpan, 'color' | 'bold' | 'dimColor'> }> = [];
+
+  for (const block of blocks) {
+    for (const line of block.lines) {
+      for (const wrapped of wrapText(line, width)) {
+        lines.push({
+          text: wrapped,
+          style: block.style,
+        });
+      }
+    }
+  }
+
+  if (lines.length === 0) {
+    lines.push({ text: '', style: {} });
+  }
+
+  return lines;
+}
+
+function segmentsToBlocks(
+  segments: MarkdownSegment[],
+  displayMode: DisplayMode,
+): Array<{ lines: string[]; style: Pick<LineSpan, 'color' | 'bold' | 'dimColor'> }> {
+  const blocks: Array<{ lines: string[]; style: Pick<LineSpan, 'color' | 'bold' | 'dimColor'> }> = [];
+  let paragraph = '';
+
+  const flushParagraph = () => {
+    if (!paragraph) {
+      return;
+    }
+    blocks.push({
+      lines: paragraph.split('\n'),
+      style: {},
+    });
+    paragraph = '';
+  };
+
+  for (const segment of segments) {
+    switch (segment.type) {
+      case 'text':
+        paragraph += segment.content;
+        break;
+
+      case 'bold':
+        paragraph += segment.content;
+        break;
+
+      case 'italic':
+        paragraph += segment.content;
+        break;
+
+      case 'inline_code':
+        paragraph += `\`${segment.content}\``;
+        break;
+
+      case 'list_item':
+        flushParagraph();
+        blocks.push({
+          lines: [`${segment.marker === '-' || segment.marker === '*' ? '•' : segment.marker} ${segment.content}`],
+          style: {},
+        });
+        break;
+
+      case 'code_block':
+        flushParagraph();
+        blocks.push({
+          lines: [
+            ...(segment.language ? [`[${segment.language}]`] : []),
+            ...segment.content.split('\n'),
+          ],
+          style: { color: 'cyan' },
+        });
+        break;
+
+      case 'table':
+        flushParagraph();
+        blocks.push({
+          lines: [
+            segment.headers.join(' | '),
+            ...segment.rows.map((row) => row.join(' | ')),
+          ],
+          style: { dimColor: true },
+        });
+        break;
+
+      case 'activity_block': {
+        flushParagraph();
+        const summary = segment.content.split('\n').find((line) => line.trim().length > 0) ?? segment.title;
+        const icon =
+          segment.kind === 'error' ? '⚠' :
+          segment.kind === 'result' ? '⎿' :
+          '⏺';
+        const color =
+          segment.kind === 'error' ? 'red' :
+          segment.kind === 'result' ? 'gray' :
+          'cyan';
+
+        const lines = [`${icon} ${segment.title}: ${summary}`];
+        if (displayMode === 'verbose') {
+          lines.push(...segment.content.split('\n').slice(1));
+        }
+
+        blocks.push({
+          lines,
+          style: { color },
+        });
+        break;
+      }
+    }
+  }
+
+  flushParagraph();
+  return blocks;
+}
+
+export function wrapText(text: string, width: number): string[] {
+  if (text === '') {
+    return [''];
+  }
+
+  const lines: string[] = [];
+  let current = '';
+  let currentWidth = 0;
+
+  for (const char of [...text]) {
+    const charWidth = getCharWidth(char);
+    if (currentWidth + charWidth > width && current.length > 0) {
+      lines.push(current);
+      current = char;
+      currentWidth = charWidth;
+    } else {
+      current += char;
+      currentWidth += charWidth;
+    }
+  }
+
+  if (current.length > 0) {
+    lines.push(current);
+  }
+
+  return lines;
+}
+
+function getCharWidth(char: string): number {
+  const codePoint = char.codePointAt(0) ?? 0;
+
+  if (
+    codePoint >= 0x1100 && (
+      codePoint <= 0x115f ||
+      codePoint === 0x2329 ||
+      codePoint === 0x232a ||
+      (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
+      (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+      (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+      (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+      (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+      (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+      (codePoint >= 0xffe0 && codePoint <= 0xffe6)
+    )
+  ) {
+    return 2;
+  }
+
+  return 1;
+}
+
+function formatTime(timestamp: number, verbose: boolean): string {
+  const d = new Date(timestamp);
+  const h = String(d.getHours()).padStart(2, '0');
+  const m = String(d.getMinutes()).padStart(2, '0');
+  if (!verbose) return `${h}:${m}`;
+  const s = String(d.getSeconds()).padStart(2, '0');
+  return `${h}:${m}:${s}`;
+}
+
+function formatTokenCount(count: number): string {
+  if (count < 1000) return String(count);
+  return `${(count / 1000).toFixed(1)}k`;
+}

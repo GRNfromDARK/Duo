@@ -1,0 +1,33 @@
+{
+  "taskType": "compound",
+  "reasoning": "This task has multiple phases: first explore the project to understand current UI, then discuss and propose the most important UI improvement, then implement it. It requires exploration, discussion, and coding.",
+  "phases": [
+    {
+      "id": "phase-1",
+      "name": "Explore Project UI",
+      "type": "explore",
+      "description": "Explore the project structure, understand what the app does, review current UI components and user experience patterns to identify improvement opportunities"
+    },
+    {
+      "id": "phase-2",
+      "name": "Propose and Discuss",
+      "type": "discuss",
+      "description": "Propose the single most impactful UI improvement for user experience, present reasoning, and get user confirmation"
+    },
+    {
+      "id": "phase-3",
+      "name": "Implement UI Change",
+      "type": "code",
+      "description": "Implement the agreed-upon UI improvement with proper testing and verification"
+    }
+  ],
+  "confidence": 0.9,
+  "suggestedMaxRounds": 10,
+  "terminationCriteria": [
+    "Project UI has been explored and understood",
+    "1 most important UI improvement has been proposed and discussed with user",
+    "User has confirmed/agreed on the improvement",
+    "The UI change has been implemented",
+    "The change has been verified to work correctly"
+  ]
+}

@@ -1,0 +1,314 @@
+/**
+ * Tests for God Session Persistence — Card D.1
+ * Source: FR-011 (AC-035, AC-036), AR-005, NFR-007
+ */
+
+import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as os from 'node:os';
+import { SessionManager } from '../../session/session-manager.js';
+import type { SessionConfig } from '../../types/session.js';
+import type { SessionState } from '../../session/session-manager.js';
+import type { GodTaskAnalysis } from '../../types/god-schemas.js';
+import type { ConvergenceLogEntry } from '../../god/god-convergence.js';
+import { restoreGodSession } from '../../god/god-session-persistence.js';
+
+let tmpDir: string;
+let sessionsDir: string;
+
+function makeConfig(overrides?: Partial<SessionConfig>): SessionConfig {
+  return {
+    projectDir: tmpDir,
+    coder: 'claude-code',
+    reviewer: 'codex',
+    god: 'gemini',
+    task: 'implement login',
+    ...overrides,
+  };
+}
+
+function makeTaskAnalysis(): GodTaskAnalysis {
+  return {
+    taskType: 'code',
+    reasoning: 'User wants to implement login',
+    confidence: 0.85,
+    suggestedMaxRounds: 5,
+    terminationCriteria: ['All tests pass', 'Code compiles'],
+  };
+}
+
+function makeConvergenceEntry(round: number): ConvergenceLogEntry {
+  return {
+    round,
+    timestamp: new Date().toISOString(),
+    classification: 'changes_requested',
+    shouldTerminate: false,
+    blockingIssueCount: 1,
+    criteriaProgress: [{ criterion: 'Tests pass', satisfied: false }],
+    summary: `Round ${round}: classification=changes_requested, blocking=1, terminate=false`,
+  };
+}
+
+beforeEach(() => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'duo-god-persist-'));
+  sessionsDir = path.join(tmpDir, '.duo', 'sessions');
+});
+
+afterEach(() => {
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+// ── AC-1: GodSessionState correctly written to snapshot.json ──
+
+describe('God session state persistence', () => {
+  test('godSessionId and godAdapter persist to snapshot.json', () => {
+    const mgr = new SessionManager(sessionsDir);
+    const session = mgr.createSession(makeConfig());
+
+    const state: SessionState = {
+      round: 1,
+      status: 'coding',
+      currentRole: 'coder',
+      godSessionId: 'god-session-123',
+      godAdapter: 'gemini',
+    };
+    mgr.saveState(session.id, state);
+
+    const sessionDir = path.join(sessionsDir, session.id);
+    const snapshot = JSON.parse(fs.readFileSync(path.join(sessionDir, 'snapshot.json'), 'utf-8'));
+    expect(snapshot.state.godSessionId).toBe('god-session-123');
+    expect(snapshot.state.godAdapter).toBe('gemini');
+  });
+
+  test('godTaskAnalysis is written only on first round', () => {
+    const mgr = new SessionManager(sessionsDir);
+    const session = mgr.createSession(makeConfig());
+    const analysis = makeTaskAnalysis();
+
+    // Round 1: write godTaskAnalysis
+    const state1: SessionState = {
+      round: 1,
+      status: 'coding',
+      currentRole: 'coder',
+      godSessionId: 'god-123',
+      godAdapter: 'gemini',
+      godTaskAnalysis: analysis,
+    };
+    mgr.saveState(session.id, state1);
+
+    const sessionDir = path.join(sessionsDir, session.id);
+    const snap1 = JSON.parse(fs.readFileSync(path.join(sessionDir, 'snapshot.json'), 'utf-8'));
+    expect(snap1.state.godTaskAnalysis).toEqual(analysis);
+
+    // Round 2: godTaskAnalysis preserved even if state update doesn't include it
+    // (saveState merges partial state, preserving existing fields)
+    const state2: Partial<SessionState> = {
+      round: 2,
+      status: 'reviewing',
+      currentRole: 'reviewer',
+      godSessionId: 'god-123',
+      godAdapter: 'gemini',
+    };
+    mgr.saveState(session.id, state2);
+
+    const snap2 = JSON.parse(fs.readFileSync(path.join(sessionDir, 'snapshot.json'), 'utf-8'));
+    // godTaskAnalysis should be preserved since saveState merges (not replaces)
+    expect(snap2.state.godTaskAnalysis).toEqual(analysis);
+  });
+
+  test('godConvergenceLog appends each round', () => {
+    const mgr = new SessionManager(sessionsDir);
+    const session = mgr.createSession(makeConfig());
+
+    const entry1 = makeConvergenceEntry(1);
+    const state1: SessionState = {
+      round: 1,
+      status: 'reviewing',
+      currentRole: 'reviewer',
+      godSessionId: 'god-123',
+      godAdapter: 'gemini',
+      godConvergenceLog: [entry1],
+    };
+    mgr.saveState(session.id, state1);
+
+    const sessionDir = path.join(sessionsDir, session.id);
+    let snap = JSON.parse(fs.readFileSync(path.join(sessionDir, 'snapshot.json'), 'utf-8'));
+    expect(snap.state.godConvergenceLog).toHaveLength(1);
+
+    const entry2 = makeConvergenceEntry(2);
+    const state2: SessionState = {
+      round: 2,
+      status: 'reviewing',
+      currentRole: 'reviewer',
+      godSessionId: 'god-123',
+      godAdapter: 'gemini',
+      godConvergenceLog: [entry1, entry2],
+    };
+    mgr.saveState(session.id, state2);
+
+    snap = JSON.parse(fs.readFileSync(path.join(sessionDir, 'snapshot.json'), 'utf-8'));
+    expect(snap.state.godConvergenceLog).toHaveLength(2);
+    expect(snap.state.godConvergenceLog[1].round).toBe(2);
+  });
+});
+
+// ── AC-2: Persistence data < 10KB (20-round long task simulation) ──
+
+describe('God session persistence size constraint (NFR-007)', () => {
+  test('persisted data < 10KB for 20-round long task', () => {
+    const mgr = new SessionManager(sessionsDir);
+    const session = mgr.createSession(makeConfig());
+
+    const convergenceLog: ConvergenceLogEntry[] = [];
+    for (let round = 1; round <= 20; round++) {
+      convergenceLog.push(makeConvergenceEntry(round));
+    }
+
+    const state: SessionState = {
+      round: 20,
+      status: 'completed',
+      currentRole: 'coder',
+      godSessionId: 'god-session-long-task-uuid-1234',
+      godAdapter: 'gemini',
+      godTaskAnalysis: makeTaskAnalysis(),
+      godConvergenceLog: convergenceLog,
+    };
+    mgr.saveState(session.id, state);
+
+    const sessionDir = path.join(sessionsDir, session.id);
+    const snapshotStr = fs.readFileSync(path.join(sessionDir, 'snapshot.json'), 'utf-8');
+    const snapshot = JSON.parse(snapshotStr);
+
+    // Measure only God-related data size
+    const godData = {
+      godSessionId: snapshot.state.godSessionId,
+      godAdapter: snapshot.state.godAdapter,
+      godTaskAnalysis: snapshot.state.godTaskAnalysis,
+      godConvergenceLog: snapshot.state.godConvergenceLog,
+    };
+    const godDataSize = Buffer.byteLength(JSON.stringify(godData), 'utf-8');
+    expect(godDataSize).toBeLessThan(10240); // < 10KB
+  });
+});
+
+// ── AC-1 (resume): duo resume restores God session ──
+
+describe('restoreGodSession', () => {
+  test('restores God adapter and session ID from snapshot state', async () => {
+    const state: SessionState = {
+      round: 3,
+      status: 'coding',
+      currentRole: 'coder',
+      godSessionId: 'god-session-abc',
+      godAdapter: 'gemini',
+    };
+
+    const mockAdapter = {
+      name: 'gemini',
+      displayName: 'Gemini CLI',
+      version: '1.0',
+      isInstalled: async () => true,
+      getVersion: async () => '1.0',
+      execute: async function* () {},
+      kill: async () => {},
+      isRunning: () => false,
+    };
+
+    const mockFactory = (name: string) => {
+      if (name === 'gemini') return mockAdapter;
+      throw new Error(`Unknown adapter: ${name}`);
+    };
+
+    const result = await restoreGodSession(state, mockFactory);
+    expect(result).not.toBeNull();
+    expect(result!.adapter).toBe(mockAdapter);
+    expect(result!.sessionId).toBe('god-session-abc');
+  });
+
+  test('returns null when godSessionId is missing', async () => {
+    const state: SessionState = {
+      round: 3,
+      status: 'coding',
+      currentRole: 'coder',
+    };
+
+    const mockFactory = () => { throw new Error('should not be called'); };
+    const result = await restoreGodSession(state, mockFactory);
+    expect(result).toBeNull();
+  });
+
+  test('returns null when godAdapter is missing', async () => {
+    const state: SessionState = {
+      round: 3,
+      status: 'coding',
+      currentRole: 'coder',
+      godSessionId: 'god-session-abc',
+    };
+
+    const mockFactory = () => { throw new Error('should not be called'); };
+    const result = await restoreGodSession(state, mockFactory);
+    expect(result).toBeNull();
+  });
+
+  test('graceful degradation when adapter factory throws', async () => {
+    const state: SessionState = {
+      round: 3,
+      status: 'coding',
+      currentRole: 'coder',
+      godSessionId: 'god-session-abc',
+      godAdapter: 'nonexistent-adapter',
+    };
+
+    const mockFactory = (_name: string) => {
+      throw new Error('Unknown adapter');
+    };
+
+    const result = await restoreGodSession(state, mockFactory);
+    expect(result).toBeNull();
+  });
+});
+
+// ── AC-3: godTaskAnalysis correctly written and read ──
+
+describe('godTaskAnalysis round-trip', () => {
+  test('godTaskAnalysis survives write and read cycle', () => {
+    const mgr = new SessionManager(sessionsDir);
+    const session = mgr.createSession(makeConfig());
+    const analysis = makeTaskAnalysis();
+
+    mgr.saveState(session.id, {
+      round: 1,
+      status: 'coding',
+      currentRole: 'coder',
+      godSessionId: 'god-123',
+      godAdapter: 'gemini',
+      godTaskAnalysis: analysis,
+    });
+
+    const loaded = mgr.loadSession(session.id);
+    expect(loaded.state.godTaskAnalysis).toEqual(analysis);
+  });
+});
+
+// ── AC-5: graceful degradation when session lost ──
+
+describe('God session graceful degradation', () => {
+  test('sessions without god fields load normally (backward compat)', () => {
+    const mgr = new SessionManager(sessionsDir);
+    const session = mgr.createSession(makeConfig());
+
+    // State without any god fields (legacy)
+    mgr.saveState(session.id, {
+      round: 1,
+      status: 'coding',
+      currentRole: 'coder',
+    });
+
+    const loaded = mgr.loadSession(session.id);
+    expect(loaded.state.godSessionId).toBeUndefined();
+    expect(loaded.state.godAdapter).toBeUndefined();
+    expect(loaded.state.godTaskAnalysis).toBeUndefined();
+    expect(loaded.state.godConvergenceLog).toBeUndefined();
+  });
+});

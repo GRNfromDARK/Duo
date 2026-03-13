@@ -1,0 +1,62 @@
+[
+  {
+    "round": 0,
+    "role": "coder",
+    "content": "\n**Error:** Unknown error\n",
+    "timestamp": 1773129130949
+  },
+  {
+    "round": 0,
+    "role": "reviewer",
+    "content": "\n**Error:** error: unexpected argument '--json' found\n\n  tip: to pass '--json' as a value, use '-- --json'\n\nUsage: codex review [OPTIONS] [PROMPT]\n\nFor more information, try '--help'.\n",
+    "timestamp": 1773129131066
+  },
+  {
+    "round": 1,
+    "role": "coder",
+    "content": "\n**Error:** Unknown error\n",
+    "timestamp": 1773129133041
+  },
+  {
+    "round": 1,
+    "role": "reviewer",
+    "content": "\n**Error:** error: unexpected argument '--json' found\n\n  tip: to pass '--json' as a value, use '-- --json'\n\nUsage: codex review [OPTIONS] [PROMPT]\n\nFor more information, try '--help'.\n",
+    "timestamp": 1773129133139
+  },
+  {
+    "round": 2,
+    "role": "coder",
+    "content": "\n**Error:** Unknown error\n",
+    "timestamp": 1773129136028
+  },
+  {
+    "round": 2,
+    "role": "reviewer",
+    "content": "\n**Error:** error: unexpected argument '--json' found\n\n  tip: to pass '--json' as a value, use '-- --json'\n\nUsage: codex review [OPTIONS] [PROMPT]\n\nFor more information, try '--help'.\n",
+    "timestamp": 1773129136144
+  },
+  {
+    "round": 3,
+    "role": "coder",
+    "content": "\n**Error:** Unknown error\n",
+    "timestamp": 1773129138246
+  },
+  {
+    "round": 3,
+    "role": "reviewer",
+    "content": "\n**Error:** error: unexpected argument '--json' found\n\n  tip: to pass '--json' as a value, use '-- --json'\n\nUsage: codex review [OPTIONS] [PROMPT]\n\nFor more information, try '--help'.\n",
+    "timestamp": 1773129138364
+  },
+  {
+    "round": 4,
+    "role": "coder",
+    "content": "\n**Error:** Unknown error\n",
+    "timestamp": 1773129141034
+  },
+  {
+    "round": 4,
+    "role": "reviewer",
+    "content": "\n**Error:** error: unexpected argument '--json' found\n\n  tip: to pass '--json' as a value, use '-- --json'\n\nUsage: codex review [OPTIONS] [PROMPT]\n\nFor more information, try '--help'.\n",
+    "timestamp": 1773129141148
+  }
+]
