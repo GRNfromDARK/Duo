@@ -34,6 +34,15 @@ export const EnvelopeMessageSchema = z.object({
   content: z.string(),
 });
 
+// --- Autonomous Resolution schema (BUG-24: God proxy decision-making) ---
+
+export const AutonomousResolutionSchema = z.object({
+  question: z.string(),
+  choice: z.string(),
+  reflection: z.string(),
+  finalChoice: z.string(),
+});
+
 // --- Main Envelope schema with authority semantic constraints ---
 
 export const GodDecisionEnvelopeSchema = z.object({
@@ -41,6 +50,7 @@ export const GodDecisionEnvelopeSchema = z.object({
   authority: AuthoritySchema,
   actions: z.array(GodActionSchema),
   messages: z.array(EnvelopeMessageSchema),
+  autonomousResolutions: z.array(AutonomousResolutionSchema).optional(),
 }).superRefine((data, ctx) => {
   const hasSystemLog = data.messages.some(m => m.target === 'system_log');
   const hasUserMessage = data.messages.some(m => m.target === 'user');

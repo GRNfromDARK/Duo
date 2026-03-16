@@ -72,6 +72,7 @@ const EXPLORE_INSTRUCTIONS = `## Instructions
 const CODE_INSTRUCTIONS = `## Instructions
 - Implement the required changes following clean code principles.
 - Write robust, correct code with appropriate error handling.
+- Write tests for new functionality — do not rely solely on existing tests to cover your changes.
 - Ensure quality by considering edge cases and writing testable code.
 - Build working solutions, not explanations.
 - Do not ask questions. Decide autonomously and develop directly.`;

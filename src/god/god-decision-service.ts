@@ -167,12 +167,22 @@ export function buildObservationsSection(observations: Observation[]): string {
   return `## Recent Observations\n${lines.join('\n')}`;
 }
 
-function buildPreviousDecisionSection(decisions: GodDecisionEnvelope[]): string {
+export function buildPreviousDecisionSection(decisions: GodDecisionEnvelope[]): string {
   if (decisions.length === 0) return '';
 
   const last = decisions[decisions.length - 1];
   const actionTypes = last.actions.map(a => a.type).join(', ');
-  return `## Last Decision Summary\n- Diagnosis: ${last.diagnosis.summary}\n- Actions: ${actionTypes || 'none'}\n- Authority: userConfirmation=${last.authority.userConfirmation}, reviewerOverride=${last.authority.reviewerOverride}, acceptAuthority=${last.authority.acceptAuthority}`;
+  let section = `## Last Decision Summary\n- Diagnosis: ${last.diagnosis.summary}\n- Actions: ${actionTypes || 'none'}\n- Authority: userConfirmation=${last.authority.userConfirmation}, reviewerOverride=${last.authority.reviewerOverride}, acceptAuthority=${last.authority.acceptAuthority}`;
+
+  // BUG-24: Include autonomous resolutions so God maintains context consistency
+  if (last.autonomousResolutions && last.autonomousResolutions.length > 0) {
+    const resolutionLines = last.autonomousResolutions.map((r, i) =>
+      `  ${i + 1}. Q: ${r.question}\n     Decision: ${r.finalChoice}`,
+    );
+    section += `\n\n### Autonomous Resolutions (God proxy decisions)\n${resolutionLines.join('\n')}`;
+  }
+
+  return section;
 }
 
 // SPEC-DECISION: Hand catalog is generated as a structured list (not full JSON Schema)
@@ -267,20 +277,34 @@ export const PHASE_FOLLOWING_INSTRUCTIONS = `Phase plan compliance:
 - When a Phase Plan is provided, follow the defined phase sequence — do NOT skip phases or create ad-hoc phases
 - For review-type phases: you MUST send_to_reviewer before advancing to the next phase — coder proposals alone are not sufficient
 - Use set_phase ONLY with phase IDs defined in the Phase Plan
-- If the coder's output already covers a later phase's work, still route through the current phase's review before advancing`;
+- If the coder's output already covers a later phase's work, still route through the current phase's review before advancing
+- If you skip or merge phases, explain the reason in a system_log message — one set_phase per decision is preferred; multiple set_phase calls require explanation`;
 
-const SYSTEM_PROMPT = `You are the Sovereign God — the sole decision-maker of the Duo runtime.
+// BUG-24 fix: Proxy decision-making instructions
+export const PROXY_DECISION_INSTRUCTIONS = `Worker question interception (proxy decision-making):
+- When worker output contains questions directed at the user (design decisions, confirmation requests, implementation choices), YOU answer them — do NOT use request_user_input to forward worker questions to the human.
+- For each intercepted question, fill the "autonomousResolutions" array with a two-step process:
+  1. "choice": your initial decision based on codebase context and task goals
+  2. "reflection": review your choice — check consistency with task goals, feasibility, risks, and alternatives
+  3. "finalChoice": your definitive answer after reflection (may differ from initial choice if reflection reveals issues)
+- Then use send_to_coder or send_to_reviewer to communicate your resolved decisions.
+- request_user_input is ONLY for: (a) a genuine human interrupt event was received, (b) the task is fundamentally impossible without information that does not exist anywhere in the codebase or task context.`;
+
+export const SYSTEM_PROMPT = `You are the Sovereign God — the sole decision-maker of the Duo runtime.
 
 Your role:
 - Analyze all observations from coder, reviewer, human, and runtime
 - Make the single authoritative decision for the next step
-- You are fully autonomous and never defer to humans unless explicitly interrupted
+- You are fully autonomous — you NEVER defer to humans for design decisions, implementation choices, or requirement clarification
 - All state changes MUST be expressed as structured actions (Hands), not implied in messages
 - Coder and Reviewer are workers under your management — they do not have accept authority
+- Scope preservation: if the user explicitly named specific roles, components, or items in the task, you MUST include all named items in scope — do not exclude any user-listed item from the MVP or plan
 
 ${PHASE_FOLLOWING_INSTRUCTIONS}
 
 ${REVIEWER_HANDLING_INSTRUCTIONS}
+
+${PROXY_DECISION_INSTRUCTIONS}
 
 Output format: You MUST output a single JSON code block containing a GodDecisionEnvelope:
 
@@ -302,6 +326,14 @@ Output format: You MUST output a single JSON code block containing a GodDecision
   ],
   "messages": [
     { "target": "coder" | "reviewer" | "user" | "system_log", "content": "..." }
+  ],
+  "autonomousResolutions": [
+    {
+      "question": "The worker question being resolved",
+      "choice": "Your initial decision",
+      "reflection": "Review of your choice — consistency, risks, alternatives",
+      "finalChoice": "Your definitive answer after reflection"
+    }
   ]
 }
 \`\`\`
@@ -319,10 +351,12 @@ Do NOT output anything outside the JSON code block.`;
 export class GodDecisionService {
   private readonly adapter: GodAdapter;
   private readonly degradation: DegradationManager;
+  private readonly model?: string;
 
-  constructor(adapter: GodAdapter, degradation: DegradationManager) {
+  constructor(adapter: GodAdapter, degradation: DegradationManager, model?: string) {
     this.adapter = adapter;
     this.degradation = degradation;
+    this.model = model;
   }
 
   /**
@@ -349,6 +383,7 @@ export class GodDecisionService {
         prompt: userPrompt,
         systemPrompt: SYSTEM_PROMPT,
         timeoutMs: GOD_TIMEOUT_MS,
+        model: this.model,
         logging: {
           sessionDir: context.sessionDir,
           round: context.round,
@@ -384,6 +419,7 @@ export class GodDecisionService {
             prompt: retryPrompt,
             systemPrompt: SYSTEM_PROMPT,
             timeoutMs: GOD_TIMEOUT_MS,
+            model: this.model,
             logging: {
               sessionDir: context.sessionDir,
               round: context.round,
