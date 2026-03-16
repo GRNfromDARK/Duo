@@ -103,6 +103,10 @@ export class ClaudeCodeAdapter implements CLIAdapter {
       args.push('--tools', '');
     }
 
+    if (opts.model) {
+      args.push('--model', opts.model);
+    }
+
     args.push('--add-dir', opts.cwd);
 
     if (sessionOpts?.continue) {

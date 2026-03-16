@@ -7,6 +7,8 @@ export interface GodExecOptions {
   cwd: string;
   systemPrompt: string;
   timeoutMs: number;
+  /** Optional model override for the God adapter (e.g. 'claude-opus-4-6'). */
+  model?: string;
 }
 
 export interface GodAdapter {

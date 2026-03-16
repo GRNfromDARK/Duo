@@ -1,11 +1,12 @@
 /**
- * GodDecisionBanner — pure state logic for the God auto-decision escape window.
+ * GodDecisionBanner — pure state logic for God decision display.
  * Card C.1: FR-008 (AC-025, AC-026, AC-027)
  *
  * Framework-agnostic: exports pure functions for state transitions.
  * The Ink component layer consumes these functions.
  *
- * AI-driven mode: execute immediately with no human gate.
+ * ESCAPE_WINDOW_MS=0: decisions execute instantly with no countdown.
+ * Set ESCAPE_WINDOW_MS > 0 to re-enable the escape window.
  */
 
 import type { GodAutoDecision } from '../types/god-schemas.js';

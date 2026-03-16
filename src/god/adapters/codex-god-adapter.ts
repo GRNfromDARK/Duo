@@ -77,6 +77,10 @@ export class CodexGodAdapter implements GodAdapter {
       args.push('--skip-git-repo-check');
     }
 
+    if (opts.model) {
+      args.push('--model', opts.model);
+    }
+
     return args;
   }
 

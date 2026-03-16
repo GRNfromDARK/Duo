@@ -11,6 +11,12 @@ export interface SessionConfig {
   reviewer: string;
   god: GodAdapterName;
   task: string;
+  /** Optional model override for the coder adapter (e.g. 'claude-sonnet-4-6'). */
+  coderModel?: string;
+  /** Optional model override for the reviewer adapter (e.g. 'o4-mini'). */
+  reviewerModel?: string;
+  /** Optional model override for the god adapter (e.g. 'claude-opus-4-6'). */
+  godModel?: string;
 }
 
 export interface StartArgs {
@@ -19,6 +25,9 @@ export interface StartArgs {
   reviewer?: string;
   god?: string;
   task?: string;
+  coderModel?: string;
+  reviewerModel?: string;
+  godModel?: string;
 }
 
 export interface ValidationResult {

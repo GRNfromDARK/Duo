@@ -78,6 +78,7 @@ export async function initializeTask(
   systemPrompt: string,
   projectDir?: string,
   sessionDir?: string,
+  model?: string,
 ): Promise<TaskInitResult | null> {
   const prompt = buildTaskInitPrompt(taskPrompt);
   const rawOutput = await collectGodAdapterOutput({
@@ -86,6 +87,7 @@ export async function initializeTask(
     systemPrompt,
     projectDir,
     timeoutMs: GOD_TIMEOUT_MS,
+    model,
     ...(sessionDir
       ? {
           logging: {
@@ -110,6 +112,7 @@ export async function initializeTask(
         systemPrompt,
         projectDir,
         timeoutMs: GOD_TIMEOUT_MS,
+        model,
         ...(sessionDir
           ? {
               logging: {

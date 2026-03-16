@@ -3,28 +3,32 @@
  * and confirmation screen before session launch.
  */
 
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { DirectoryPicker } from './DirectoryPicker.js';
 import type { DetectedCLI } from '../../adapters/detect.js';
 import { getInstalledGodAdapters, isSupportedGodAdapterName } from '../../god/god-adapter-config.js';
+import { getRegistryEntry, getAdapterModels, CUSTOM_MODEL_SENTINEL } from '../../adapters/registry.js';
 import type { SessionConfig } from '../../types/session.js';
 import { VERSION } from '../../index.js';
 
 // ── Setup phases ──
 
-export type SetupPhase = 'select-dir' | 'select-coder' | 'select-reviewer' | 'select-god' | 'enter-task' | 'confirm';
+export type SetupPhase = 'select-dir' | 'select-coder' | 'coder-model' | 'select-reviewer' | 'reviewer-model' | 'select-god' | 'god-model' | 'enter-task' | 'confirm';
 
 export const PHASE_LABELS: Record<SetupPhase, string> = {
   'select-dir': 'Project',
   'select-coder': 'Coder',
+  'coder-model': 'Coder',
   'select-reviewer': 'Reviewer',
+  'reviewer-model': 'Reviewer',
   'select-god': 'God',
+  'god-model': 'God',
   'enter-task': 'Task',
   'confirm': 'Confirm',
 };
 
-export const PHASE_ORDER: SetupPhase[] = ['select-dir', 'select-coder', 'select-reviewer', 'select-god', 'enter-task', 'confirm'];
+export const PHASE_ORDER: SetupPhase[] = ['select-dir', 'select-coder', 'coder-model', 'select-reviewer', 'reviewer-model', 'select-god', 'god-model', 'enter-task', 'confirm'];
 
 // ── Branded Header ──
 
@@ -102,23 +106,34 @@ export function BrandHeader({ version }: { version: string }): React.ReactElemen
 
 // ── Progress Stepper ──
 
+/** Main display phases (model sub-phases are grouped with their parent) */
+const STEPPER_PHASES: { key: string; label: string; phases: SetupPhase[] }[] = [
+  { key: 'project', label: 'Project', phases: ['select-dir'] },
+  { key: 'coder', label: 'Coder', phases: ['select-coder', 'coder-model'] },
+  { key: 'reviewer', label: 'Reviewer', phases: ['select-reviewer', 'reviewer-model'] },
+  { key: 'god', label: 'God', phases: ['select-god', 'god-model'] },
+  { key: 'task', label: 'Task', phases: ['enter-task'] },
+  { key: 'confirm', label: 'Confirm', phases: ['confirm'] },
+];
+
 function ProgressStepper({ currentPhase }: { currentPhase: SetupPhase }): React.ReactElement {
   const currentIndex = PHASE_ORDER.indexOf(currentPhase);
 
   return (
     <Box paddingX={1} marginTop={1}>
-      {PHASE_ORDER.map((phase, i) => {
-        const isActive = i === currentIndex;
-        const isDone = i < currentIndex;
-        const isLast = i === PHASE_ORDER.length - 1;
+      {STEPPER_PHASES.map((step, i) => {
+        const stepPhaseIndices = step.phases.map((p) => PHASE_ORDER.indexOf(p));
+        const isActive = stepPhaseIndices.includes(currentIndex);
+        const isDone = stepPhaseIndices.every((idx) => idx < currentIndex);
+        const isLast = i === STEPPER_PHASES.length - 1;
 
         const icon = isDone ? '●' : isActive ? '◉' : '○';
         const color = isDone ? 'green' : isActive ? 'cyan' : 'gray';
 
         return (
-          <React.Fragment key={phase}>
+          <React.Fragment key={step.key}>
             <Text color={color} bold={isActive}>
-              {icon} {PHASE_LABELS[phase]}
+              {icon} {step.label}
             </Text>
             {!isLast && <Text dimColor> {'─'} </Text>}
           </React.Fragment>
@@ -258,6 +273,111 @@ export function GodSelector({
   );
 }
 
+// ── Model Selector (list-based, with __custom__ fallback) ──
+
+export { CUSTOM_MODEL_SENTINEL };
+
+export function ModelSelector({
+  roleName,
+  adapterName,
+  cliName,
+  onSubmit,
+}: {
+  roleName: string;
+  adapterName: string;
+  cliName: string;
+  onSubmit: (model: string | undefined) => void;
+}): React.ReactElement {
+  const models = getAdapterModels(cliName);
+  // Items: "Use default" + known models (may include CUSTOM_MODEL_SENTINEL entry).
+  const items: { id: string | undefined; label: string }[] = [
+    { id: undefined, label: 'Use default' },
+    ...models.map((m) => ({ id: m.id, label: `${m.label}  (${m.id})` })),
+  ];
+
+  const [selected, setSelected] = useState(0);
+  const [mode, setMode] = useState<'select' | 'custom'>('select');
+  const [customValue, setCustomValue] = useState('');
+
+  // Refs to avoid stale closures in useInput callback.
+  const selectedRef = useRef(0);
+  const modeRef = useRef<'select' | 'custom'>('select');
+  const customValueRef = useRef('');
+
+  useInput((_input, key) => {
+    if (modeRef.current === 'select') {
+      if (key.upArrow) {
+        const next = Math.max(0, selectedRef.current - 1);
+        selectedRef.current = next;
+        setSelected(next);
+      }
+      if (key.downArrow) {
+        const next = Math.min(items.length - 1, selectedRef.current + 1);
+        selectedRef.current = next;
+        setSelected(next);
+      }
+      if (key.return) {
+        const id = items[selectedRef.current].id;
+        if (id === CUSTOM_MODEL_SENTINEL) {
+          modeRef.current = 'custom';
+          setMode('custom');
+        } else {
+          onSubmit(id);
+        }
+      }
+    } else {
+      // Custom text-input mode.
+      if (key.return) {
+        onSubmit(customValueRef.current.trim() || undefined);
+      } else if (key.backspace || key.delete) {
+        const next = customValueRef.current.slice(0, -1);
+        customValueRef.current = next;
+        setCustomValue(next);
+      } else if (_input && !key.ctrl && !key.meta) {
+        const next = customValueRef.current + _input;
+        customValueRef.current = next;
+        setCustomValue(next);
+      }
+    }
+  });
+
+  if (mode === 'custom') {
+    return (
+      <Box flexDirection="column" paddingX={1}>
+        <Text bold>Model for {roleName} ({adapterName}):</Text>
+        <Text dimColor>  Type a model name and press Enter, or press Enter to use default</Text>
+        <Box marginTop={1}>
+          <Text color="cyan" bold>{'  ▸ '}</Text>
+          <Text color="white">{customValue}</Text>
+          <Text dimColor>{customValue ? '█' : '(default) █'}</Text>
+        </Box>
+      </Box>
+    );
+  }
+
+  return (
+    <Box flexDirection="column" paddingX={1}>
+      <Text bold>Model for {roleName} ({adapterName}):</Text>
+      <Text dimColor>  Use arrow keys to navigate, Enter to select</Text>
+      <Box flexDirection="column" marginTop={1}>
+        {items.map((item, i) => {
+          const isSelected = i === selected;
+          return (
+            <Box key={item.id ?? '__default__'}>
+              <Text color={isSelected ? 'cyan' : 'gray'} bold={isSelected}>
+                {isSelected ? ' ▸ ' : '   '}
+              </Text>
+              <Text color={isSelected ? 'cyan' : 'white'} bold={isSelected}>
+                {item.label}
+              </Text>
+            </Box>
+          );
+        })}
+      </Box>
+    </Box>
+  );
+}
+
 // ── Task Input ──
 
 function TaskInput({ onSubmit }: { onSubmit: (task: string) => void }): React.ReactElement {
@@ -321,10 +441,12 @@ export function ConfirmScreen({
         <Box>
           <Box width={14}><Text bold dimColor>Coder</Text></Box>
           <Text color="blue">{findDisplayName(config.coder)}</Text>
+          {config.coderModel && <Text dimColor> ({config.coderModel})</Text>}
         </Box>
         <Box>
           <Box width={14}><Text bold dimColor>Reviewer</Text></Box>
           <Text color="green">{findDisplayName(config.reviewer)}</Text>
+          {config.reviewerModel && <Text dimColor> ({config.reviewerModel})</Text>}
         </Box>
         <Box>
           <Box width={14}><Text bold dimColor>God</Text></Box>
@@ -333,6 +455,7 @@ export function ConfirmScreen({
               ? `${findDisplayName(config.god)} (same as Reviewer)`
               : findDisplayName(config.god)}
           </Text>
+          {config.godModel && <Text dimColor> ({config.godModel})</Text>}
         </Box>
         <Box>
           <Box width={14}><Text bold dimColor>Task</Text></Box>
@@ -348,6 +471,12 @@ export function ConfirmScreen({
       </Box>
     </Box>
   );
+}
+
+/** Check if a CLI adapter supports model selection based on registry modelFlag. */
+function adapterSupportsModel(name: string): boolean {
+  const entry = getRegistryEntry(name);
+  return Boolean(entry?.modelFlag);
 }
 
 // ── Props ──
@@ -401,7 +530,19 @@ export function SetupWizard({
             detected={detected}
             label="Select Coder (writes code):"
             onSelect={(name) => {
-              setConfig((prev) => ({ ...prev, coder: name }));
+              setConfig((prev) => ({ ...prev, coder: name, coderModel: undefined }));
+              setPhase(adapterSupportsModel(name) ? 'coder-model' : 'select-reviewer');
+            }}
+          />
+        )}
+
+        {phase === 'coder-model' && (
+          <ModelSelector
+            roleName="Coder"
+            adapterName={detected.find((d) => d.name === config.coder)?.displayName ?? config.coder ?? ''}
+            cliName={config.coder ?? ''}
+            onSubmit={(model) => {
+              setConfig((prev) => ({ ...prev, coderModel: model }));
               setPhase('select-reviewer');
             }}
           />
@@ -413,7 +554,19 @@ export function SetupWizard({
             label="Select Reviewer (reviews code):"
             exclude={config.coder}
             onSelect={(name) => {
-              setConfig((prev) => ({ ...prev, reviewer: name }));
+              setConfig((prev) => ({ ...prev, reviewer: name, reviewerModel: undefined }));
+              setPhase(adapterSupportsModel(name) ? 'reviewer-model' : 'select-god');
+            }}
+          />
+        )}
+
+        {phase === 'reviewer-model' && (
+          <ModelSelector
+            roleName="Reviewer"
+            adapterName={detected.find((d) => d.name === config.reviewer)?.displayName ?? config.reviewer ?? ''}
+            cliName={config.reviewer ?? ''}
+            onSubmit={(model) => {
+              setConfig((prev) => ({ ...prev, reviewerModel: model }));
               setPhase('select-god');
             }}
           />
@@ -426,7 +579,19 @@ export function SetupWizard({
             label="Select God (orchestrator):"
             onSelect={(name) => {
               const godValue = (name === SAME_AS_REVIEWER ? config.reviewer! : name) as SessionConfig['god'];
-              setConfig((prev) => ({ ...prev, god: godValue }));
+              setConfig((prev) => ({ ...prev, god: godValue, godModel: undefined }));
+              setPhase(adapterSupportsModel(godValue) ? 'god-model' : 'enter-task');
+            }}
+          />
+        )}
+
+        {phase === 'god-model' && (
+          <ModelSelector
+            roleName="God"
+            adapterName={detected.find((d) => d.name === config.god)?.displayName ?? config.god ?? ''}
+            cliName={config.god ?? ''}
+            onSubmit={(model) => {
+              setConfig((prev) => ({ ...prev, godModel: model }));
               setPhase('enter-task');
             }}
           />
@@ -452,6 +617,9 @@ export function SetupWizard({
                 reviewer: config.reviewer!,
                 god: config.god!,
                 task: config.task!,
+                coderModel: config.coderModel,
+                reviewerModel: config.reviewerModel,
+                godModel: config.godModel,
               });
             }}
             onBack={() => setPhase('enter-task')}

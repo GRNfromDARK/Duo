@@ -42,14 +42,20 @@ export class ClaudeCodeGodAdapter implements GodAdapter {
   }
 
   buildArgs(prompt: string, opts: GodExecOptions): string[] {
-    return [
+    const args = [
       '-p', prompt,
       '--output-format', 'stream-json',
       '--verbose',
       '--system-prompt', opts.systemPrompt,
       '--tools', '',
-      '--add-dir', opts.cwd,
     ];
+
+    if (opts.model) {
+      args.push('--model', opts.model);
+    }
+
+    args.push('--add-dir', opts.cwd);
+    return args;
   }
 
   async *execute(prompt: string, opts: GodExecOptions): AsyncIterable<OutputChunk> {

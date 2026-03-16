@@ -13,6 +13,8 @@ export interface ExecOptions {
   permissionMode?: 'skip' | 'safe';
   /** If true, disable all tools (Claude Code: --tools ""). Used for God orchestrator. */
   disableTools?: boolean;
+  /** Optional model override to pass to the CLI tool (e.g. 'claude-sonnet-4-6'). */
+  model?: string;
 }
 
 export interface OutputChunk {
@@ -45,6 +47,8 @@ export interface CLIRegistryEntry {
   outputFormat: string;
   yoloFlag: string;
   parserType: ParserType;
+  /** CLI flag name used to specify a model (e.g. '--model'). Undefined means not supported. */
+  modelFlag?: string;
 }
 
 export type CLIRegistry = Record<string, CLIRegistryEntry>;

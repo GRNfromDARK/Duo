@@ -96,6 +96,10 @@ export class CodexAdapter implements CLIAdapter {
       args.push('--skip-git-repo-check');
     }
 
+    if (opts.model) {
+      args.push('--model', opts.model);
+    }
+
     return args;
   }
 

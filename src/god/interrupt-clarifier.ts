@@ -36,6 +36,7 @@ If the message is ambiguous, set needsClarification=true and place the clarifyin
 export async function classifyInterruptIntent(
   godAdapter: GodAdapter,
   context: InterruptContext,
+  model?: string,
 ): Promise<InterruptClassification> {
   const prompt = buildInterruptPrompt(context);
 
@@ -46,6 +47,7 @@ export async function classifyInterruptIntent(
       systemPrompt: INTERRUPT_SYSTEM_PROMPT,
       projectDir: context.projectDir,
       timeoutMs: GOD_TIMEOUT_MS,
+      model,
       logging: {
         sessionDir: context.sessionDir,
         round: context.round,

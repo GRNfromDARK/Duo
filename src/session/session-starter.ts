@@ -44,6 +44,18 @@ export function parseStartArgs(argv: string[]): StartArgs {
         if (i + 1 >= argv.length) break;
         args.task = argv[++i];
         break;
+      case '--coder-model':
+        if (i + 1 >= argv.length) break;
+        args.coderModel = argv[++i];
+        break;
+      case '--reviewer-model':
+        if (i + 1 >= argv.length) break;
+        args.reviewerModel = argv[++i];
+        break;
+      case '--god-model':
+        if (i + 1 >= argv.length) break;
+        args.godModel = argv[++i];
+        break;
     }
   }
   return args;
@@ -180,6 +192,9 @@ export async function createSessionConfig(
       reviewer: args.reviewer!,
       god,
       task: args.task!,
+      coderModel: args.coderModel,
+      reviewerModel: args.reviewerModel,
+      godModel: args.godModel,
     },
     validation: { valid: true, errors: [], warnings: allWarnings },
     detectedCLIs: installedNames,

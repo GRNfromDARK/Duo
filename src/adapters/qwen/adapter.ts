@@ -61,6 +61,10 @@ export class QwenAdapter implements CLIAdapter {
       args.push('--yolo');
     }
 
+    if (opts.model) {
+      args.push('--model', opts.model);
+    }
+
     return args;
   }
 

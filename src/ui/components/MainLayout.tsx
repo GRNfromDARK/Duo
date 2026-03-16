@@ -30,6 +30,20 @@ import {
 } from '../overlay-state.js';
 import { buildRenderedMessageLines, type RenderedMessageLine } from '../message-lines.js';
 
+/**
+ * Workflow state hint passed from App to drive context-aware status indicators.
+ * Each field maps to a specific indicator configuration in the message area.
+ */
+export type WorkflowStateHint =
+  | { phase: 'idle' }
+  | { phase: 'llm_running' }                // CODING/REVIEWING — existing ThinkingIndicator
+  | { phase: 'task_init' }                   // God analyzing task
+  | { phase: 'god_deciding' }               // God making routing decision
+  | { phase: 'observing' }                  // Classifying output
+  | { phase: 'executing' }                  // Hand executor running actions
+  | { phase: 'classifying_intent' }         // Classifying user interrupt intent
+  | { phase: 'done' };
+
 export interface MainLayoutProps {
   messages: Message[];
   /** @deprecated Use statusBarProps instead for structured status bar */
@@ -37,6 +51,8 @@ export interface MainLayoutProps {
   columns: number;
   rows: number;
   isLLMRunning?: boolean;
+  /** Workflow state hint for context-aware indicators */
+  workflowState?: WorkflowStateHint;
   onInputSubmit?: (text: string) => void;
   onNewSession?: () => void;
   onInterrupt?: () => void;
@@ -54,6 +70,8 @@ export interface MainLayoutProps {
     currentPhase?: string;
     godAdapter?: string;
     reviewerAdapter?: string;
+    coderModel?: string;
+    reviewerModel?: string;
     degradationLevel?: string;
     godLatency?: number;
   };
@@ -116,12 +134,48 @@ function buildScrollTrack(
   return track;
 }
 
+/**
+ * Resolve indicator props from the workflow state hint.
+ * Returns null if no indicator should be shown.
+ */
+function resolveIndicatorConfig(
+  workflowState: WorkflowStateHint | undefined,
+  isLLMRunning: boolean,
+  messages: Message[],
+): { message: string; color: string; showElapsed: boolean } | null {
+  // No workflowState provided — indicator is handled by the legacy isThinking path below
+  if (!workflowState) {
+    return null;
+  }
+
+  switch (workflowState.phase) {
+    case 'task_init':
+      return { message: 'Analyzing task...', color: 'yellow', showElapsed: true };
+    case 'god_deciding':
+      return { message: 'God deciding next step...', color: 'yellow', showElapsed: true };
+    case 'classifying_intent':
+      return { message: 'Understanding your input...', color: 'yellow', showElapsed: true };
+    case 'observing':
+      return { message: 'Analyzing output...', color: 'yellow', showElapsed: false };
+    case 'executing':
+      return { message: 'Executing actions...', color: 'yellow', showElapsed: false };
+    case 'llm_running':
+      // Use existing shouldShowThinking for LLM states (shows only before first token)
+      return shouldShowThinking(isLLMRunning, messages)
+        ? { message: 'Thinking...', color: 'cyan', showElapsed: false }
+        : null;
+    default:
+      return null;
+  }
+}
+
 export function MainLayout({
   messages,
   statusText,
   columns,
   rows,
   isLLMRunning = false,
+  workflowState,
   onInputSubmit,
   onNewSession,
   onInterrupt,
@@ -168,8 +222,10 @@ export function MainLayout({
     effectiveOffset + visibleSlots,
   );
 
-  // ── Thinking indicator: LLM running but no assistant output yet ──
-  const isThinking = shouldShowThinking(isLLMRunning, visibleFilteredMessages);
+  // ── Status indicator: context-aware thinking/routing/classifying ──
+  const indicatorConfig = resolveIndicatorConfig(workflowState, isLLMRunning, visibleFilteredMessages);
+  // Legacy fallback: when no workflowState provided, use old shouldShowThinking
+  const isThinking = !workflowState && shouldShowThinking(isLLMRunning, visibleFilteredMessages);
 
   // ── Scroll position indicator (scrollbar) ──
   const needsScrollbar = totalLines > visibleSlots;
@@ -352,6 +408,8 @@ export function MainLayout({
               currentPhase={statusBarProps.currentPhase}
               godAdapter={statusBarProps.godAdapter}
               reviewerAdapter={statusBarProps.reviewerAdapter}
+              coderModel={statusBarProps.coderModel}
+              reviewerModel={statusBarProps.reviewerModel}
               degradationLevel={statusBarProps.degradationLevel}
               godLatency={statusBarProps.godLatency}
             />
@@ -386,7 +444,15 @@ export function MainLayout({
               {visibleLines.map((line) => (
                 <RenderedLineView key={line.key} line={line} />
               ))}
-              {isThinking && (
+              {indicatorConfig && (
+                <ThinkingIndicator
+                  columns={needsScrollbar ? columns - 1 : columns}
+                  message={indicatorConfig.message}
+                  color={indicatorConfig.color}
+                  showElapsed={indicatorConfig.showElapsed}
+                />
+              )}
+              {isThinking && !indicatorConfig && (
                 <ThinkingIndicator columns={needsScrollbar ? columns - 1 : columns} />
               )}
               <ScrollIndicator visible={showIndicator} columns={needsScrollbar ? columns - 1 : columns} newMessageCount={newMessageCount} />

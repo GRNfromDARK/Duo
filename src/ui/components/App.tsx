@@ -21,6 +21,7 @@ import type { LoadedSession } from '../../session/session-manager.js';
 import { ConvergenceService } from '../../decision/convergence-service.js';
 import { ChoiceDetector } from '../../decision/choice-detector.js';
 import { MainLayout } from './MainLayout.js';
+import type { WorkflowStateHint } from './MainLayout.js';
 import type { WorkflowStatus } from './StatusBar.js';
 import { SetupWizard } from './SetupWizard.js';
 import { createRoundSummaryMessage } from '../round-summary.js';
@@ -44,6 +45,7 @@ import { buildGodSystemPrompt } from '../../god/god-system-prompt.js';
 import { GodAuditLogger, logEnvelopeDecision } from '../../god/god-audit.js';
 import { DegradationManager } from '../../god/degradation-manager.js';
 import type { GodTaskAnalysis, GodAutoDecision } from '../../types/god-schemas.js';
+import type { GodDecisionEnvelope } from '../../types/god-envelope.js';
 import { TaskAnalysisCard } from './TaskAnalysisCard.js';
 import type { ConvergenceLogEntry } from '../../god/god-convergence.js';
 import { generateCoderPrompt, generateReviewerPrompt } from '../../god/god-prompt-generator.js';
@@ -141,6 +143,11 @@ function getActiveAgentLabel(
 
   if (stateValue === 'CODING') return `${findName(config.coder)}:Coder`;
   if (stateValue === 'REVIEWING') return `${findName(config.reviewer)}:Reviewer`;
+  if (stateValue === 'TASK_INIT') return 'God:Init';
+  if (stateValue === 'GOD_DECIDING') return 'God:Deciding';
+  if (stateValue === 'OBSERVING') return 'God:Observing';
+  if (stateValue === 'EXECUTING') return 'God:Executing';
+  if (stateValue === 'CLARIFYING') return 'God:Clarifying';
   return null;
 }
 
@@ -157,15 +164,7 @@ export function App({ initialConfig, detected, resumeSession }: AppProps): React
     initialConfig.task;
 
   const [sessionConfig, setSessionConfig] = useState<SessionConfig | null>(
-    hasFullConfig
-      ? {
-          projectDir: initialConfig.projectDir,
-          coder: initialConfig.coder,
-          reviewer: initialConfig.reviewer,
-          god: initialConfig.god,
-          task: initialConfig.task,
-        }
-      : null,
+    hasFullConfig ? initialConfig : null,
   );
   const [sessionRunKey, setSessionRunKey] = useState(0);
   const [activeResumeSession, setActiveResumeSession] = useState<LoadedSession | undefined>(
@@ -343,7 +342,7 @@ function SessionRunner({
   const lastWorkerRoleRef = useRef<'coder' | 'reviewer'>('coder');
   // Card D.1: unified God decision service instance
   const godDecisionServiceRef = useRef(
-    new GodDecisionService(godAdapterRef.current, degradationManagerRef.current),
+    new GodDecisionService(godAdapterRef.current, degradationManagerRef.current, config.godModel),
   );
 
   // ── God task analysis state ──
@@ -356,8 +355,12 @@ function SessionRunner({
   const [reclassifyTrigger, setReclassifyTrigger] = useState(0);
 
   // ── God auto-decision state ──
+  // Currently unused since ESCAPE_WINDOW_MS=0 (instant execution bypasses the banner).
+  // Kept for future re-enablement of the escape window.
   const [godDecision, setGodDecision] = useState<GodAutoDecision | null>(null);
   const [showGodBanner, setShowGodBanner] = useState(false);
+  // Stores the pending envelope when GodDecisionBanner escape window is active
+  const pendingEnvelopeRef = useRef<GodDecisionEnvelope | null>(null);
 
   // ── Reclassify overlay state (Ctrl+R) — Card C.3 ──
   const [showReclassify, setShowReclassify] = useState(false);
@@ -377,6 +380,8 @@ function SessionRunner({
   const [messages, setMessages] = useState<Message[]>(() => restoredRuntime?.messages ?? []);
   const [tokenCount, setTokenCount] = useState(() => restoredRuntime?.tokenCount ?? 0);
   const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>([]);
+  // Tracks whether interrupt intent classification is in progress (for indicator)
+  const [isClassifyingIntent, setIsClassifyingIntent] = useState(false);
 
   // ── Unique message ID generator (session-scoped prefix + monotonic counter) ──
   const msgIdPrefix = useRef(`msg-${Date.now().toString(36)}`);
@@ -421,16 +426,21 @@ function SessionRunner({
   // ── Helper: estimate tokens from text ──
   const estimateTokens = (text: string) => Math.ceil(text.length / 4);
 
-  // ── Helper: get adapter display name ──
+  // ── Helper: get adapter display name (with optional model suffix) ──
   const getDisplayName = (adapterName: string) =>
     detected.find((d) => d.name === adapterName)?.displayName ?? adapterName;
+
+  const formatRoleLabel = (adapterName: string, model?: string) => {
+    const name = getDisplayName(adapterName);
+    return model ? `${name} (${model})` : name;
+  };
 
   // ── Create session on mount ──
   useEffect(() => {
     if (resumeSession && restoredRuntime) {
       addMessage({
         role: 'system',
-        content: `Session resumed. Coder: ${getDisplayName(config.coder)}, Reviewer: ${getDisplayName(config.reviewer)}`,
+        content: `Session resumed. Coder: ${formatRoleLabel(config.coder, config.coderModel)}, Reviewer: ${formatRoleLabel(config.reviewer, config.reviewerModel)}`,
         timestamp: Date.now(),
       });
 
@@ -476,7 +486,7 @@ function SessionRunner({
     // Add initial system message
     addMessage({
       role: 'system',
-      content: `Session started. Coder: ${getDisplayName(config.coder)}, Reviewer: ${getDisplayName(config.reviewer)}`,
+      content: `Session started. Coder: ${formatRoleLabel(config.coder, config.coderModel)}, Reviewer: ${formatRoleLabel(config.reviewer, config.reviewerModel)}`,
       timestamp: Date.now(),
     });
 
@@ -537,6 +547,7 @@ function SessionRunner({
             systemPrompt,
             config.projectDir,
             sessionIdRef.current ? getSessionDir() : undefined,
+            config.godModel,
           );
 
           // Treat null result as schema_validation failure to trigger retry
@@ -733,6 +744,7 @@ function SessionRunner({
         const execOpts = {
           cwd: config.projectDir,
           permissionMode: 'skip' as const,
+          model: config.coderModel,
         };
 
         // Codex adapter needs role hint
@@ -1004,6 +1016,7 @@ function SessionRunner({
         const execOpts = {
           cwd: config.projectDir,
           permissionMode: 'skip' as const,
+          model: config.reviewerModel,
         };
 
         let source: AsyncIterable<OutputChunk>;
@@ -1269,6 +1282,10 @@ function SessionRunner({
           });
         }
 
+        // GodDecisionBanner is configured for instant execution (ESCAPE_WINDOW_MS=0),
+        // so we send DECISION_READY directly without routing through the visual banner.
+        // To re-enable the escape window, set ESCAPE_WINDOW_MS > 0 in god-decision-banner.ts
+        // and route through setShowGodBanner(true) + pendingEnvelopeRef here.
         send({ type: 'DECISION_READY', envelope });
       } catch (err) {
         clearTimeout(timeoutId);
@@ -1339,6 +1356,11 @@ function SessionRunner({
           pendingReviewerInstructionRef.current = handContext.pendingReviewerMessage;
         }
         if (handContext.currentPhaseId !== (currentPhaseId ?? 'default')) {
+          addMessage({
+            role: 'system',
+            content: `→ Phase transition: ${currentPhaseId ?? 'default'} → ${handContext.currentPhaseId}`,
+            timestamp: Date.now(),
+          });
           setCurrentPhaseId(handContext.currentPhaseId);
           // Bug 3 fix: clear unresolvedIssues on phase transition
           lastUnresolvedIssuesRef.current = [];
@@ -1347,6 +1369,13 @@ function SessionRunner({
         // Bug 3 fix: clear unresolvedIssues on accept_task or convergence
         if (handContext.taskCompleted || envelope.actions.some(a => a.type === 'accept_task')) {
           lastUnresolvedIssuesRef.current = [];
+          if (envelope.actions.some(a => a.type === 'accept_task')) {
+            addMessage({
+              role: 'system',
+              content: '✓ Task accepted by God',
+              timestamp: Date.now(),
+            });
+          }
         }
 
         // Card E.2: Display God's clarification question with styled formatting
@@ -1486,11 +1515,13 @@ function SessionRunner({
         };
 
         if (degradationManagerRef.current.isGodAvailable()) {
+          setIsClassifyingIntent(true);
           void (async () => {
             try {
               const classification = await classifyInterruptIntent(
                 godAdapterRef.current,
                 interruptContext,
+                config.godModel,
               );
 
               if (classification.needsClarification) {
@@ -1526,6 +1557,8 @@ function SessionRunner({
             } catch {
               pendingInstructionRef.current = text;
               send({ type: 'OBSERVATIONS_READY', observations: [createObservation('clarification_answer', 'human', text, { round: ctx.round, severity: 'info', rawRef: text })] });
+            } finally {
+              setIsClassifyingIntent(false);
             }
           })();
         } else {
@@ -1651,42 +1684,34 @@ function SessionRunner({
     addTimelineEvent('task_start', 'TaskAnalysisCard auto-confirmed (timeout)');
   }, [addTimelineEvent]);
 
-  // ── GodDecisionBanner execute handler (AC-5) ──
+  // ── GodDecisionBanner handlers ──
+  // Currently unused: ESCAPE_WINDOW_MS=0 means decisions execute instantly
+  // without routing through the visual banner. Kept for future re-enablement
+  // of the escape window (set ESCAPE_WINDOW_MS > 0 in god-decision-banner.ts).
   const handleGodDecisionExecute = useCallback(() => {
     if (!godDecision) return;
     setShowGodBanner(false);
 
-    if (godDecision.action === 'accept') {
-      addMessage({
-        role: 'system',
-        content: 'God auto-decision: accepting output.',
-        timestamp: Date.now(),
-      });
-      addTimelineEvent('task_start', 'God auto-decision: accept');
-      send({ type: 'USER_CONFIRM', action: 'accept' });
-    } else if (godDecision.action === 'continue_with_instruction') {
-      pendingInstructionRef.current = godDecision.instruction ?? null;
-      addMessage({
-        role: 'system',
-        content: `God auto-decision: continue with instruction "${godDecision.instruction ?? ''}"`,
-        timestamp: Date.now(),
-      });
-      addTimelineEvent('task_start', 'God auto-decision: continue_with_instruction');
-      send({ type: 'USER_CONFIRM', action: 'continue' });
+    const envelope = pendingEnvelopeRef.current;
+    if (envelope) {
+      pendingEnvelopeRef.current = null;
+      addTimelineEvent('task_start', `God decision executed: ${godDecision.action}`);
+      send({ type: 'DECISION_READY', envelope });
     }
-  }, [godDecision, send, addMessage, addTimelineEvent]);
+  }, [godDecision, send, addTimelineEvent]);
 
-  // ── GodDecisionBanner cancel handler (AC-4) ──
   const handleGodDecisionCancel = useCallback(() => {
     setShowGodBanner(false);
     setGodDecision(null);
+    pendingEnvelopeRef.current = null;
     addMessage({
       role: 'system',
       content: 'God auto-decision cancelled. Waiting for your decision. Type [c] to continue, [a] to accept, or enter new instructions.',
       timestamp: Date.now(),
     });
     addTimelineEvent('task_start', 'God auto-decision: cancelled by user');
-  }, [addMessage, addTimelineEvent]);
+    send({ type: 'MANUAL_FALLBACK_REQUIRED' } as any);
+  }, [send, addMessage, addTimelineEvent]);
 
   // ── Ctrl+R reclassify handler — Card C.3 (AC-010) ──
   const handleReclassify = useCallback(() => {
@@ -1827,6 +1852,21 @@ function SessionRunner({
   const activeAgent = getActiveAgentLabel(stateValue, config, detected);
   const isLLMRunning = stateValue === 'CODING' || stateValue === 'REVIEWING';
 
+  // ── Compute workflow state hint for context-aware indicators ──
+  const workflowState: WorkflowStateHint = (() => {
+    if (isClassifyingIntent) return { phase: 'classifying_intent' as const };
+    switch (stateValue) {
+      case 'TASK_INIT': return { phase: 'task_init' as const };
+      case 'GOD_DECIDING': return { phase: 'god_deciding' as const };
+      case 'OBSERVING': return { phase: 'observing' as const };
+      case 'EXECUTING': return { phase: 'executing' as const };
+      case 'CODING':
+      case 'REVIEWING': return { phase: 'llm_running' as const };
+      case 'DONE': return { phase: 'done' as const };
+      default: return { phase: 'idle' as const };
+    }
+  })();
+
   // ── Context data for overlay ──
   const contextData = {
     roundNumber: ctx.round + 1,
@@ -1899,6 +1939,7 @@ function SessionRunner({
       columns={columns}
       rows={rows}
       isLLMRunning={isLLMRunning}
+      workflowState={workflowState}
       onInputSubmit={handleInputSubmit}
       onNewSession={() => {
         // Not implemented in v1: would need to reset state
@@ -1915,6 +1956,8 @@ function SessionRunner({
         currentPhase: currentPhaseId ?? undefined,
         godAdapter: config.god,
         reviewerAdapter: config.reviewer,
+        coderModel: config.coderModel,
+        reviewerModel: config.reviewerModel,
         degradationLevel: degradationManagerRef.current.getState().level,
         godLatency,
       }}

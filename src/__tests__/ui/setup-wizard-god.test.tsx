@@ -26,22 +26,24 @@ const DETECTED: DetectedCLI[] = [
 ];
 
 describe('SetupWizard — God selection (Card A.1)', () => {
-  // AC-1: PHASE_ORDER has 6 phases with God between Reviewer and Task
+  // AC-1: PHASE_ORDER has 9 phases (includes model sub-phases) with God between Reviewer and Task
   describe('PHASE_ORDER', () => {
-    it('has 6 phases', () => {
-      expect(PHASE_ORDER).toHaveLength(6);
+    it('has 9 phases (including model selection sub-phases)', () => {
+      expect(PHASE_ORDER).toHaveLength(9);
     });
 
     it('includes select-god phase', () => {
       expect(PHASE_ORDER).toContain('select-god');
     });
 
-    it('places select-god after select-reviewer and before enter-task', () => {
-      const reviewerIdx = PHASE_ORDER.indexOf('select-reviewer');
+    it('places select-god after reviewer-model and before god-model', () => {
+      const reviewerModelIdx = PHASE_ORDER.indexOf('reviewer-model');
       const godIdx = PHASE_ORDER.indexOf('select-god');
+      const godModelIdx = PHASE_ORDER.indexOf('god-model');
       const taskIdx = PHASE_ORDER.indexOf('enter-task');
-      expect(godIdx).toBe(reviewerIdx + 1);
-      expect(godIdx).toBe(taskIdx - 1);
+      expect(godIdx).toBe(reviewerModelIdx + 1);
+      expect(godModelIdx).toBe(godIdx + 1);
+      expect(taskIdx).toBe(godModelIdx + 1);
     });
   });
 

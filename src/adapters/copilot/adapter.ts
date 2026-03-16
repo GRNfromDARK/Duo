@@ -58,6 +58,10 @@ export class CopilotAdapter implements CLIAdapter {
       args.push('--allow-all-tools');
     }
 
+    if (opts.model) {
+      args.push('--model', opts.model);
+    }
+
     return args;
   }
 

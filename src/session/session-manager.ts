@@ -26,6 +26,9 @@ export interface SessionMetadata {
   reviewer: string;
   god?: string;
   task: string;
+  coderModel?: string;
+  reviewerModel?: string;
+  godModel?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -184,6 +187,9 @@ export class SessionManager {
       reviewer: config.reviewer,
       god: config.god,
       task: config.task,
+      coderModel: config.coderModel,
+      reviewerModel: config.reviewerModel,
+      godModel: config.godModel,
       createdAt: now,
       updatedAt: now,
     };

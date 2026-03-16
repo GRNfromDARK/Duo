@@ -58,6 +58,10 @@ export class AiderAdapter implements CLIAdapter {
       args.push('--yes-always');
     }
 
+    if (opts.model) {
+      args.push('--model', opts.model);
+    }
+
     return args;
   }
 

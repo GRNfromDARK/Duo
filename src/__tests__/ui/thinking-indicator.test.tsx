@@ -35,18 +35,26 @@ describe('shouldShowThinking', () => {
     expect(shouldShowThinking(true, [msg('user')])).toBe(true);
   });
 
-  it('returns false when last message is an assistant role', () => {
-    expect(shouldShowThinking(true, [msg('user'), msg('claude-code')])).toBe(false);
-    expect(shouldShowThinking(true, [msg('user'), msg('codex')])).toBe(false);
-    expect(shouldShowThinking(true, [msg('user'), msg('gemini')])).toBe(false);
+  it('returns true when last message is a completed (non-streaming) assistant role', () => {
+    // When isLLMRunning=true but last assistant message is completed,
+    // a new round is starting and the streaming message hasn't been added yet → show
+    expect(shouldShowThinking(true, [msg('user'), msg('claude-code')])).toBe(true);
+    expect(shouldShowThinking(true, [msg('user'), msg('codex')])).toBe(true);
+    expect(shouldShowThinking(true, [msg('user'), msg('gemini')])).toBe(true);
+  });
+
+  it('returns false when last message is an actively streaming assistant', () => {
+    // Streaming with real content = LLM actively producing output → hide
+    expect(shouldShowThinking(true, [msg('user'), msg('claude-code', undefined, { content: 'Hello', isStreaming: true })])).toBe(false);
+    expect(shouldShowThinking(true, [msg('user'), msg('codex', undefined, { content: 'Review', isStreaming: true })])).toBe(false);
   });
 
   it('returns true when last message is system after user (no assistant yet)', () => {
     expect(shouldShowThinking(true, [msg('user'), msg('system')])).toBe(true);
   });
 
-  it('returns false when assistant message exists after user, even with system in between', () => {
-    expect(shouldShowThinking(true, [msg('user'), msg('system'), msg('claude-code')])).toBe(false);
+  it('returns true when completed assistant message exists after user (new round pending)', () => {
+    expect(shouldShowThinking(true, [msg('user'), msg('system'), msg('claude-code')])).toBe(true);
   });
 
   it('returns true when only system messages exist', () => {
@@ -59,18 +67,21 @@ describe('shouldShowThinking', () => {
     expect(shouldShowThinking(true, messages)).toBe(true);
   });
 
-  it('handles multi-turn correctly: assistant responded to latest user', () => {
+  it('handles multi-turn correctly: completed assistant after latest user (new round pending)', () => {
     const messages = [msg('user'), msg('claude-code'), msg('user'), msg('codex')];
-    expect(shouldShowThinking(true, messages)).toBe(false);
+    expect(shouldShowThinking(true, messages)).toBe(true);
   });
 
-  it('handles all adapter roles as assistant', () => {
+  it('handles all adapter roles as assistant (completed = show, streaming with content = hide)', () => {
     const adapterRoles: RoleName[] = [
       'claude-code', 'codex', 'gemini', 'copilot', 'aider',
       'amazon-q', 'cursor', 'cline', 'continue', 'goose', 'amp', 'qwen',
     ];
     for (const role of adapterRoles) {
-      expect(shouldShowThinking(true, [msg('user'), msg(role)])).toBe(false);
+      // Completed assistant → new round pending → show
+      expect(shouldShowThinking(true, [msg('user'), msg(role)])).toBe(true);
+      // Streaming with content → actively producing → hide
+      expect(shouldShowThinking(true, [msg('user'), msg(role, undefined, { content: 'output', isStreaming: true })])).toBe(false);
     }
   });
 
@@ -91,13 +102,13 @@ describe('shouldShowThinking', () => {
     expect(shouldShowThinking(true, messages)).toBe(false);
   });
 
-  it('returns false for non-streaming assistant with empty content', () => {
-    // Edge case: empty content but not streaming → treat as real output
+  it('returns true for non-streaming assistant with empty content (new round pending)', () => {
+    // Non-streaming assistant = completed from previous round → show thinking
     const messages = [
       msg('user'),
       msg('claude-code', undefined, { content: '' }),
     ];
-    expect(shouldShowThinking(true, messages)).toBe(false);
+    expect(shouldShowThinking(true, messages)).toBe(true);
   });
 
   it('returns true with streaming placeholder after system message', () => {
@@ -114,6 +125,56 @@ describe('shouldShowThinking', () => {
       msg('user'),
       msg('claude-code', undefined, { content: '   \n  ', isStreaming: true }),
     ];
+    expect(shouldShowThinking(true, messages)).toBe(true);
+  });
+
+  // ── Multi-round scenarios (round 2+) ──
+
+  it('returns true when streaming placeholder follows previous assistant output (round 2+)', () => {
+    // Round 2: previous coder/reviewer output exists, new coder streaming starts
+    const messages = [
+      msg('user'),
+      msg('claude-code'),   // round 1 coder output
+      msg('codex'),         // round 1 reviewer output
+      msg('system'),        // round summary
+      streamingPlaceholder('claude-code'), // round 2 coder starting
+    ];
+    expect(shouldShowThinking(true, messages)).toBe(true);
+  });
+
+  it('returns true when reviewer streaming placeholder follows coder output (same round)', () => {
+    // Reviewer starts after coder finishes in the same round
+    const messages = [
+      msg('user'),
+      msg('claude-code'),   // coder output
+      streamingPlaceholder('codex'), // reviewer starting
+    ];
+    expect(shouldShowThinking(true, messages)).toBe(true);
+  });
+
+  it('returns false when round 2 assistant has real content', () => {
+    const messages = [
+      msg('user'),
+      msg('claude-code'),   // round 1 coder
+      msg('codex'),         // round 1 reviewer
+      msg('system'),        // round summary
+      msg('claude-code', undefined, { content: 'Round 2 output', isStreaming: true }),
+    ];
+    expect(shouldShowThinking(true, messages)).toBe(false);
+  });
+
+  it('returns true when round 2 starts but streaming message not yet added (race condition fix)', () => {
+    // This is the key bug scenario: state transitions to CODING (isLLMRunning=true)
+    // but the useEffect hasn't added the empty streaming message yet.
+    // The last message is a completed assistant from the previous round.
+    const messages = [
+      msg('user'),
+      msg('claude-code', undefined, { content: 'Round 1 coder output', isStreaming: false }),
+      msg('system'),        // round summary
+      msg('codex', undefined, { content: 'Round 1 reviewer output', isStreaming: false }),
+      msg('system'),        // god decision
+    ];
+    // isLLMRunning=true but no new streaming message yet → should show thinking
     expect(shouldShowThinking(true, messages)).toBe(true);
   });
 });
@@ -152,5 +213,46 @@ describe('ThinkingIndicator component', () => {
     const output = lastFrame()!;
     // First frame should be ⣾ (index 0)
     expect(output).toContain('⣾');
+  });
+
+  it('renders custom message when provided', () => {
+    const { lastFrame } = render(<ThinkingIndicator columns={80} message="Analyzing task..." />);
+    const output = lastFrame()!;
+    expect(output).toContain('Analyzing task...');
+    expect(output).not.toContain('Thinking...');
+  });
+
+  it('renders default message when message prop not provided', () => {
+    const { lastFrame } = render(<ThinkingIndicator columns={80} />);
+    const output = lastFrame()!;
+    expect(output).toContain('Thinking...');
+  });
+
+  it('shows elapsed time counter when showElapsed is true', () => {
+    const { lastFrame } = render(
+      <ThinkingIndicator columns={80} message="God deciding..." showElapsed={true} />,
+    );
+    // Initially shows (0s)
+    const output = lastFrame()!;
+    expect(output).toContain('(0s)');
+    expect(output).toContain('God deciding...');
+  });
+
+  it('does not show elapsed time when showElapsed is false', () => {
+    const { lastFrame } = render(
+      <ThinkingIndicator columns={80} message="Thinking..." showElapsed={false} />,
+    );
+    expect(lastFrame()!).not.toContain('(0s)');
+  });
+
+  it('cleans up elapsed timer on unmount', () => {
+    vi.useFakeTimers();
+    const { unmount } = render(
+      <ThinkingIndicator columns={80} showElapsed={true} />,
+    );
+    vi.advanceTimersByTime(2000);
+    unmount();
+    // No errors from dangling interval
+    vi.advanceTimersByTime(5000);
   });
 });

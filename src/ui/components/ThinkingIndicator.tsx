@@ -4,6 +4,12 @@ import type { Message, RoleName } from '../../types/ui.js';
 
 export interface ThinkingIndicatorProps {
   columns: number;
+  /** Custom message to display (default: "Thinking...") */
+  message?: string;
+  /** Spinner/message color (default: "cyan") */
+  color?: string;
+  /** Whether to show elapsed time counter (default: false) */
+  showElapsed?: boolean;
 }
 
 const SPINNER_CHARS = ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷'];
@@ -28,9 +34,11 @@ function isEmptyStreamingPlaceholder(message: Message): boolean {
  * Determine whether the thinking indicator should be visible.
  *
  * Shows only when the LLM is running AND no *real* assistant output has
- * appeared since the last user message. Walks the message array backwards:
- * - Empty streaming assistant placeholder → skip (not real output yet)
- * - Non-empty assistant message → LLM has started outputting → hide
+ * appeared for the current turn. Walks the message array backwards:
+ * - Empty streaming assistant placeholder → show (waiting for first token)
+ * - Actively streaming with content → LLM producing output → hide
+ * - Completed (non-streaming) assistant message → new round starting,
+ *   streaming message not yet created → show
  * - User message reached → still waiting for output → show
  * - Only system messages or empty array → show (first turn)
  */
@@ -43,9 +51,13 @@ export function shouldShowThinking(
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i]!;
     if (isAssistantRole(msg.role)) {
-      // Empty streaming placeholder doesn't count as real output
-      if (isEmptyStreamingPlaceholder(msg)) continue;
-      return false;
+      // Empty streaming placeholder = waiting for first token → show
+      if (isEmptyStreamingPlaceholder(msg)) return true;
+      // Actively streaming with content = LLM producing output → hide
+      if (msg.isStreaming) return false;
+      // Completed message (not streaming) while LLM is running =
+      // new round starting, streaming message not yet created → show
+      return true;
     }
     if (msg.role === 'user') return true;
   }
@@ -54,32 +66,59 @@ export function shouldShowThinking(
   return true;
 }
 
-export function ThinkingIndicator({ columns }: ThinkingIndicatorProps): React.ReactElement {
+export function ThinkingIndicator({
+  columns,
+  message = 'Thinking...',
+  color = 'cyan',
+  showElapsed = false,
+}: ThinkingIndicatorProps): React.ReactElement {
   const [frame, setFrame] = useState(0);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const elapsedRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     // Reset frame on mount (fresh animation each time indicator appears)
     setFrame(0);
+    setElapsedSeconds(0);
 
     intervalRef.current = setInterval(() => {
       setFrame((f) => (f + 1) % SPINNER_CHARS.length);
     }, SPIN_INTERVAL_MS);
+
+    if (showElapsed) {
+      elapsedRef.current = setInterval(() => {
+        setElapsedSeconds((s) => s + 1);
+      }, 1000);
+    }
 
     return () => {
       if (intervalRef.current !== null) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
       }
+      if (elapsedRef.current !== null) {
+        clearInterval(elapsedRef.current);
+        elapsedRef.current = null;
+      }
     };
-  }, []);
+  }, [showElapsed]);
 
   const spinner = SPINNER_CHARS[frame]!;
 
+  // Color escalation for long waits when showing elapsed time
+  const effectiveColor = showElapsed && elapsedSeconds >= 60
+    ? 'red'
+    : showElapsed && elapsedSeconds >= 30
+      ? 'yellow'
+      : color;
+
+  const elapsedSuffix = showElapsed ? ` (${elapsedSeconds}s)` : '';
+
   return (
     <Box height={1} width={columns}>
-      <Text color="cyan">{spinner}</Text>
-      <Text dimColor> Thinking...</Text>
+      <Text color={effectiveColor}>{spinner}</Text>
+      <Text color={effectiveColor}> {message}{elapsedSuffix}</Text>
     </Box>
   );
 }

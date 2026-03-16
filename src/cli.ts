@@ -91,6 +91,9 @@ if (command === 'start') {
         reviewer: result.session.metadata.reviewer,
         god: resolvedGod.god,
         task: result.session.metadata.task,
+        coderModel: result.session.metadata.coderModel,
+        reviewerModel: result.session.metadata.reviewerModel,
+        godModel: result.session.metadata.godModel,
       };
 
       const { waitUntilExit } = render(
@@ -135,7 +138,17 @@ if (command === 'start') {
   console.log('  duo log <id> --type <t>   Filter by decision type');
   console.log('  duo --version             Show version');
   console.log('');
+  console.log('Options:');
+  console.log('  --coder <cli>             CLI tool for coding (e.g. claude-code, codex)');
+  console.log('  --reviewer <cli>          CLI tool for reviewing');
+  console.log('  --coder-model <model>     Model override for coder (e.g. claude-sonnet-4-6)');
+  console.log('  --reviewer-model <model>  Model override for reviewer (e.g. o4-mini)');
+  console.log('  --god <cli>               CLI tool for God orchestrator');
+  console.log('  --god-model <model>       Model override for God (e.g. claude-opus-4-6)');
+  console.log('  --task <desc>             Task description');
+  console.log('');
   console.log('Examples:');
   console.log('  duo start --coder claude-code --reviewer codex --task "Add JWT auth"');
+  console.log('  duo start --coder claude-code --coder-model claude-sonnet-4-6 --reviewer codex --reviewer-model o4-mini --task "Fix bug"');
   console.log('  duo start   # Interactive setup wizard');
 }

@@ -293,10 +293,17 @@ describe('MainLayout', () => {
     expect(output).toContain('Thinking...');
   });
 
-  it('hides thinking indicator when assistant response arrives', () => {
+  it('hides thinking indicator when assistant is actively streaming content', () => {
+    const streamingMsg: Message = {
+      id: 'streaming-active',
+      role: 'claude-code',
+      content: 'Hi there',
+      isStreaming: true,
+      timestamp: Date.now(),
+    };
     const { lastFrame } = render(
       <MainLayout
-        messages={[msg('user', 'Hello'), msg('claude-code', 'Hi there')]}
+        messages={[msg('user', 'Hello'), streamingMsg]}
         statusText="Duo"
         columns={80}
         rows={24}
@@ -321,7 +328,9 @@ describe('MainLayout', () => {
     expect(output).not.toContain('Thinking...');
   });
 
-  it('does not show thinking indicator when last message is system after assistant', () => {
+  it('shows thinking indicator when last message is system after completed assistant (new round)', () => {
+    // When isLLMRunning=true and last assistant message is completed (not streaming),
+    // a new round is starting → show thinking
     const { lastFrame } = render(
       <MainLayout
         messages={[msg('user', 'Hello'), msg('claude-code', 'Reply'), msg('system', 'Event')]}
@@ -332,7 +341,7 @@ describe('MainLayout', () => {
       />
     );
     const output = lastFrame()!;
-    expect(output).not.toContain('Thinking...');
+    expect(output).toContain('Thinking...');
   });
 
   it('shows thinking indicator when system message follows user (no assistant yet)', () => {
@@ -399,6 +408,153 @@ describe('MainLayout', () => {
         columns={80}
         rows={24}
         isLLMRunning={true}
+      />
+    );
+    const output = lastFrame()!;
+    expect(output).not.toContain('Thinking...');
+  });
+
+  // ── workflowState-driven indicator tests ──
+
+  it('shows "Analyzing task..." indicator when workflowState is task_init', () => {
+    const { lastFrame } = render(
+      <MainLayout
+        messages={[]}
+        statusText="Duo"
+        columns={80}
+        rows={24}
+        workflowState={{ phase: 'task_init' }}
+      />
+    );
+    const output = lastFrame()!;
+    expect(output).toContain('Analyzing task...');
+  });
+
+  it('shows "God deciding next step..." indicator when workflowState is god_deciding', () => {
+    const { lastFrame } = render(
+      <MainLayout
+        messages={[]}
+        statusText="Duo"
+        columns={80}
+        rows={24}
+        workflowState={{ phase: 'god_deciding' }}
+      />
+    );
+    const output = lastFrame()!;
+    expect(output).toContain('God deciding next step...');
+  });
+
+  it('shows "Understanding your input..." indicator when workflowState is classifying_intent', () => {
+    const { lastFrame } = render(
+      <MainLayout
+        messages={[msg('user', 'stop')]}
+        statusText="Duo"
+        columns={80}
+        rows={24}
+        workflowState={{ phase: 'classifying_intent' }}
+      />
+    );
+    const output = lastFrame()!;
+    expect(output).toContain('Understanding your input...');
+  });
+
+  it('shows "Executing actions..." indicator when workflowState is executing', () => {
+    const { lastFrame } = render(
+      <MainLayout
+        messages={[]}
+        statusText="Duo"
+        columns={80}
+        rows={24}
+        workflowState={{ phase: 'executing' }}
+      />
+    );
+    const output = lastFrame()!;
+    expect(output).toContain('Executing actions...');
+  });
+
+  it('shows "Analyzing output..." indicator when workflowState is observing', () => {
+    const { lastFrame } = render(
+      <MainLayout
+        messages={[]}
+        statusText="Duo"
+        columns={80}
+        rows={24}
+        workflowState={{ phase: 'observing' }}
+      />
+    );
+    const output = lastFrame()!;
+    expect(output).toContain('Analyzing output...');
+  });
+
+  it('shows no indicator when workflowState is idle', () => {
+    const { lastFrame } = render(
+      <MainLayout
+        messages={[msg('user', 'Hello')]}
+        statusText="Duo"
+        columns={80}
+        rows={24}
+        workflowState={{ phase: 'idle' }}
+      />
+    );
+    const output = lastFrame()!;
+    expect(output).not.toContain('Thinking...');
+    expect(output).not.toContain('Analyzing');
+    expect(output).not.toContain('God deciding');
+  });
+
+  it('shows no indicator when workflowState is done', () => {
+    const { lastFrame } = render(
+      <MainLayout
+        messages={[msg('system', 'Completed')]}
+        statusText="Duo"
+        columns={80}
+        rows={24}
+        workflowState={{ phase: 'done' }}
+      />
+    );
+    const output = lastFrame()!;
+    expect(output).not.toContain('Thinking...');
+    expect(output).not.toContain('Analyzing');
+  });
+
+  it('shows Thinking indicator for llm_running state with empty streaming placeholder', () => {
+    const streamingPlaceholder: Message = {
+      id: 'sp-1',
+      role: 'claude-code',
+      content: '',
+      isStreaming: true,
+      timestamp: Date.now(),
+    };
+    const { lastFrame } = render(
+      <MainLayout
+        messages={[msg('user', 'Hello'), streamingPlaceholder]}
+        statusText="Duo"
+        columns={80}
+        rows={24}
+        isLLMRunning={true}
+        workflowState={{ phase: 'llm_running' }}
+      />
+    );
+    const output = lastFrame()!;
+    expect(output).toContain('Thinking...');
+  });
+
+  it('hides indicator for llm_running when streaming has content', () => {
+    const streamingWithContent: Message = {
+      id: 'sw-1',
+      role: 'claude-code',
+      content: 'Output',
+      isStreaming: true,
+      timestamp: Date.now(),
+    };
+    const { lastFrame } = render(
+      <MainLayout
+        messages={[msg('user', 'Hello'), streamingWithContent]}
+        statusText="Duo"
+        columns={80}
+        rows={24}
+        isLLMRunning={true}
+        workflowState={{ phase: 'llm_running' }}
       />
     );
     const output = lastFrame()!;

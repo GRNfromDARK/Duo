@@ -23,6 +23,8 @@ export interface StatusBarProps {
   columns: number;
   godAdapter?: string;
   reviewerAdapter?: string;
+  coderModel?: string;
+  reviewerModel?: string;
   taskType?: string;
   currentPhase?: string;
   degradationLevel?: string; // L1/L2/L3/L4
@@ -76,6 +78,8 @@ export function StatusBar({
   columns,
   godAdapter,
   reviewerAdapter,
+  coderModel,
+  reviewerModel,
   taskType,
   currentPhase,
   degradationLevel,
@@ -86,6 +90,12 @@ export function StatusBar({
   const agentStr = activeAgent ? `${activeAgent} ${cfg.icon} ${cfg.label}` : `${cfg.icon} ${cfg.label}`;
   const progressBar = buildProgressBar(round, maxRounds, 6);
   const roundStr = `${progressBar} ${round}/${maxRounds}`;
+
+  // Build model display string: show active role's model if set
+  const activeModel = activeAgent?.includes(':Coder') ? coderModel
+    : activeAgent?.includes(':Reviewer') ? reviewerModel
+    : undefined;
+  const modelStr = activeModel ? `⊛${activeModel}` : '';
 
   // Show God adapter only when it differs from reviewer
   const showGod = godAdapter && reviewerAdapter && godAdapter !== reviewerAdapter;
@@ -107,6 +117,7 @@ export function StatusBar({
     { text: roundStr, priority: 1 },
     { text: agentStr, color: cfg.color, priority: 2 },
   ];
+  if (modelStr) leftSegments.push({ text: modelStr, dimColor: true, priority: 4 });
   if (taskTypeStr) leftSegments.push({ text: taskTypeStr, color: 'cyan', priority: 3 });
   if (phaseStr) leftSegments.push({ text: phaseStr, color: 'magenta', priority: 3 });
 

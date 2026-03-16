@@ -1,9 +1,14 @@
 /**
- * GodDecisionBanner — Ink component for the God auto-decision 2s escape window.
+ * GodDecisionBanner — Ink component for displaying God's decision.
  * Card C.1: FR-008 (AC-025, AC-026, AC-027)
  *
- * Shows God's decision summary with a 2-second countdown.
- * [Space] = immediate execute, [Esc] = cancel to manual mode.
+ * Currently configured for instant execution (ESCAPE_WINDOW_MS=0):
+ * the banner fires onExecute() immediately on mount.
+ *
+ * To re-enable the countdown escape window, set ESCAPE_WINDOW_MS > 0
+ * in god-decision-banner.ts and route decisions through setShowGodBanner(true)
+ * in App.tsx instead of sending DECISION_READY directly.
+ *
  * Uses pure state functions from god-decision-banner.ts.
  */
 

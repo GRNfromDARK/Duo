@@ -58,6 +58,10 @@ export class CursorAdapter implements CLIAdapter {
       args.push('--auto-approve');
     }
 
+    if (opts.model) {
+      args.push('--model', opts.model);
+    }
+
     return args;
   }
 
