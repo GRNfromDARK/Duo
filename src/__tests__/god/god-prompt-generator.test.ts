@@ -477,3 +477,62 @@ describe('extractBlockingIssues (Change 2)', () => {
     expect(issues).toEqual(['缺少空值检查']);
   });
 });
+
+// ══════════════════════════════════════════════════════════════════
+// IMPLEMENTATION_KEYWORDS narrowing (Change 8)
+// ══════════════════════════════════════════════════════════════════
+
+describe('IMPLEMENTATION_KEYWORDS narrowing (Change 8)', () => {
+  test('explore phase with "fix the gap" instruction stays explore type', () => {
+    const ctx = makePromptContext({
+      taskType: 'compound',
+      phaseId: 'phase-1',
+      phaseType: 'explore',
+      instruction: 'Please fix the gap in Claude Code discovery',
+    });
+    const prompt = generateCoderPrompt(ctx);
+
+    // Should NOT contain code-type instructions
+    expect(prompt).not.toContain('Build working solutions');
+    // Should contain explore-type instructions
+    expect(prompt).toContain('Do NOT modify any files');
+  });
+
+  test('explore phase with "code discovery" instruction stays explore type', () => {
+    const ctx = makePromptContext({
+      taskType: 'compound',
+      phaseId: 'phase-1',
+      phaseType: 'explore',
+      instruction: 'Continue code discovery for all providers',
+    });
+    const prompt = generateCoderPrompt(ctx);
+
+    expect(prompt).not.toContain('Build working solutions');
+    expect(prompt).toContain('Do NOT modify any files');
+  });
+
+  test('explore phase with "implement the fix" instruction switches to code type', () => {
+    const ctx = makePromptContext({
+      taskType: 'compound',
+      phaseId: 'phase-1',
+      phaseType: 'explore',
+      instruction: 'Implement the fix for this issue',
+    });
+    const prompt = generateCoderPrompt(ctx);
+
+    expect(prompt).toContain('Build working solutions');
+    expect(prompt).not.toContain('Do NOT modify any files');
+  });
+
+  test('explore phase with Chinese "请实现" instruction switches to code type', () => {
+    const ctx = makePromptContext({
+      taskType: 'compound',
+      phaseId: 'phase-1',
+      phaseType: 'explore',
+      instruction: '请实现这个功能',
+    });
+    const prompt = generateCoderPrompt(ctx);
+
+    expect(prompt).toContain('Build working solutions');
+  });
+});

@@ -74,7 +74,7 @@ const DISCUSS_INSTRUCTIONS = `## Instructions
 - Evaluate the options and weigh their implications.
 - Provide a well-reasoned recommendation.`;
 
-const IMPLEMENTATION_KEYWORDS = /实现|开发|编写|修改|implement|build|write|code|create|fix|develop|modify/i;
+const IMPLEMENTATION_KEYWORDS = /(?:请|去|要)?(?:实现|开发|编写|修改)|implement\s+(?:the|this|a)|build\s+(?:the|this|a)|write\s+(?:the|this|code)|(?:create|fix|develop|modify)\s+(?:the|this|a)\s+(?:code|implementation|feature|function|module)/i;
 
 function getStrategyInstructions(taskType: string): string {
   switch (taskType) {
