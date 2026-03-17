@@ -259,6 +259,31 @@ The function at line 42 does not validate input.
     const obs = classifyOutput('Error: 403 unauthorized access', 'runtime', meta);
     expect(obs.type).toBe('auth_failed');
   });
+
+  // --- auth_failed substantive content protection (Change 7) ---
+
+  describe('auth_failed substantive content protection (Change 7)', () => {
+    it('output with auth keyword + 500+ chars substantive content is classified as work_output, not auth_failed', () => {
+      // Simulate MCP "unauthorized" in init + real coder work output
+      const substantiveWork = 'A'.repeat(600); // > 500 chars of non-tool-marker content
+      const output = `[shell] Starting MCP servers...\nunauthorized: Gmail MCP needs-auth\n${substantiveWork}`;
+      const obs = classifyOutput(output, 'coder', meta);
+      expect(obs.type).toBe('work_output');
+      expect(obs.type).not.toBe('auth_failed');
+    });
+
+    it('output with auth keyword + short content (< 500 chars) is still auth_failed', () => {
+      const obs = classifyOutput('Error: unauthorized access denied. Please check your API key.', 'coder', meta);
+      expect(obs.type).toBe('auth_failed');
+    });
+
+    it('output with "403" + large substantive content is work_output', () => {
+      const analysis = 'I analyzed the codebase and found the following issues. '.repeat(15); // > 500 chars
+      const output = `HTTP 403 from MCP Calendar\n${analysis}`;
+      const obs = classifyOutput(output, 'coder', meta);
+      expect(obs.type).toBe('work_output');
+    });
+  });
 });
 
 // ── createObservation ──

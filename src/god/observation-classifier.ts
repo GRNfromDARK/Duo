@@ -9,6 +9,7 @@
 
 import { isWorkObservation } from '../types/observation.js';
 import type { Observation, ObservationType, ObservationSource, ObservationSeverity } from '../types/observation.js';
+import { stripToolMarkers } from './god-decision-service.js';
 
 // ── Pattern Definitions ──
 
@@ -65,7 +66,14 @@ function classifyType(raw: string, source: ObservationSource): ObservationType {
   if (matchesAny(raw, QUOTA_EXHAUSTED_PATTERNS)) return 'quota_exhausted';
 
   // 3. Auth failed — check before generic error patterns
-  if (matchesAny(raw, AUTH_FAILED_PATTERNS)) return 'auth_failed';
+  if (matchesAny(raw, AUTH_FAILED_PATTERNS)) {
+    const substantiveLength = stripToolMarkers(raw).length;
+    if (substantiveLength > 500) {
+      // Auth keyword from auxiliary output (MCP init, etc.) — don't override real work
+    } else {
+      return 'auth_failed';
+    }
+  }
 
   // 4. Adapter unavailable
   if (matchesAny(raw, ADAPTER_UNAVAILABLE_PATTERNS)) return 'adapter_unavailable';
