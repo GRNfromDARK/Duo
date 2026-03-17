@@ -144,9 +144,9 @@ Coder 只看到 God 的指令，丢失了 Reviewer 的原始洞见
    }
    ```
 
-2. 在 `App.tsx` 的 GOD_DECIDING 状态处理中，当 God 路由 post-reviewer 输出给 Coder 时，填充 `lastUnresolvedIssuesRef`：
+2. 在 `App.tsx` 的 EXECUTING 状态 hand execution callback 中（约第 1394 行），当 God 决策的 side effects 被应用到编排状态时，填充 `lastUnresolvedIssuesRef`。
 
-   **定位**：在 God 决策处理逻辑中，当 `send_to_coder` action 被执行且 `lastWorkerRoleRef.current === 'reviewer'` 时：
+   **精确定位**：在 `App.tsx` 第 1394-1422 行的 hand execution callback 中，`pendingCoderMessage` 被写入 `pendingInstructionRef` 之后（第 1396 行），phase transition 清空 `lastUnresolvedIssuesRef` 之前（第 1409 行）。在此处插入：
 
    ```typescript
    // 当 God 在 post-reviewer 路由中将任务发回 Coder 时，提取阻塞问题
@@ -154,6 +154,8 @@ Coder 只看到 God 的指令，丢失了 Reviewer 的原始洞见
      lastUnresolvedIssuesRef.current = extractBlockingIssues(ctx.lastReviewerOutput);
    }
    ```
+
+   **注意**：此代码位于 EXECUTING 阶段（hand executor 回调），不是 GOD_DECIDING 阶段。God 决策在 GOD_DECIDING 阶段生成，但 side effects（包括 `pendingCoderMessage`、phase transitions）在 EXECUTING 阶段的 hand executor 回调中被应用到编排状态。
 
 ### Change 3: 更新 God SYSTEM_PROMPT — 告知 Reviewer 文本已自动转发
 
@@ -329,6 +331,8 @@ return generateCoderPrompt({
 
 - [ ] `god-system-prompt.ts` 中移除 POST_CODER/POST_REVIEWER/CONVERGENCE/AUTO_DECISION 格式
 - [ ] 保留 TASK_INIT 格式（task classification 专用）
+- [ ] 更新 `audit-bug-regressions.test.ts` 第 496-529 行的 2 个遗留格式断言测试
+- [ ] 验证 `bug-15-16-17-18-regression.test.ts` 第 437-446 行的 `god_override`/`system_log` 测试仍通过
 - [ ] 现有测试全部通过
 
 ### AC-6: 测试覆盖
@@ -352,7 +356,8 @@ return generateCoderPrompt({
 | `src/god/god-system-prompt.ts` | 修改 | 移除 4 种遗留决策格式 |
 | `src/ui/components/App.tsx` | 修改 | 传入 `isPostReviewerRouting`，填充 `lastUnresolvedIssuesRef` |
 | `src/__tests__/god/god-prompt-generator.test.ts` | 修改 | 新增测试用例 |
-| `src/__tests__/god/god-system-prompt.test.ts` | 修改 | 更新/移除遗留格式相关测试 |
+| `src/__tests__/god/audit-bug-regressions.test.ts` | 修改 | 更新第 496-529 行的 2 个测试（`test_regression_r2_bug1_post_coder_actions_match_schema`、`test_regression_r2_bug1_post_reviewer_actions_match_schema`），这些测试断言 `buildGodSystemPrompt` 输出包含 POST_CODER/POST_REVIEWER 的 action names，移除格式后需要删除或改写这些断言 |
+| `src/__tests__/engine/bug-15-16-17-18-regression.test.ts` | 修改 | 更新第 437-446 行的测试（`god system prompt mentions god_override system_log constraint`），该测试断言 prompt 包含 `god_override` 和 `system_log`——由于更新后的 Rules 部分仍保留这些关键词，此测试**可能仍然通过**，但需验证 |
 
 ### 不受影响的路径
 
@@ -380,3 +385,4 @@ return generateCoderPrompt({
 | `extractBlockingIssues()` 正则匹配率不高 | `Required Fixes` 段落仍为空 | 这是增量改进——即使提取失败，Coder 仍能从 Reviewer Feedback 原文段落中获取完整信息 |
 | 遗留格式移除影响未知调用方 | task classification 以外的场景出错 | 实现前需搜索 `buildGodSystemPrompt` 所有调用点，确认仅用于 task classification |
 | God 仍然在 message 中重复 Reviewer 内容 | Coder prompt 冗余 | prompt 指令已明确告知 God 不要重复，但 LLM 行为无法 100% 保证；这是 soft guidance，退化场景仅为冗余而非错误 |
+| Coder incident 后 `lastWorkerRoleRef` 残留为 `'reviewer'` | 下一轮 Coder 启动时 `isPostReviewerRouting` 误判为 `true`，注入过期 Reviewer 反馈 | 低概率场景（需要 Reviewer 完成后 Coder 在同轮 incident 且 God 重新路由到 Coder）。退化结果仅为 Coder 看到冗余的旧 Reviewer 反馈，不会导致功能错误。如需进一步加固，可在 incident recovery 路径中重置 `lastWorkerRoleRef` |
