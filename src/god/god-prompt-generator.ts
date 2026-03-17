@@ -100,6 +100,29 @@ function resolveEffectiveType(
   return phaseType;
 }
 
+// ── Reviewer Issue Extraction ──
+
+/**
+ * Extract blocking issues from Reviewer output.
+ * Matches common patterns: "Blocking: ...", numbered "[Blocking]" items, bold "**Blocking**:" markers.
+ */
+export function extractBlockingIssues(reviewerOutput: string): string[] {
+  const issues: string[] = [];
+  const lines = reviewerOutput.split('\n');
+
+  const blockingLinePattern = /^\s*[-*]?\s*\*?\*?[Bb]locking\*?\*?\s*[:：]\s*(.+)/;
+  const numberedBlockingPattern = /^\s*\d+[.)]\s*\[?[Bb]locking\]?\s*[:：-]\s*(.+)/;
+
+  for (const line of lines) {
+    const m1 = blockingLinePattern.exec(line);
+    if (m1) { issues.push(m1[1].trim()); continue; }
+    const m2 = numberedBlockingPattern.exec(line);
+    if (m2) { issues.push(m2[1].trim()); }
+  }
+
+  return issues;
+}
+
 // ── Prompt generators ──
 
 /**

@@ -12,6 +12,7 @@ import type { PromptContext } from '../../god/god-prompt-generator.js';
 import {
   generateCoderPrompt,
   generateReviewerPrompt,
+  extractBlockingIssues,
 } from '../../god/god-prompt-generator.js';
 
 // ── Mock audit log ──
@@ -424,5 +425,55 @@ describe('Reviewer Feedback Direct Forwarding (Change 1)', () => {
     // Tool markers should be stripped
     expect(prompt).not.toMatch(/^\[Read\]/m);
     expect(prompt).not.toMatch(/^\[Bash\]/m);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════
+// extractBlockingIssues (Change 2)
+// ══════════════════════════════════════════════════════════════════
+
+describe('extractBlockingIssues (Change 2)', () => {
+  test('extracts "Blocking:" prefixed lines', () => {
+    const output = `Review summary:
+- Blocking: Missing null check on user input
+- Non-blocking: Consider renaming variable
+- Blocking: SQL injection vulnerability in query builder
+[CHANGES_REQUESTED]`;
+    const issues = extractBlockingIssues(output);
+    expect(issues).toEqual([
+      'Missing null check on user input',
+      'SQL injection vulnerability in query builder',
+    ]);
+  });
+
+  test('extracts numbered blocking issues', () => {
+    const output = `1. [Blocking] - Missing error handling for network timeout
+2. [Non-blocking] - Variable naming
+3. [Blocking] - No input validation`;
+    const issues = extractBlockingIssues(output);
+    expect(issues).toEqual([
+      'Missing error handling for network timeout',
+      'No input validation',
+    ]);
+  });
+
+  test('extracts bold **Blocking** markers', () => {
+    const output = `- **Blocking**: Race condition in async handler
+- Suggestion: Add logging`;
+    const issues = extractBlockingIssues(output);
+    expect(issues).toEqual(['Race condition in async handler']);
+  });
+
+  test('returns empty array when no blocking issues found', () => {
+    const output = `[APPROVED] Everything looks good.
+- Minor: Consider adding a comment here.`;
+    const issues = extractBlockingIssues(output);
+    expect(issues).toEqual([]);
+  });
+
+  test('handles Chinese colon (：) separator', () => {
+    const output = `- Blocking：缺少空值检查`;
+    const issues = extractBlockingIssues(output);
+    expect(issues).toEqual(['缺少空值检查']);
   });
 });
