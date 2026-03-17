@@ -106,6 +106,36 @@ describe('classifyOutput', () => {
     expect(obs.type).toBe('meta_output');
   });
 
+  // --- meta_output verdict marker protection (Change 6) ---
+
+  describe('meta_output verdict marker protection (Change 6)', () => {
+    it('reviewer output with "I cannot" + [CHANGES_REQUESTED] is classified as review_output, not meta_output', () => {
+      const output = `I cannot find evidence that this edge case is handled.
+The function at line 42 does not validate input.
+[CHANGES_REQUESTED]`;
+      const obs = classifyOutput(output, 'reviewer', meta);
+      expect(obs.type).toBe('review_output');
+      expect(obs.type).not.toBe('meta_output');
+    });
+
+    it('reviewer output with "I cannot" + [APPROVED] is classified as review_output', () => {
+      const output = `I cannot identify any issues with this implementation.
+[APPROVED]`;
+      const obs = classifyOutput(output, 'reviewer', meta);
+      expect(obs.type).toBe('review_output');
+    });
+
+    it('reviewer output with "I cannot" but NO verdict marker is still meta_output', () => {
+      const obs = classifyOutput('I cannot help with that request', 'reviewer', meta);
+      expect(obs.type).toBe('meta_output');
+    });
+
+    it('coder output with "I cannot" is still meta_output even with verdict marker', () => {
+      const obs = classifyOutput('I cannot do this task [CHANGES_REQUESTED]', 'coder', meta);
+      expect(obs.type).toBe('meta_output');
+    });
+  });
+
   // --- adapter_unavailable ---
 
   it('classifies "command not found" as adapter_unavailable', () => {

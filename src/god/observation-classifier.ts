@@ -71,7 +71,14 @@ function classifyType(raw: string, source: ObservationSource): ObservationType {
   if (matchesAny(raw, ADAPTER_UNAVAILABLE_PATTERNS)) return 'adapter_unavailable';
 
   // 5. Meta output (non-work AI refusals)
-  if (matchesAny(raw, META_OUTPUT_PATTERNS)) return 'meta_output';
+  if (matchesAny(raw, META_OUTPUT_PATTERNS)) {
+    const hasVerdict = /\[(APPROVED|CHANGES_REQUESTED)\]/.test(raw);
+    if (source === 'reviewer' && hasVerdict) {
+      // Real review containing analytical "I cannot" — skip meta_output classification
+    } else {
+      return 'meta_output';
+    }
+  }
 
   // 6. Tool failure — only from runtime source to avoid false positives
   //    (coder discussing "error handling" is valid work_output)
