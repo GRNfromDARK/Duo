@@ -444,6 +444,20 @@ describe('MainLayout', () => {
     expect(output).toContain('God deciding next step...');
   });
 
+  it('shows "Evaluating convergence..." indicator when workflowState is god_convergence', () => {
+    const { lastFrame } = render(
+      <MainLayout
+        messages={[]}
+        statusText="Duo"
+        columns={80}
+        rows={24}
+        workflowState={{ phase: 'god_convergence' }}
+      />
+    );
+    const output = lastFrame()!;
+    expect(output).toContain('Evaluating convergence...');
+  });
+
   it('shows "Understanding your input..." indicator when workflowState is classifying_intent', () => {
     const { lastFrame } = render(
       <MainLayout

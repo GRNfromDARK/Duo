@@ -1920,7 +1920,11 @@ function SessionRunner({
     if (isClassifyingIntent) return { phase: 'classifying_intent' as const };
     switch (stateValue) {
       case 'TASK_INIT': return { phase: 'task_init' as const };
-      case 'GOD_DECIDING': return { phase: 'god_deciding' as const };
+      case 'GOD_DECIDING':
+        // Post-reviewer GOD_DECIDING = convergence evaluation (is the task done?)
+        return lastWorkerRoleRef.current === 'reviewer'
+          ? { phase: 'god_convergence' as const }
+          : { phase: 'god_deciding' as const };
       case 'OBSERVING': return { phase: 'observing' as const };
       case 'EXECUTING': return { phase: 'executing' as const };
       case 'CODING':

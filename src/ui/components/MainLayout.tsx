@@ -39,6 +39,7 @@ export type WorkflowStateHint =
   | { phase: 'llm_running' }                // CODING/REVIEWING — existing ThinkingIndicator
   | { phase: 'task_init' }                   // God analyzing task
   | { phase: 'god_deciding' }               // God making routing decision
+  | { phase: 'god_convergence' }            // God evaluating post-reviewer convergence (task done?)
   | { phase: 'observing' }                  // Classifying output
   | { phase: 'executing' }                  // Hand executor running actions
   | { phase: 'classifying_intent' }         // Classifying user interrupt intent
@@ -142,6 +143,8 @@ function resolveIndicatorConfig(
       return { message: 'Analyzing task...', color: 'yellow', showElapsed: true };
     case 'god_deciding':
       return { message: 'God deciding next step...', color: 'yellow', showElapsed: true };
+    case 'god_convergence':
+      return { message: 'Evaluating convergence...', color: 'yellow', showElapsed: true };
     case 'classifying_intent':
       return { message: 'Understanding your input...', color: 'yellow', showElapsed: true };
     case 'observing':

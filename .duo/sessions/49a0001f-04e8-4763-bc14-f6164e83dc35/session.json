@@ -1,9 +1,0 @@
-{
-  "id": "49a0001f-04e8-4763-bc14-f6164e83dc35",
-  "projectDir": "/Users/rex/Documents/Program2026/duo/",
-  "coder": "claude-code",
-  "reviewer": "codex",
-  "task": "请阅读当前项目代码，然后给项目升级提出一个具体的建议。不用太多，只需要提出p0级别的项目升级建议。只写文档，不改代码",
-  "createdAt": 1773128209827,
-  "updatedAt": 1773129087306
-}

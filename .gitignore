@@ -13,7 +13,10 @@ Autodev/
 ccccccccc/
 docs/plans/
 docs/requirements/
+docs/superpowers/
+docs/bug-*.md
+docs/gap-analysis-*.md
+docs/model-selection-*.md
 
 # 通配排除（不分大小写）
 *[Tt][Oo][Dd][Oo]*.md
-*[Pp][Ll][Aa][Nn]*.md

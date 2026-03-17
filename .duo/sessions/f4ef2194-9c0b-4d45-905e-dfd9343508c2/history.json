@@ -1,8 +1,0 @@
-[
-  {
-    "round": 0,
-    "role": "coder",
-    "content": "[Bash] List project root\n[Bash result] 11 lines\n[Read] Read package.json\n[Read result] 30 lines\n本项目使用 **TypeScript** 编写。\n\n关键特征：\n- 存在 `tsconfig.json` 和 `vitest.config.ts`\n- 使用 `tsup` 构建、`tsx` 运行\n- 源码在 `src/` 目录下\n- 技术栈：React + Ink（终端 UI）+ XState（状态机）",
-    "timestamp": 1773135598231
-  }
-]
