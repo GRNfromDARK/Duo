@@ -56,6 +56,13 @@ const CODE_INSTRUCTIONS = `## Instructions
 - Build working solutions, not explanations.
 - Do not ask questions. Decide autonomously and develop directly.`;
 
+const CODE_PROPOSE_INSTRUCTIONS = `## Instructions
+- Analyze the codebase and understand the current state.
+- Propose a clear implementation plan: which files to modify, what changes to make, and why.
+- Do NOT modify any files yet. Do NOT execute any code changes.
+- Present your plan so the Reviewer can evaluate it before implementation begins.
+- Be specific: include file paths, function names, and the approach you would take.`;
+
 const REVIEW_INSTRUCTIONS = `## Instructions
 - Review the code changes against the task requirements.
 - Check for bugs, logic errors, security issues, and missing requirements.
@@ -68,6 +75,13 @@ const DEBUG_INSTRUCTIONS = `## Instructions
 - Fix the issue with a minimal, targeted change.
 - Verify the fix addresses the problem without side effects.`;
 
+const DEBUG_PROPOSE_INSTRUCTIONS = `## Instructions
+- Diagnose the reported issue by tracing through the code path.
+- Identify the root cause of the bug or failure.
+- Do NOT modify any files yet. Do NOT apply fixes.
+- Propose a minimal, targeted fix plan: describe what to change, where, and why.
+- Present your diagnosis and proposed fix so the Reviewer can evaluate it first.`;
+
 const DISCUSS_INSTRUCTIONS = `## Instructions
 - Consider the tradeoffs of each approach carefully.
 - Discuss the pros and cons of different solutions.
@@ -76,14 +90,14 @@ const DISCUSS_INSTRUCTIONS = `## Instructions
 
 const IMPLEMENTATION_KEYWORDS = /(?:请|去|要)?(?:实现|开发|编写|修改)|implement\s+(?:the|this|a)|build\s+(?:the|this|a)|write\s+(?:the|this|code)|(?:create|fix|develop|modify)\s+(?:the|this|a)\s+(?:code|implementation|feature|function|module)/i;
 
-function getStrategyInstructions(taskType: string): string {
+function getStrategyInstructions(taskType: string, proposeOnly = false): string {
   switch (taskType) {
     case 'explore': return EXPLORE_INSTRUCTIONS;
-    case 'code': return CODE_INSTRUCTIONS;
+    case 'code': return proposeOnly ? CODE_PROPOSE_INSTRUCTIONS : CODE_INSTRUCTIONS;
     case 'review': return REVIEW_INSTRUCTIONS;
-    case 'debug': return DEBUG_INSTRUCTIONS;
+    case 'debug': return proposeOnly ? DEBUG_PROPOSE_INSTRUCTIONS : DEBUG_INSTRUCTIONS;
     case 'discuss': return DISCUSS_INSTRUCTIONS;
-    default: return CODE_INSTRUCTIONS;
+    default: return proposeOnly ? CODE_PROPOSE_INSTRUCTIONS : CODE_INSTRUCTIONS;
   }
 }
 
@@ -198,7 +212,9 @@ Focus on producing high-quality work output. Do not make management decisions.`)
   }
 
   // Strategy instructions based on task type (FR-003a)
-  sections.push(getStrategyInstructions(effectiveType));
+  // First round without reviewer feedback → propose only (no file modifications)
+  const proposeOnly = !ctx.isPostReviewerRouting && !ctx.instruction;
+  sections.push(getStrategyInstructions(effectiveType, proposeOnly));
 
   // Priority 4: round info
   sections.push(`## Round Info\nRound ${ctx.round} of ${ctx.maxRounds}`);

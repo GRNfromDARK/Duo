@@ -4,19 +4,22 @@
  * BUG-25 [P1]: CODE_INSTRUCTIONS must require writing tests for new functionality.
  *   Coder implemented 14 files without any new tests. Phase-4 self-check ran only
  *   existing tests (all pass) and declared "no issues" — reviewer then found 3 blockers.
+ *   Fix: (a) Coder prompt includes baseline test-writing instruction.
+ *        (b) God's decision reflection checks coder output for test coverage.
  *
  * BUG-26 [P2]: God must not exclude user-named scope items.
  *   User said "upgrade coder, reviewer, god" — God's MVP excluded godModel.
- *   System recovered via reviewer, but wasted a fix cycle.
+ *   Fix: God's decision reflection includes scope verification against user request.
  *
  * BUG-27 [P3]: When skipping phases via multiple set_phase, God should explain.
+ *   Fix: God's decision reflection includes phase integrity check.
  */
 
 import { describe, it, expect } from 'vitest';
 import { generateCoderPrompt } from '../../god/god-prompt-generator.js';
 import {
   SYSTEM_PROMPT,
-  PHASE_FOLLOWING_INSTRUCTIONS,
+  DECISION_REFLECTION_INSTRUCTIONS,
 } from '../../god/god-decision-service.js';
 
 // ══════════════════════════════════════════════════════════════════
@@ -30,6 +33,7 @@ describe('BUG-25: code phase prompt requires writing tests for new functionality
       round: 1,
       maxRounds: 10,
       taskGoal: 'Implement model selection feature',
+      isPostReviewerRouting: true,
     });
 
     // Must tell coder to write tests, not just run existing ones
@@ -44,6 +48,7 @@ describe('BUG-25: code phase prompt requires writing tests for new functionality
       taskGoal: 'Implement model selection feature',
       phaseType: 'code',
       phaseId: 'phase-3',
+      isPostReviewerRouting: true,
     });
 
     expect(prompt.toLowerCase()).toMatch(/write.*test|test.*new.*func|test.*cover/i);
@@ -60,17 +65,28 @@ describe('BUG-25: code phase prompt requires writing tests for new functionality
     // Explore phase should not mention writing tests
     expect(prompt).not.toMatch(/Write tests for new/i);
   });
+
+  it('God reflection includes quality gate for coder test coverage', () => {
+    // God should check whether coder wrote tests, not just rely on coder self-policing
+    expect(DECISION_REFLECTION_INSTRUCTIONS).toMatch(/test/i);
+    expect(DECISION_REFLECTION_INSTRUCTIONS).toMatch(/send_to_coder/i);
+  });
 });
 
 // ══════════════════════════════════════════════════════════════════
 // BUG-26: God must not exclude user-named scope items
 // ══════════════════════════════════════════════════════════════════
 
-describe('BUG-26: God system prompt prevents excluding user-named scope', () => {
-  it('system prompt instructs God to include all user-named items in scope', () => {
-    // Must tell God: if user names specific roles/components, include them all
-    expect(SYSTEM_PROMPT).toMatch(/named|explicit|listed/i);
-    expect(SYSTEM_PROMPT).toMatch(/must.*include|not.*exclude|all.*named/i);
+describe('BUG-26: God decision reflection prevents excluding user-named scope', () => {
+  it('reflection instructions require verifying user-named items are in scope', () => {
+    // God's self-check should catch scope narrowing
+    expect(DECISION_REFLECTION_INSTRUCTIONS).toMatch(/named/i);
+    expect(DECISION_REFLECTION_INSTRUCTIONS).toMatch(/scope|narrow/i);
+  });
+
+  it('reflection is included in the God system prompt', () => {
+    // The reflection must actually be part of what God sees
+    expect(SYSTEM_PROMPT).toContain('Decision reflection');
   });
 });
 
@@ -78,10 +94,9 @@ describe('BUG-26: God system prompt prevents excluding user-named scope', () => 
 // BUG-27: Phase skip must be explained
 // ══════════════════════════════════════════════════════════════════
 
-describe('BUG-27: phase-following instructions require explanation for phase skips', () => {
-  it('phase instructions mention explaining phase skips in system_log', () => {
-    expect(PHASE_FOLLOWING_INSTRUCTIONS.toLowerCase()).toMatch(
-      /skip.*explain|skip.*system_log|skip.*reason|one.*set_phase/i,
-    );
+describe('BUG-27: God decision reflection requires explanation for phase skips', () => {
+  it('reflection instructions mention phase skip explanation in system_log', () => {
+    expect(DECISION_REFLECTION_INSTRUCTIONS).toMatch(/skip/i);
+    expect(DECISION_REFLECTION_INSTRUCTIONS).toMatch(/system_log|explain/i);
   });
 });
