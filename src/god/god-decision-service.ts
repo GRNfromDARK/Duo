@@ -14,9 +14,10 @@ import type { GodAdapter } from '../types/god-adapter.js';
 import type { GodDecisionEnvelope } from '../types/god-envelope.js';
 import type { Observation } from '../types/observation.js';
 import { GodDecisionEnvelopeSchema } from '../types/god-envelope.js';
-import { extractWithRetry } from '../parsers/god-json-extractor.js';
+import { extractGodJson } from '../parsers/god-json-extractor.js';
 import { collectGodAdapterOutput } from './god-call.js';
-import { DegradationManager } from './degradation-manager.js';
+import { WatchdogService, buildEnvelopeFromWatchdogAction } from './watchdog.js';
+import type { WatchdogDecision } from './watchdog.js';
 
 // ── Types ──
 
@@ -40,8 +41,7 @@ export interface GodDecisionContext {
 
 // ── Constants ──
 
-// Bug 8 fix: 30s too short for claude-code God adapter (TASK_INIT alone can take 17s)
-const GOD_TIMEOUT_MS = 90_000;
+const GOD_TIMEOUT_MS = 600_000;
 
 const SEVERITY_ORDER: Record<string, number> = {
   fatal: 0,
@@ -108,13 +108,7 @@ function sortObservations(observations: Observation[]): Observation[] {
 /**
  * Build the observations section for God prompt.
  * Card D.2: highlights reviewer verdict when present.
- *
- * Budget management: each observation gets up to MAX_OBS_CHARS characters.
- * Work/review observations (the most important) get full budget;
- * runtime signals get a smaller budget since they're metadata.
  */
-const MAX_OBS_CHARS = 20000;
-const MAX_RUNTIME_OBS_CHARS = 300;
 
 /**
  * Strip ANSI escape sequences from text (terminal control codes, mouse events, etc.).
@@ -148,11 +142,8 @@ export function buildObservationsSection(observations: Observation[]): string {
   const sorted = sortObservations(observations);
   const lines = sorted.map((obs, i) => {
     const isWorkObs = obs.type === 'work_output' || obs.type === 'review_output';
-    const budget = isWorkObs ? MAX_OBS_CHARS : MAX_RUNTIME_OBS_CHARS;
     const cleaned = isWorkObs ? stripToolMarkers(obs.summary) : obs.summary;
-    const summary = cleaned.length > budget
-      ? cleaned.slice(0, budget) + '...'
-      : cleaned;
+    const summary = cleaned;
 
     let line = `${i + 1}. [${obs.severity.toUpperCase()}] (${obs.source}/${obs.type}) ${summary}`;
     // Card D.2: highlight reviewer verdict for God's attention
@@ -207,7 +198,7 @@ Each action is a JSON object with a "type" field. Available types:
    — Retry a role with optional hint
 
 5. switch_adapter { type: "switch_adapter", role: "coder"|"reviewer"|"god", adapter: string, reason: string }
-   — Switch adapter for a role
+   — [NOT YET IMPLEMENTED] Switch adapter for a role. Currently has no runtime effect.
 
 6. set_phase { type: "set_phase", phaseId: string, summary?: string }
    — Set current phase (explicit phase transition)
@@ -263,6 +254,25 @@ function buildUserPrompt(observations: Observation[], context: GodDecisionContex
   return sections.join('\n\n');
 }
 
+/**
+ * Build a slim prompt for resume rounds.
+ * God's session context already contains: system prompt, Hand catalog, task goal,
+ * previous decisions, available adapters, phase plan.
+ * Only send: phase & round, observations, format reminder.
+ */
+function buildResumePrompt(observations: Observation[], context: GodDecisionContext): string {
+  const sections: string[] = [];
+
+  const phaseTypeStr = context.currentPhaseType ? ` (type: ${context.currentPhaseType})` : '';
+  sections.push(`## Phase & Round\nPhase: ${context.currentPhaseId}${phaseTypeStr}\nRound: ${context.round} of ${context.maxRounds}\nActive Role: ${context.activeRole ?? 'none'}`);
+
+  sections.push(buildObservationsSection(observations));
+
+  sections.push('Reminder: re-read your system prompt and follow all instructions. Output a single GodDecisionEnvelope JSON code block.');
+
+  return sections.join('\n\n');
+}
+
 // Card D.2: Reviewer handling instructions (FR-010)
 // Exported so tests can verify the prompt content.
 export const REVIEWER_HANDLING_INSTRUCTIONS = `Reviewer conclusion handling:
@@ -284,35 +294,66 @@ Reviewer feedback auto-forwarding:
 export const PHASE_FOLLOWING_INSTRUCTIONS = `Phase plan compliance:
 - When a Phase Plan is provided, follow the defined phase sequence — do NOT skip phases or create ad-hoc phases
 - For review-type phases: you MUST send_to_reviewer before advancing to the next phase — coder proposals alone are not sufficient
+- For ANY phase type: when Coder proposes multiple approaches or solutions, you MUST send_to_reviewer for design evaluation before directing implementation — regardless of whether the phase is explore, debug, or code type
 - Use set_phase ONLY with phase IDs defined in the Phase Plan
-- If the coder's output already covers a later phase's work, still route through the current phase's review before advancing
-- If you skip or merge phases, explain the reason in a system_log message — one set_phase per decision is preferred; multiple set_phase calls require explanation`;
+- If the coder's output already covers a later phase's work, still route through the current phase's review before advancing`;
+
+// Decision reflection: God self-checks before finalizing envelope
+export const DECISION_REFLECTION_INSTRUCTIONS = `Decision reflection — pause and self-check before finalizing high-stakes decisions.
+
+A decision is high-stakes when it: sets or narrows direction (scope, plan), accepts or advances work product, pushes the workflow forward (advancing phases, concluding task, transitioning between task stages), deviates from the established plan, overrides another agent's judgment, or makes a choice on behalf of others. Routine same-phase handoffs that follow the obvious next step (e.g. CHANGES_REQUESTED → send_to_coder within the same phase) are low-stakes and need no reflection.
+
+When reflection is triggered, verify:
+- Scope: re-read the user's original request — does your plan or action cover every item the user explicitly named? Do not silently narrow scope.
+- Quality: if coder delivered new implementation, were corresponding tests written? If not, send_to_coder to add test coverage before advancing.
+- Plan consistency: if your actions deviate from the phase plan (skipping, reordering, creating ad-hoc phases), explain why in a system_log message.
+- Proposal check: if Coder proposed multiple approaches and you are about to pick one yourself → STOP. You MUST route to reviewer first. Do not make design choices without reviewer input.`;
 
 // BUG-24 fix: Proxy decision-making instructions
 export const PROXY_DECISION_INSTRUCTIONS = `Worker question interception (proxy decision-making):
-- When worker output contains questions directed at the user (design decisions, confirmation requests, implementation choices), YOU answer them — do NOT use request_user_input to forward worker questions to the human.
-- For each intercepted question, fill the "autonomousResolutions" array with a two-step process:
+- Do NOT forward worker questions to the human via request_user_input. Instead, distinguish between two categories:
+  a) Implementation detail questions (variable naming, library choice for an agreed approach, config values) → YOU answer them autonomously.
+  b) Design proposals with multiple approaches (Coder presents options A/B/C, trade-off comparisons) → Do NOT pick an approach yourself. Route to Reviewer via send_to_reviewer for design evaluation first.
+- For autonomously resolved questions (category a), fill the "autonomousResolutions" array with:
   1. "choice": your initial decision based on codebase context and task goals
   2. "reflection": review your choice — check consistency with task goals, feasibility, risks, and alternatives
   3. "finalChoice": your definitive answer after reflection (may differ from initial choice if reflection reveals issues)
 - Then use send_to_coder or send_to_reviewer to communicate your resolved decisions.
 - request_user_input is ONLY for: (a) a genuine human interrupt event was received, (b) the task is fundamentally impossible without information that does not exist anywhere in the codebase or task context.`;
 
-export const SYSTEM_PROMPT = `You are the Sovereign God — the sole decision-maker of the Duo runtime.
+// Proposal routing: God must coordinate Coder-Reviewer consensus on design proposals
+export const PROPOSAL_ROUTING_INSTRUCTIONS = `Design proposal routing:
+- When Coder output contains multiple implementation proposals or approaches (e.g. 方案 A/B/C, Option 1/2/3, trade-off comparisons, pros/cons tables), you MUST route them to Reviewer via send_to_reviewer BEFORE selecting one.
+- Reviewer evaluates the proposals and provides their opinion and recommendation.
+- Route Reviewer's feedback back to Coder via send_to_coder so Coder can respond.
+- Once Coder and Reviewer align on an approach (or after 2 rounds of disagreement), you make the final call and direct implementation.
+- Signals that Coder is proposing approaches:
+  - Multiple named options (方案 A/B/C, Option 1/2/3, Approach X/Y)
+  - Pros/cons comparison tables or trade-off analysis
+  - "推荐方案" / "建议的修复方案" / "recommended approach"
+  - Explicit alternative solutions with different trade-offs`;
+
+export const SYSTEM_PROMPT = `You are the Sovereign God — the orchestration coordinator of the Duo runtime.
 
 Your role:
 - Analyze all observations from coder, reviewer, human, and runtime
-- Make the single authoritative decision for the next step
-- You are fully autonomous — you NEVER defer to humans for design decisions, implementation choices, or requirement clarification
+- Coordinate Coder and Reviewer to reach consensus on design decisions before implementation
+- When Coder proposes multiple approaches, route to Reviewer for evaluation BEFORE picking one
+- You have final authority — but your DEFAULT behavior is to facilitate Coder-Reviewer collaboration
+- Only use autonomous decision-making when Coder and Reviewer cannot converge, or for implementation details
+- You NEVER defer to humans for requirement clarification — resolve ambiguities autonomously
 - All state changes MUST be expressed as structured actions (Hands), not implied in messages
 - Coder and Reviewer are workers under your management — they do not have accept authority
-- Scope preservation: if the user explicitly named specific roles, components, or items in the task, you MUST include all named items in scope — do not exclude any user-listed item from the MVP or plan
 
 ${PHASE_FOLLOWING_INSTRUCTIONS}
 
 ${REVIEWER_HANDLING_INSTRUCTIONS}
 
+${PROPOSAL_ROUTING_INSTRUCTIONS}
+
 ${PROXY_DECISION_INSTRUCTIONS}
+
+${DECISION_REFLECTION_INSTRUCTIONS}
 
 Output format: You MUST output a single JSON code block containing a GodDecisionEnvelope:
 
@@ -352,18 +393,30 @@ Authority constraints:
 - When acceptAuthority is "forced_stop", messages MUST contain a user-targeted summary
 - accept_task MUST carry a rationale field
 
-Do NOT output anything outside the JSON code block.`;
+Do NOT output anything outside the JSON code block.
+
+Worker output format notes:
+- Different adapters produce output in different styles and structures
+- Codex outputs may include JSON with fields like "confidence" (numeric 0-1), "reasoning", and structured response objects — these are Codex's native format, not GodDecisionEnvelope fields
+- When analyzing worker output, focus on the CONTENT and MEANING, not the format
+- Extract the substantive work/review result regardless of how the adapter structures its response`;
+
+// ── Internal Result Type ──
+
+type GodCallResult =
+  | { success: true; data: GodDecisionEnvelope }
+  | { success: false; error: { kind: string; message: string }; rawOutput: string | null };
 
 // ── Service ──
 
 export class GodDecisionService {
   private readonly adapter: GodAdapter;
-  private readonly degradation: DegradationManager;
+  private readonly watchdog: WatchdogService;
   private readonly model?: string;
 
-  constructor(adapter: GodAdapter, degradation: DegradationManager, model?: string) {
+  constructor(adapter: GodAdapter, watchdog: WatchdogService, model?: string) {
     this.adapter = adapter;
-    this.degradation = degradation;
+    this.watchdog = watchdog;
     this.model = model;
   }
 
@@ -371,21 +424,47 @@ export class GodDecisionService {
    * Unified God decision: observations + context → GodDecisionEnvelope.
    *
    * Flow:
-   * 1. Build prompt with observations, context, Hand catalog, output format
-   * 2. Call God adapter via collectGodAdapterOutput
-   * 3. Parse JSON with extractWithRetry (Zod validation)
-   * 4. On failure: trigger DegradationManager → return fallback envelope
-   * 5. On success: reset DegradationManager → return envelope
+   * 1. Try God adapter → extract envelope
+   * 2. On failure → ask Watchdog AI to diagnose and decide recovery
+   * 3. Execute Watchdog's decision (retry_fresh / retry_with_hint / construct_envelope / escalate)
+   *
+   * Max AI calls: God(1) + Watchdog(1) + retry(1) = 3.
    */
   async makeDecision(
     observations: Observation[],
     context: GodDecisionContext,
+    isResuming: boolean = false,
   ): Promise<GodDecisionEnvelope> {
-    const userPrompt = buildUserPrompt(observations, context);
+    // Step 1: Try God
+    const godResult = await this.tryGodCall(observations, context, isResuming);
+    if (godResult.success) {
+      this.watchdog.handleGodSuccess();
+      return godResult.data;
+    }
+
+    // Step 2: Ask Watchdog
+    const decision = await this.watchdog.diagnose(
+      godResult.error,
+      godResult.rawOutput,
+      observations,
+      { taskGoal: context.taskGoal, round: context.round, maxRounds: context.maxRounds },
+    );
+
+    // Step 3: Execute Watchdog's decision (one retry max)
+    return this.executeWatchdogDecision(decision, observations, context);
+  }
+
+  private async tryGodCall(
+    observations: Observation[],
+    context: GodDecisionContext,
+    isResuming: boolean,
+  ): Promise<GodCallResult> {
+    const userPrompt = isResuming
+      ? buildResumePrompt(observations, context)
+      : buildUserPrompt(observations, context);
 
     let rawOutput: string;
     try {
-      // Step 1: Call God adapter
       rawOutput = await collectGodAdapterOutput({
         adapter: this.adapter,
         prompt: userPrompt,
@@ -396,69 +475,123 @@ export class GodDecisionService {
           sessionDir: context.sessionDir,
           round: context.round,
           kind: 'god_unified_decision',
-          meta: { attempt: 1 },
         },
       });
     } catch (err) {
-      // Bug 8 fix: catch adapter errors (timeout, tool_use, process crash)
-      // instead of letting them propagate to MANUAL_FALLBACK
-      const errorKind = err instanceof Error && err.constructor.name === 'ProcessTimeoutError'
-        ? 'timeout' as const
-        : 'process_exit' as const;
-      this.degradation.handleGodFailure({
-        kind: errorKind,
-        message: `God adapter call failed: ${err instanceof Error ? err.message : String(err)}`,
-      });
-      return buildFallbackEnvelope(context);
+      return {
+        success: false,
+        error: {
+          kind: err instanceof Error && err.constructor.name === 'ProcessTimeoutError'
+            ? 'timeout' : 'adapter_error',
+          message: err instanceof Error ? err.message : String(err),
+        },
+        rawOutput: null,
+      };
     }
 
-    // Step 2: Extract and validate with retry
-    // BUG-23 fix: extractWithRetry now always returns ExtractResult (never null),
-    // providing error details for diagnostics.
-    let result: Awaited<ReturnType<typeof extractWithRetry<GodDecisionEnvelope>>>;
+    const result = extractGodJson(rawOutput, GodDecisionEnvelopeSchema);
+    if (result && result.success) {
+      return { success: true, data: result.data };
+    }
+
+    return {
+      success: false,
+      error: {
+        kind: 'schema_validation',
+        message: result ? result.error : `No JSON found in output. Length: ${rawOutput.length}`,
+      },
+      rawOutput,
+    };
+  }
+
+  private async executeWatchdogDecision(
+    decision: WatchdogDecision,
+    observations: Observation[],
+    context: GodDecisionContext,
+  ): Promise<GodDecisionEnvelope> {
+    switch (decision.decision) {
+      case 'retry_fresh': {
+        this.adapter.clearSession?.();
+        const result = await this.tryGodCall(observations, context, false);
+        if (result.success) {
+          this.watchdog.handleGodSuccess();
+          return result.data;
+        }
+        return buildFallbackEnvelope(context);
+      }
+
+      case 'retry_with_hint': {
+        this.adapter.clearSession?.();
+        const result = await this.tryGodCallWithHint(
+          decision.hint ?? 'Please check your output format.',
+          observations,
+          context,
+        );
+        if (result.success) {
+          this.watchdog.handleGodSuccess();
+          return result.data;
+        }
+        return buildFallbackEnvelope(context);
+      }
+
+      case 'construct_envelope':
+        return buildEnvelopeFromWatchdogAction(decision, {
+          taskGoal: context.taskGoal,
+          currentPhaseId: context.currentPhaseId,
+        });
+
+      case 'escalate':
+      default:
+        return buildFallbackEnvelope(context);
+    }
+  }
+
+  private async tryGodCallWithHint(
+    hint: string,
+    observations: Observation[],
+    context: GodDecisionContext,
+  ): Promise<GodCallResult> {
+    const userPrompt = buildUserPrompt(observations, context);
+    const hintPrompt = `${userPrompt}\n\n[FORMAT CORRECTION] ${hint}\n\nPlease output a corrected GodDecisionEnvelope JSON block.`;
+
+    let rawOutput: string;
     try {
-      result = await extractWithRetry(
-        rawOutput,
-        GodDecisionEnvelopeSchema,
-        async (errorHint: string) => {
-          const retryPrompt = `${userPrompt}\n\n[FORMAT ERROR] ${errorHint}\n\nPlease output a corrected JSON block.`;
-          return collectGodAdapterOutput({
-            adapter: this.adapter,
-            prompt: retryPrompt,
-            systemPrompt: SYSTEM_PROMPT,
-            timeoutMs: GOD_TIMEOUT_MS,
-            model: this.model,
-            logging: {
-              sessionDir: context.sessionDir,
-              round: context.round,
-              kind: 'god_unified_decision',
-              meta: { attempt: 2, retryReason: 'schema_validation' },
-            },
-          });
+      rawOutput = await collectGodAdapterOutput({
+        adapter: this.adapter,
+        prompt: hintPrompt,
+        systemPrompt: SYSTEM_PROMPT,
+        timeoutMs: GOD_TIMEOUT_MS,
+        model: this.model,
+        logging: {
+          sessionDir: context.sessionDir,
+          round: context.round,
+          kind: 'god_unified_decision',
+          meta: { attempt: 'watchdog_retry', hint },
         },
-      );
-    } catch (err) {
-      // Retry call also failed (timeout, tool_use, etc.)
-      this.degradation.handleGodFailure({
-        kind: 'process_exit',
-        message: `God adapter retry failed: ${err instanceof Error ? err.message : String(err)}`,
       });
-      return buildFallbackEnvelope(context);
+    } catch (err) {
+      return {
+        success: false,
+        error: {
+          kind: 'adapter_error',
+          message: err instanceof Error ? err.message : String(err),
+        },
+        rawOutput: null,
+      };
     }
 
-    // Step 3: Handle result
-    if (result.success) {
-      this.degradation.handleGodSuccess();
-      return result.data;
+    const result = extractGodJson(rawOutput, GodDecisionEnvelopeSchema);
+    if (result && result.success) {
+      return { success: true, data: result.data };
     }
 
-    // Parse failed — trigger DegradationManager L3
-    // BUG-23 fix: include specific error details in the failure message
-    this.degradation.handleGodFailure({
-      kind: 'schema_validation',
-      message: `GodDecisionEnvelope extraction/validation failed: ${result.error}`,
-    });
-
-    return buildFallbackEnvelope(context);
+    return {
+      success: false,
+      error: {
+        kind: 'schema_validation',
+        message: result ? result.error : 'No JSON found',
+      },
+      rawOutput,
+    };
   }
 }

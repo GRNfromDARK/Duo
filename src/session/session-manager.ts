@@ -16,7 +16,7 @@ import * as crypto from 'node:crypto';
 import type { SessionConfig } from '../types/session.js';
 import type { GodTaskAnalysis } from '../types/god-schemas.js';
 import type { ConvergenceLogEntry } from '../god/god-convergence.js';
-import type { DegradationState } from '../god/degradation-manager.js';
+import type { DegradationState } from '../types/degradation.js';
 import { PROMPT_LOG_FILENAME } from './prompt-log.js';
 
 export interface SessionMetadata {

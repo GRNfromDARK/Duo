@@ -337,11 +337,11 @@ describe('AC-5: prompt summary written to audit log', () => {
     mockAppendAuditLog.mockClear();
   });
 
-  test('audit log entry contains truncated prompt summary (≤500 chars)', () => {
+  test('audit log entry contains full prompt summary without truncation', () => {
     const cm = makeContextManager();
     const dm = makeDegradationManager(cm);
 
-    // Create a long task goal to test truncation
+    // Create a long task goal to verify no truncation
     const longGoal = 'A'.repeat(1000);
     selectCoderPrompt({
       degradationManager: dm,
@@ -358,7 +358,7 @@ describe('AC-5: prompt summary written to audit log', () => {
 
     expect(mockAppendAuditLog).toHaveBeenCalledTimes(1);
     const entry = mockAppendAuditLog.mock.calls[0][1];
-    expect(entry.outputSummary.length).toBeLessThanOrEqual(500);
+    expect(entry.outputSummary).toContain(longGoal);
   });
 });
 

@@ -20,7 +20,7 @@
 export const VERSION = '1.0.0';
 ```
 
-被 `cli.ts` 引用，用于 `--version` 输出和帮助信息展示。
+被 `cli.ts` 引用，用于 `--version` 输出和 `help` 命令中的版本展示。
 
 ---
 
@@ -32,12 +32,13 @@ export const VERSION = '1.0.0';
 
 | 命令 | 用法 | 说明 |
 |------|------|------|
-| `duo start` | `duo start [--dir <path>] [--coder <cli>] [--reviewer <cli>] [--task <desc>] [--god <adapter>]` | 启动新的协作会话 |
+| `duo start` | `duo start [--dir <path>] [--coder <cli>] [--reviewer <cli>] [--task <desc>] [--god <adapter>] [--coder-model <model>] [--reviewer-model <model>] [--god-model <model>]` | 启动新的协作会话 |
 | `duo resume` | `duo resume` | 列出所有可恢复的会话 |
 | `duo resume <id>` | `duo resume <session-id>` | 恢复指定会话 |
 | `duo log` | `duo log <session-id> [--type <type>]` | 查看 God audit log |
+| `duo help` | `duo help` / `duo --help` / `duo -h` | 打印帮助信息 |
 | `duo --version` | `duo -v` / `duo --version` | 打印版本号并退出 |
-| (无参数) | `duo` | 打印帮助信息 |
+| (无子命令) | `duo [options]` | 等同于 `duo start`，进入交互式模式或带参数启动 |
 
 ### 启动流程
 
@@ -49,9 +50,9 @@ process.argv
   ├── start
   │     │
   │     ├── detectInstalledCLIs()         检测已安装的 CLI 工具
-  │     ├── parseStartArgs(args)          解析 --dir, --coder, --reviewer, --task, --god
+  │     ├── parseStartArgs(args)          解析全部参数
   │     │
-  │     ├── [参数完整?]
+  │     ├── [参数完整?]  (coder + reviewer + task 三项齐全)
   │     │     ├── YES → createSessionConfig(parsed, detected)
   │     │     │         ├── 验证失败 → 输出错误，exit(1)
   │     │     │         ├── 有警告 → 打印警告（不阻止启动）
@@ -70,9 +71,18 @@ process.argv
   ├── log
   │     ├── [有 session-id?]
   │     │     ├── NO  → 打印 usage，exit(1)
-  │     │     └── YES → handleLog(sessionId, { type }, sessionsDir, console.log)
+  │     │     └── YES → 解析 --type 参数，调用 handleLog(sessionId, { type }, sessionsDir, console.log)
   │
-  └── (default) → 打印帮助信息（包含 Usage 和 Examples）
+  ├── help / --help / -h  →  打印帮助信息（版本、用法、选项、示例）
+  │
+  └── (default，无子命令)  →  等同于 start，检测 CLI 并尝试启动
+        │
+        ├── detectInstalledCLIs()
+        ├── parseStartArgs(['start', ...args])   将现有参数注入 start 解析器
+        ├── [参数完整?]
+        │     ├── YES → createSessionConfig → 验证 → config
+        │     └── NO  → config = undefined（交互式模式）
+        └── render(App, { initialConfig: config, detected })
 ```
 
 ### `duo start` 详解
@@ -88,7 +98,7 @@ process.argv
 
 **2. 交互式引导模式**
 
-当必要参数不完整时（如仅执行 `duo start`）：
+当必要参数不完整时（如仅执行 `duo start` 或 `duo`）：
 - `initialConfig` 为 `undefined`
 - `App` 组件接收到 `undefined` 后启动内置的交互式设置向导
 
@@ -97,12 +107,22 @@ process.argv
 | 参数 | 必填 | 说明 |
 |------|------|------|
 | `--dir <path>` | 否 | 项目目录（默认 `cwd`） |
-| `--coder <cli>` | 是* | Coder 角色使用的 CLI 工具 |
+| `--coder <cli>` | 是* | Coder 角色使用的 CLI 工具（如 `claude-code`、`codex`） |
 | `--reviewer <cli>` | 是* | Reviewer 角色使用的 CLI 工具 |
 | `--task <desc>` | 是* | 任务描述 |
 | `--god <adapter>` | 否 | God adapter 名称 |
+| `--coder-model <model>` | 否 | Coder 的 model override（如 `sonnet`、`gpt-5.4`） |
+| `--reviewer-model <model>` | 否 | Reviewer 的 model override |
+| `--god-model <model>` | 否 | God 的 model override（如 `opus`、`gemini-2.5-pro`） |
 
 *不提供时进入交互式模式。
+
+### 默认命令行为
+
+当用户不指定子命令（直接执行 `duo` 或 `duo --coder ... --task ...`）时，CLI 将其视为 `start` 命令处理：
+1. 将 `args` 前置 `'start'` 后传入 `parseStartArgs()`
+2. 后续流程与 `duo start` 完全一致
+3. 支持无参数进入交互式模式，也支持带完整参数直接启动
 
 ### `duo resume <id>` — Resume 流程
 
@@ -121,18 +141,21 @@ duo resume <id>
   │     └── 校验 God adapter 是否仍可用，返回 { god, warnings }
   │
   ├── 构建 SessionConfig
-  │     ├── projectDir  ← session metadata
-  │     ├── coder       ← session metadata
-  │     ├── reviewer    ← session metadata
-  │     ├── god         ← sanitizeGodAdapterForResume 结果
-  │     └── task        ← session metadata
+  │     ├── projectDir    ← session metadata
+  │     ├── coder         ← session metadata
+  │     ├── reviewer      ← session metadata
+  │     ├── god           ← sanitizeGodAdapterForResume 结果
+  │     ├── task          ← session metadata
+  │     ├── coderModel    ← session metadata
+  │     ├── reviewerModel ← session metadata
+  │     └── godModel      ← session metadata
   │
   └── render(App, { initialConfig, detected, resumeSession })
         └── waitUntilExit()
 ```
 
 Resume 流程的关键特点：
-- 从持久化的 session 元数据中重建 `SessionConfig`
+- 从持久化的 session 元数据中重建 `SessionConfig`（包含 model override 字段）
 - 通过 `sanitizeGodAdapterForResume()` 确保 God adapter 在当前环境仍然可用
 - 将 `resumeSession`（`LoadedSession`）传入 `App` 组件，使 TUI 从断点处继续
 
@@ -144,6 +167,16 @@ Resume 流程的关键特点：
 |------|------|
 | `<session-id>` | 必选，session 标识 |
 | `--type <type>` | 可选，按 decision type 过滤日志条目 |
+
+### `duo help` 详解
+
+打印完整帮助信息，包含：
+- 版本号（`Duo v{VERSION}`）
+- 所有命令的用法说明
+- 支持的选项列表（含 model override 参数）
+- 使用示例
+
+可通过 `duo help`、`duo --help` 或 `duo -h` 触发。
 
 ### 渲染入口
 
@@ -259,7 +292,8 @@ cli.ts
   ├── session/session-starter.ts (parseStartArgs, createSessionConfig)
   ├── adapters/detect.ts (detectInstalledCLIs)
   ├── god/god-adapter-config.ts (sanitizeGodAdapterForResume)
-  └── ui/components/App.ts (App 组件)
+  ├── ui/components/App.ts (App 组件)
+  └── types/session.ts (SessionConfig)
 
 cli-commands.ts
   ├── adapters/detect.ts (detectInstalledCLIs)

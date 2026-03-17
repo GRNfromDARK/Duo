@@ -28,7 +28,7 @@ export class CodexGodAdapter implements GodAdapter {
   readonly displayName = 'Codex';
   readonly version = '0.0.0';
   readonly toolUsePolicy = 'allow-readonly' as const;
-  readonly minimumTimeoutMs = 90_000;
+  readonly minimumTimeoutMs = 600_000;
 
   private processManager: ProcessManager;
   private parser: JsonlParser;
@@ -68,8 +68,7 @@ export class CodexGodAdapter implements GodAdapter {
       'exec',
       buildCodexGodPrompt(opts.systemPrompt, prompt),
       '--json',
-      '--sandbox',
-      'read-only',
+      '--full-auto',
       '--ephemeral',
     ];
 

@@ -52,7 +52,7 @@ function formatTokens(count: number): string {
  */
 export function buildProgressBar(current: number, max: number, barWidth: number): string {
   if (max <= 0) return `[${'░'.repeat(barWidth)}]`;
-  const filled = Math.round((current / max) * barWidth);
+  const filled = Math.min(Math.round((current / max) * barWidth), barWidth);
   const empty = barWidth - filled;
   return `[${'█'.repeat(filled)}${'░'.repeat(empty)}]`;
 }

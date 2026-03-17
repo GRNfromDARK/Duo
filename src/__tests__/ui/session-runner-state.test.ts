@@ -64,6 +64,38 @@ describe('session-runner-state', () => {
       });
     });
 
+    it('includes status chunks in fullText to prevent no_output for stderr-only runs', () => {
+      let state = createStreamAggregation();
+      state = applyOutputChunk(state, {
+        type: 'status',
+        content: 'Error: API key not found',
+        timestamp: 1,
+      });
+
+      const result = finalizeStreamAggregation(state);
+      expect(result.kind).not.toBe('no_output');
+      expect(result.fullText).toContain('API key not found');
+    });
+
+    it('does not treat status chunks as fatal errors', () => {
+      let state = createStreamAggregation();
+      state = applyOutputChunk(state, {
+        type: 'text',
+        content: 'actual output',
+        timestamp: 1,
+      });
+      state = applyOutputChunk(state, {
+        type: 'status',
+        content: 'Falling back from WebSockets to HTTPS transport',
+        timestamp: 2,
+      });
+
+      const result = finalizeStreamAggregation(state);
+      expect(result.kind).toBe('success');
+      expect(result.fullText).toContain('actual output');
+      expect(result.fullText).toContain('WebSockets');
+    });
+
     it('keeps tool errors inside the message instead of escalating to process error', () => {
       let state = createStreamAggregation();
       state = applyOutputChunk(state, {
@@ -329,7 +361,7 @@ describe('session-runner-state', () => {
         task: loaded.metadata.task,
       });
 
-      expect('godSessionId' in runtime).toBe(false);
+      expect(runtime.godSessionId).toBe('god_ses_123');
       expect(runtime.godTaskAnalysis).toEqual(godTaskAnalysis);
       expect(runtime.godConvergenceLog).toEqual(godConvergenceLog);
       expect(runtime.degradationState).toEqual(degradationState);
@@ -399,6 +431,38 @@ describe('session-runner-state', () => {
       expect(runtime.currentPhaseId).toBeNull();
     });
 
+    it('maps clarifying status to RESTORED_TO_CLARIFYING instead of INTERRUPTED', () => {
+      const loaded: LoadedSession = {
+        metadata: {
+          id: 'session-clarifying',
+          projectDir: '/tmp/project',
+          coder: 'claude-code',
+          reviewer: 'codex',
+          task: 'Fix the login flow',
+          createdAt: 1,
+          updatedAt: 2,
+        },
+        state: {
+          round: 2,
+          status: 'clarifying',
+          currentRole: 'coder',
+        },
+        history: [
+          { round: 0, role: 'coder', content: 'code', timestamp: 10 },
+        ],
+      };
+
+      const runtime = buildRestoredSessionRuntime(loaded, {
+        projectDir: loaded.metadata.projectDir,
+        coder: loaded.metadata.coder,
+        reviewer: loaded.metadata.reviewer,
+        god: 'codex',
+        task: loaded.metadata.task,
+      });
+
+      expect(runtime.restoreEvent).toBe('RESTORED_TO_CLARIFYING');
+    });
+
     it('leaves God fields undefined when not persisted', () => {
       const loaded: LoadedSession = {
         metadata: {
@@ -426,7 +490,7 @@ describe('session-runner-state', () => {
         task: loaded.metadata.task,
       });
 
-      expect('godSessionId' in runtime).toBe(false);
+      expect(runtime.godSessionId).toBeUndefined();
       expect(runtime.godTaskAnalysis).toBeUndefined();
       expect(runtime.godConvergenceLog).toBeUndefined();
       expect(runtime.degradationState).toBeUndefined();

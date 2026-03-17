@@ -11,10 +11,8 @@ import { createActor } from 'xstate';
 
 import {
   generateCoderPrompt,
-  generateGodDecisionPrompt,
 } from '../../god/god-prompt-generator.js';
 import type { PromptContext } from '../../god/god-prompt-generator.js';
-import { godActionToEvent } from '../../god/god-router.js';
 import { evaluateRules } from '../../god/rule-engine.js';
 import { validateCLIChoices } from '../../session/session-starter.js';
 import { ConvergenceService } from '../../decision/convergence-service.js';
@@ -24,7 +22,6 @@ import {
   GodTaskAnalysisSchema,
   GodPostReviewerDecisionSchema,
   GodAutoDecisionSchema,
-  MAX_REASONING_LENGTH,
 } from '../../types/god-schemas.js';
 import { workflowMachine } from '../../engine/workflow-machine.js';
 import type { ConvergenceLogEntry } from '../../god/god-convergence.js';
@@ -66,8 +63,8 @@ describe('BUG-1: ConvergenceLogEntry type consistency', () => {
     // Use the canonical ConvergenceLogEntry shape from god-convergence.
     // If the old duplicate type were still in use, accessing blockingIssueCount
     // would produce 'undefined' in the prompt.
-    const prompt = generateGodDecisionPrompt({
-      decisionPoint: 'CONVERGENCE',
+    const prompt = generateCoderPrompt({
+      taskType: 'code',
       round: 3,
       maxRounds: 5,
       taskGoal: 'Test task',
@@ -94,7 +91,6 @@ describe('BUG-1: ConvergenceLogEntry type consistency', () => {
     });
 
     expect(prompt).toContain('blocking');
-    expect(prompt).toContain('Round 2');
     expect(prompt).not.toContain('undefined');
   });
 
@@ -119,42 +115,6 @@ describe('BUG-1: ConvergenceLogEntry type consistency', () => {
 
     expect(prompt).not.toContain('undefined');
     expect(prompt).toContain('blocking');
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
-// BUG-2 (P1): PHASE_TRANSITION returns useful data
-// ══════════════════════════════════════════════════════════════
-
-describe('BUG-2: godActionToEvent PHASE_TRANSITION', () => {
-  test('test_bug_2_phase_transition_carries_data', () => {
-    const event = godActionToEvent({
-      action: 'phase_transition',
-      reasoning: 'Phase 1 complete, moving to Phase 2',
-      confidenceScore: 0.9,
-      progressTrend: 'improving',
-      nextPhaseId: 'phase-2',
-    } as any);
-
-    expect(event.type).toBe('PHASE_TRANSITION');
-    if (event.type === 'PHASE_TRANSITION') {
-      expect(event.summary).not.toBe('');
-      expect(event.summary).toContain('Phase');
-    }
-  });
-
-  test('test_regression_2_phase_transition_without_nextPhaseId_has_fallback', () => {
-    const event = godActionToEvent({
-      action: 'phase_transition',
-      reasoning: 'Moving on',
-      confidenceScore: 0.8,
-      progressTrend: 'improving',
-    } as any);
-
-    expect(event.type).toBe('PHASE_TRANSITION');
-    if (event.type === 'PHASE_TRANSITION') {
-      expect(event.nextPhaseId).not.toBe('');
-    }
   });
 });
 
@@ -187,34 +147,6 @@ describe('BUG-3: auto-decision rule engine check', () => {
 
     // No blocking rule should match a synthetic command
     expect(result.blocked).toBe(false);
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
-// BUG-4 (P1): DriftDetector seq conflict
-// ══════════════════════════════════════════════════════════════
-
-describe('BUG-4: DriftDetector seq isolation', () => {
-  test('test_bug_4_seqProvider_is_accepted', async () => {
-    // DriftDetector should support seqProvider option
-    const { DriftDetector } = await import('../../god/drift-detector.js');
-
-    let externalSeq = 100;
-    const detector = new DriftDetector({
-      seqProvider: () => externalSeq++,
-      round: 1,
-    });
-
-    // Just verify construction succeeds and methods work
-    expect(detector.isFallbackActive()).toBe(false);
-    detector.setRound(5);
-  });
-
-  test('test_regression_4_setRound_method_exists', async () => {
-    const { DriftDetector } = await import('../../god/drift-detector.js');
-    const detector = new DriftDetector({ round: 0 });
-    detector.setRound(5);
-    expect(detector.isFallbackActive()).toBe(false);
   });
 });
 
@@ -536,30 +468,22 @@ describe('BUG-11: Zod schema refine constraints', () => {
 });
 
 // ══════════════════════════════════════════════════════════════
-// BUG-12 (P2): GodAutoDecision reasoning length limit
+// BUG-12: GodAutoDecision reasoning accepts any length
 // ══════════════════════════════════════════════════════════════
 
-describe('BUG-12: reasoning length limit', () => {
-  test('test_bug_12_overly_long_reasoning_rejected', () => {
+describe('BUG-12: reasoning has no length limit', () => {
+  test('test_bug_12_long_reasoning_accepted', () => {
     const result = GodAutoDecisionSchema.safeParse({
       action: 'accept',
-      reasoning: 'x'.repeat(MAX_REASONING_LENGTH + 1),
+      reasoning: 'x'.repeat(10000),
     });
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
   });
 
   test('test_regression_12_normal_reasoning_accepted', () => {
     const result = GodAutoDecisionSchema.safeParse({
       action: 'accept',
       reasoning: 'Task completed successfully. All tests pass.',
-    });
-    expect(result.success).toBe(true);
-  });
-
-  test('test_regression_12_max_length_reasoning_accepted', () => {
-    const result = GodAutoDecisionSchema.safeParse({
-      action: 'accept',
-      reasoning: 'x'.repeat(MAX_REASONING_LENGTH),
     });
     expect(result.success).toBe(true);
   });
@@ -604,7 +528,7 @@ describe('Round2 BUG-2: God session ID in RestoredSessionRuntime', () => {
       task: 'Fix bug',
     });
 
-    expect('godSessionId' in runtime).toBe(false);
+    expect(runtime.godSessionId).toBe('ses_god_123');
   });
 
   test('test_regression_r2_bug2_missing_godSessionId_remains_absent', async () => {
@@ -636,7 +560,7 @@ describe('Round2 BUG-2: God session ID in RestoredSessionRuntime', () => {
       task: 'Fix bug',
     });
 
-    expect('godSessionId' in runtime).toBe(false);
+    expect(runtime.godSessionId).toBeUndefined();
   });
 });
 
@@ -676,57 +600,6 @@ describe('Round2 BUG-3: nextPhaseId preserved by Zod schema', () => {
     }
   });
 
-  test('test_regression_r2_bug3_godActionToEvent_uses_parsed_nextPhaseId', () => {
-    const input = {
-      action: 'phase_transition' as const,
-      reasoning: 'Phase 1 done',
-      confidenceScore: 0.9,
-      progressTrend: 'improving' as const,
-      nextPhaseId: 'implement',
-    };
-
-    const parsed = GodPostReviewerDecisionSchema.parse(input);
-    const event = godActionToEvent(parsed);
-
-    expect(event.type).toBe('PHASE_TRANSITION');
-    if (event.type === 'PHASE_TRANSITION') {
-      expect(event.nextPhaseId).toBe('implement');
-    }
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
-// Round 2 BUG-4 (P2): DriftDetector enforces seqProvider with sessionDir
-// ══════════════════════════════════════════════════════════════
-
-describe('Round2 BUG-4: DriftDetector seqProvider enforcement', () => {
-  test('test_regression_r2_bug4_sessionDir_without_seqProvider_throws', async () => {
-    const { DriftDetector } = await import('../../god/drift-detector.js');
-
-    expect(() => {
-      new DriftDetector({ sessionDir: '/tmp/session', seq: 0, round: 0 });
-    }).toThrow('seqProvider is required');
-  });
-
-  test('test_regression_r2_bug4_sessionDir_with_seqProvider_ok', async () => {
-    const { DriftDetector } = await import('../../god/drift-detector.js');
-
-    let seq = 0;
-    const detector = new DriftDetector({
-      sessionDir: '/tmp/session',
-      round: 0,
-      seqProvider: () => seq++,
-    });
-
-    expect(detector.isFallbackActive()).toBe(false);
-  });
-
-  test('test_regression_r2_bug4_no_sessionDir_no_seqProvider_ok', async () => {
-    const { DriftDetector } = await import('../../god/drift-detector.js');
-
-    const detector = new DriftDetector({ round: 0 });
-    expect(detector.isFallbackActive()).toBe(false);
-  });
 });
 
 // ══════════════════════════════════════════════════════════════
@@ -841,75 +714,6 @@ describe('Round2 BUG-5: God overlay shows current phase', () => {
 });
 
 // ══════════════════════════════════════════════════════════════
-// Round 3 BUG-1 (P1): DriftDetector consecutivePermissive reset
-// ══════════════════════════════════════════════════════════════
-
-describe('Round3 BUG-1: DriftDetector consecutivePermissive reset after drift', () => {
-  test('test_bug_r3_1_no_infinite_drift_loop_after_recovery', async () => {
-    const { DriftDetector } = await import('../../god/drift-detector.js');
-    const detector = new DriftDetector();
-
-    const permissive = {
-      classification: 'approved' as const,
-      shouldTerminate: false,
-      reason: null,
-      blockingIssueCount: 0,
-      criteriaProgress: [],
-      reviewerVerdict: 'ok',
-    };
-
-    // Trigger god_too_permissive drift (3 consecutive)
-    for (let i = 0; i < 3; i++) {
-      detector.recordDecision(permissive, 'changes_requested');
-    }
-    const drift1 = detector.checkDrift();
-    expect(drift1.detected).toBe(true);
-    expect(drift1.type).toBe('god_too_permissive');
-    expect(detector.isFallbackActive()).toBe(true);
-
-    // Tick through fallback rounds (auto-recover)
-    detector.tickFallbackRound();
-    detector.tickFallbackRound();
-    expect(detector.isFallbackActive()).toBe(false);
-
-    // After recovery, checkDrift should NOT immediately re-trigger
-    // (consecutivePermissive was reset to 0 in handleDrift)
-    const drift2 = detector.checkDrift();
-    expect(drift2.detected).toBe(false);
-  });
-
-  test('test_regression_r3_1_confidence_history_reset_after_declining_drift', async () => {
-    const { DriftDetector } = await import('../../god/drift-detector.js');
-    const detector = new DriftDetector();
-
-    const makeDecision = (score: number) => ({
-      action: 'route_to_coder' as const,
-      reasoning: 'issues',
-      confidenceScore: score,
-      progressTrend: 'declining' as const,
-    });
-
-    // Trigger confidence_declining drift (4 consecutive declining, final < 0.5 → severe)
-    detector.recordDecision(makeDecision(0.8), 'changes_requested');
-    detector.recordDecision(makeDecision(0.6), 'changes_requested');
-    detector.recordDecision(makeDecision(0.4), 'changes_requested');
-    detector.recordDecision(makeDecision(0.2), 'changes_requested');
-
-    const drift1 = detector.checkDrift();
-    expect(drift1.detected).toBe(true);
-    expect(drift1.type).toBe('confidence_declining');
-
-    // After recovery, should not immediately re-trigger
-    detector.tickFallbackRound();
-    detector.tickFallbackRound();
-    expect(detector.isFallbackActive()).toBe(false);
-
-    const drift2 = detector.checkDrift();
-    expect(drift2.detected).toBe(false);
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
 // Round 3 BUG-2 (P1): evaluatePhaseTransition respects nextPhaseId
 // ══════════════════════════════════════════════════════════════
 
@@ -979,104 +783,6 @@ describe('Round3 BUG-2: evaluatePhaseTransition uses God nextPhaseId', () => {
 
     // Only one phase, nextPhaseId doesn't exist, sequential also doesn't exist
     expect(result.shouldTransition).toBe(false);
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
-// Round 3 BUG-3 (P1): collectAdapterOutput uses projectDir
-// ══════════════════════════════════════════════════════════════
-
-describe('Round3 BUG-3: collectAdapterOutput uses projectDir instead of process.cwd()', () => {
-  test('test_bug_r3_3_god_router_passes_projectDir_to_adapter', async () => {
-    const { routePostCoder } = await import('../../god/god-router.js');
-
-    let capturedCwd: string | undefined;
-    const mockAdapter = {
-      name: 'mock-god',
-      displayName: 'Mock God',
-      version: '1.0.0',
-      isInstalled: async () => true,
-      getVersion: async () => '1.0.0',
-      execute(_prompt: string, opts: any) {
-        capturedCwd = opts.cwd;
-        const chunks = [{ type: 'text' as const, content: '```json\n{"action":"continue_to_review","reasoning":"ok"}\n```', timestamp: Date.now() }];
-        return {
-          [Symbol.asyncIterator]() {
-            let i = 0;
-            return {
-              async next() {
-                if (i < chunks.length) return { value: chunks[i++], done: false };
-                return { value: undefined as any, done: true };
-              },
-            };
-          },
-        };
-      },
-      kill: async () => {},
-      isRunning: () => false,
-    };
-
-    const tempDir = mkdtempSync(join(tmpdir(), 'bug-r3-3-'));
-    try {
-      await routePostCoder(mockAdapter, 'coder output', {
-        round: 1,
-        maxRounds: 10,
-        taskGoal: 'test',
-        sessionDir: tempDir,
-        seq: 1,
-        projectDir: '/custom/project/dir',
-      });
-
-      expect(capturedCwd).toBe('/custom/project/dir');
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
-    }
-  });
-
-  test('test_regression_r3_3_fallback_to_cwd_when_no_projectDir', async () => {
-    const { routePostCoder } = await import('../../god/god-router.js');
-
-    let capturedCwd: string | undefined;
-    const mockAdapter = {
-      name: 'mock-god',
-      displayName: 'Mock God',
-      version: '1.0.0',
-      isInstalled: async () => true,
-      getVersion: async () => '1.0.0',
-      execute(_prompt: string, opts: any) {
-        capturedCwd = opts.cwd;
-        const chunks = [{ type: 'text' as const, content: '```json\n{"action":"continue_to_review","reasoning":"ok"}\n```', timestamp: Date.now() }];
-        return {
-          [Symbol.asyncIterator]() {
-            let i = 0;
-            return {
-              async next() {
-                if (i < chunks.length) return { value: chunks[i++], done: false };
-                return { value: undefined as any, done: true };
-              },
-            };
-          },
-        };
-      },
-      kill: async () => {},
-      isRunning: () => false,
-    };
-
-    const tempDir = mkdtempSync(join(tmpdir(), 'bug-r3-3b-'));
-    try {
-      await routePostCoder(mockAdapter, 'coder output', {
-        round: 1,
-        maxRounds: 10,
-        taskGoal: 'test',
-        sessionDir: tempDir,
-        seq: 1,
-        // No projectDir → should fall back to process.cwd()
-      });
-
-      expect(capturedCwd).toBe(process.cwd());
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
-    }
   });
 });
 
@@ -1722,7 +1428,7 @@ describe('Round7 BUG-1: controller.enqueue try-catch in adapter streams', () => 
     const fs = await import('node:fs');
     const path = await import('node:path');
     const adapterSource = fs.readFileSync(
-      path.resolve(__dirname, '../../adapters/aider/adapter.ts'),
+      path.resolve(__dirname, '../../adapters/codex/adapter.ts'),
       'utf-8',
     );
     // stdout data handler should have try-catch
@@ -1813,67 +1519,6 @@ describe('Round7 BUG-2: seq uniqueness in convergence/router audit writes', () =
     // Their seq values must be different
     expect(hallucination.seq).not.toBe(convergence.seq);
   });
-
-  test('test_bug_r7_2_router_hallucination_and_routing_audit_have_different_seq', async () => {
-    const { readFileSync } = await import('node:fs');
-    const { routePostReviewer } = await import('../../god/god-router.js');
-
-    // Create adapter that returns inconsistent decision (will trigger hallucination audit)
-    // route_to_coder with empty unresolvedIssues triggers consistency check
-    const inconsistentOutput = `\`\`\`json
-{
-  "action": "route_to_coder",
-  "reasoning": "Issues found",
-  "unresolvedIssues": [],
-  "confidenceScore": -5,
-  "progressTrend": "improving"
-}
-\`\`\``;
-
-    const mockAdapter = {
-      name: 'mock-god',
-      displayName: 'Mock God',
-      version: '1.0.0',
-      isInstalled: async () => true,
-      getVersion: async () => '1.0.0',
-      execute(): AsyncIterable<OutputChunk> {
-        return {
-          [Symbol.asyncIterator]() {
-            let done = false;
-            return {
-              async next() {
-                if (!done) {
-                  done = true;
-                  return { value: { type: 'text' as const, content: inconsistentOutput, timestamp: Date.now() }, done: false };
-                }
-                return { value: undefined as any, done: true };
-              },
-            };
-          },
-        };
-      },
-      kill: async () => {},
-      isRunning: () => false,
-    };
-
-    await routePostReviewer(mockAdapter, 'Review output', {
-      round: 2,
-      maxRounds: 10,
-      taskGoal: 'Test',
-      sessionDir,
-      seq: 200,
-    });
-
-    const logPath = join(sessionDir, 'god-audit.jsonl');
-    if (existsSync(logPath)) {
-      const lines = readFileSync(logPath, 'utf-8').trim().split('\n');
-      const entries = lines.map(l => JSON.parse(l));
-      // Check no duplicate seq values
-      const seqValues = entries.map((e: any) => e.seq);
-      const uniqueSeqs = new Set(seqValues);
-      expect(uniqueSeqs.size).toBe(seqValues.length);
-    }
-  });
 });
 
 // ══════════════════════════════════════════════════════════════
@@ -1886,8 +1531,7 @@ describe('Round7 BUG-3: stderr error handler in adapters', () => {
     const path = await import('node:path');
 
     const adapterNames = [
-      'aider', 'amazon-q', 'amp', 'claude-code', 'cline', 'codex',
-      'continue', 'copilot', 'cursor', 'gemini', 'goose', 'qwen',
+      'claude-code', 'codex', 'gemini',
     ];
 
     for (const name of adapterNames) {
@@ -1956,31 +1600,11 @@ describe('Round7 BUG-4: R-002 quoted path bypass', () => {
 });
 
 // ══════════════════════════════════════════════════════════════
-// ROUND 7: BUG-5 (P2) — godActionToEvent unknown action throws
-// ══════════════════════════════════════════════════════════════
-
-describe('Round7 BUG-5: godActionToEvent throws on unknown action', () => {
-  test('test_bug_r7_5_unknown_action_throws_error', () => {
-    expect(() => {
-      godActionToEvent({ action: 'nonexistent_action' as any, reasoning: 'test' });
-    }).toThrow(/Unknown God action/);
-  });
-
-  test('test_bug_r7_5_known_actions_still_work', () => {
-    expect(() => godActionToEvent({ action: 'continue_to_review', reasoning: '' })).not.toThrow();
-    expect(() => godActionToEvent({ action: 'retry_coder', reasoning: '' })).not.toThrow();
-    expect(() => godActionToEvent({ action: 'loop_detected', reasoning: '', confidenceScore: 0.5, progressTrend: 'stagnant' as const })).not.toThrow();
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
 // Round 8 Bug Regressions
 // ══════════════════════════════════════════════════════════════
 
 import { SessionManager, type SessionState } from '../../session/session-manager.js';
 import { formatGodMessage } from '../../ui/god-message-style.js';
-import { AlertManager } from '../../god/alert-manager.js';
-import { GodContextManager } from '../../god/god-context-manager.js';
 import { TextStreamParser } from '../../parsers/text-stream-parser.js';
 
 // ── BUG-1: saveState should merge partial state, not replace ──
@@ -2239,67 +1863,6 @@ describe('Round 8 BUG-5: God message box CJK visual width', () => {
   });
 });
 
-// ── BUG-6: checkGodError return type is Alert (not Alert | null) ──
-
-describe('Round 8 BUG-6: checkGodError always returns Alert', () => {
-  test('test_bug_r8_6_checkGodError_returns_alert', () => {
-    const mgr = new AlertManager();
-    const alert = mgr.checkGodError({ message: 'timeout', level: 'L1', timestamp: Date.now() } as any);
-    // Should always return Alert, not null
-    expect(alert).toBeDefined();
-    expect(alert.type).toBe('GOD_ERROR');
-    expect(alert.level).toBe('Critical');
-  });
-
-  test('test_bug_r8_6_return_type_is_not_nullable', () => {
-    const mgr = new AlertManager();
-    const alert = mgr.checkGodError({ message: 'network error', level: 'L2', timestamp: Date.now() } as any);
-    // TypeScript should enforce this at compile time, but runtime check too
-    expect(alert).not.toBeNull();
-    expect(alert).not.toBeUndefined();
-  });
-});
-
-// ── BUG-7: classifyTrend returns 'stagnant' for oscillating patterns ──
-
-describe('Round 8 BUG-7: classifyTrend oscillating returns stagnant', () => {
-  test('test_bug_r8_7_oscillating_trend_is_detected', () => {
-    const mgr = new GodContextManager();
-    // [5, 3, 5] — first === last but middle differs → should be 'oscillating' (fixed in R13 BUG-3)
-    const log = [
-      { round: 1, timestamp: '', classification: 'changes_requested' as const, shouldTerminate: false, blockingIssueCount: 5, criteriaProgress: [], summary: '' },
-      { round: 2, timestamp: '', classification: 'changes_requested' as const, shouldTerminate: false, blockingIssueCount: 3, criteriaProgress: [], summary: '' },
-      { round: 3, timestamp: '', classification: 'changes_requested' as const, shouldTerminate: false, blockingIssueCount: 5, criteriaProgress: [], summary: '' },
-    ];
-    const trend = mgr.buildTrendSummary(log);
-    expect(trend).toContain('oscillating');
-    expect(trend).not.toContain('stagnant');
-  });
-
-  test('test_bug_r8_7_truly_stagnant_still_works', () => {
-    const mgr = new GodContextManager();
-    // [3, 3, 3] — all same
-    const log = [
-      { round: 1, timestamp: '', classification: 'changes_requested' as const, shouldTerminate: false, blockingIssueCount: 3, criteriaProgress: [], summary: '' },
-      { round: 2, timestamp: '', classification: 'changes_requested' as const, shouldTerminate: false, blockingIssueCount: 3, criteriaProgress: [], summary: '' },
-      { round: 3, timestamp: '', classification: 'changes_requested' as const, shouldTerminate: false, blockingIssueCount: 3, criteriaProgress: [], summary: '' },
-    ];
-    const trend = mgr.buildTrendSummary(log);
-    expect(trend).toContain('stagnant');
-  });
-
-  test('test_bug_r8_7_improving_still_works', () => {
-    const mgr = new GodContextManager();
-    const log = [
-      { round: 1, timestamp: '', classification: 'changes_requested' as const, shouldTerminate: false, blockingIssueCount: 5, criteriaProgress: [], summary: '' },
-      { round: 2, timestamp: '', classification: 'changes_requested' as const, shouldTerminate: false, blockingIssueCount: 3, criteriaProgress: [], summary: '' },
-      { round: 3, timestamp: '', classification: 'changes_requested' as const, shouldTerminate: false, blockingIssueCount: 1, criteriaProgress: [], summary: '' },
-    ];
-    const trend = mgr.buildTrendSummary(log);
-    expect(trend).toContain('improving');
-  });
-});
-
 // ══════════════════════════════════════════════════════════════
 // Round 9 BUG-1 (P1): EXECUTING → CODING (send_to_coder) must increment round (Card D.1)
 // ══════════════════════════════════════════════════════════════
@@ -2501,35 +2064,6 @@ describe('Round9 BUG-3: collectAdapterOutput includes error chunks', () => {
     };
   }
 
-  test('test_bug_r9_3_god_router_collects_error_chunks', async () => {
-    const { routePostCoder } = await import('../../god/god-router.js');
-
-    // Create adapter that emits text, then error (God reasoning matching ERROR_PATTERNS),
-    // then a code block with the JSON decision
-    const adapter = createMockAdapterWithChunks([
-      { type: 'text', content: 'Analysis: ', timestamp: Date.now() },
-      { type: 'error', content: 'Error: the implementation has a fundamental flaw. ', timestamp: Date.now() },
-      { type: 'code', content: '```json\n{"action":"continue_to_review","reasoning":"found issues but continuing"}\n```', timestamp: Date.now() },
-    ]);
-
-    const tmpDir = mkdtempSync(join(tmpdir(), 'r9-bug3-'));
-    try {
-      const result = await routePostCoder(adapter as any, 'coder output', {
-        round: 0,
-        maxRounds: 10,
-        taskGoal: 'test',
-        sessionDir: tmpDir,
-        seq: 0,
-        projectDir: tmpDir,
-      });
-
-      // The rawOutput should contain the error chunk content
-      expect(result.rawOutput).toContain('Error: the implementation has a fundamental flaw');
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
   test('test_bug_r9_3_auto_decision_collects_error_chunks', async () => {
     // Verify that auto-decision's collectAdapterOutput also collects error chunks
     const adapter = createMockAdapterWithChunks([
@@ -2596,127 +2130,6 @@ describe('Round9 BUG-3: collectAdapterOutput includes error chunks', () => {
       // Should not terminate since there are blocking issues
       expect(result.shouldTerminate).toBe(false);
       expect(result.judgment).toBeDefined();
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
-// Round 10 Bug Regressions
-// ══════════════════════════════════════════════════════════════
-
-// ── BUG-1 (R10-P1): AlertManager.checkProgress all-zero converged false positive ──
-
-describe('R10-BUG-1: AlertManager.checkProgress should not alert on all-zero converged tasks', () => {
-  test('test_bug_r10_1_all_zero_blocking_not_stagnant', () => {
-    const manager = new AlertManager();
-    const log: ConvergenceLogEntry[] = [
-      {
-        round: 1, timestamp: new Date().toISOString(), classification: 'changes_requested',
-        shouldTerminate: false, blockingIssueCount: 0, criteriaProgress: [], summary: 'r1',
-      },
-      {
-        round: 2, timestamp: new Date().toISOString(), classification: 'changes_requested',
-        shouldTerminate: false, blockingIssueCount: 0, criteriaProgress: [], summary: 'r2',
-      },
-      {
-        round: 3, timestamp: new Date().toISOString(), classification: 'approved',
-        shouldTerminate: true, blockingIssueCount: 0, criteriaProgress: [], summary: 'r3',
-      },
-    ];
-
-    // All blockingIssueCount are 0 → converged, not stagnant
-    const alert = manager.checkProgress(log);
-    expect(alert).toBeNull();
-  });
-
-  test('test_bug_r10_1_nonzero_stagnant_still_detected', () => {
-    const manager = new AlertManager();
-    const log: ConvergenceLogEntry[] = [
-      {
-        round: 1, timestamp: new Date().toISOString(), classification: 'changes_requested',
-        shouldTerminate: false, blockingIssueCount: 3, criteriaProgress: [], summary: 'r1',
-      },
-      {
-        round: 2, timestamp: new Date().toISOString(), classification: 'changes_requested',
-        shouldTerminate: false, blockingIssueCount: 3, criteriaProgress: [], summary: 'r2',
-      },
-      {
-        round: 3, timestamp: new Date().toISOString(), classification: 'changes_requested',
-        shouldTerminate: false, blockingIssueCount: 3, criteriaProgress: [], summary: 'r3',
-      },
-    ];
-
-    // Non-zero stagnant → should still alert
-    const alert = manager.checkProgress(log);
-    expect(alert).not.toBeNull();
-    expect(alert!.type).toBe('STAGNANT_PROGRESS');
-  });
-});
-
-// ── BUG-2 (R10-P1): POST_REVIEWER system prompt must include nextPhaseId ──
-
-describe('R10-BUG-2: POST_REVIEWER system prompt includes nextPhaseId', () => {
-  test('test_bug_r10_2_post_reviewer_prompt_contains_nextPhaseId', async () => {
-    // Access buildRoutingSystemPrompt indirectly via module internals
-    // We test by checking the god-router module's system prompt
-    const godRouterModule = await import('../../god/god-router.js');
-    // buildRoutingSystemPrompt is not exported, so we test via routePostReviewer behavior
-    // Instead, we read the source and check it contains nextPhaseId in the POST_REVIEWER prompt
-    // But more practically, we can test that a phase_transition with nextPhaseId works end-to-end
-
-    const phaseTransitionWithId = `God analysis: Phase complete.
-
-\`\`\`json
-{
-  "action": "phase_transition",
-  "reasoning": "Explore phase complete, moving to implementation",
-  "confidenceScore": 0.85,
-  "progressTrend": "improving",
-  "nextPhaseId": "implement-phase"
-}
-\`\`\``;
-
-    const adapter = {
-      name: 'mock-god',
-      displayName: 'Mock God',
-      version: '1.0.0',
-      isInstalled: async () => true,
-      getVersion: async () => '1.0.0',
-      execute(_prompt: string, _opts: any): AsyncIterable<OutputChunk> {
-        const chunks: OutputChunk[] = [
-          { type: 'text' as const, content: phaseTransitionWithId, timestamp: Date.now() },
-        ];
-        return {
-          [Symbol.asyncIterator]() {
-            let i = 0;
-            return {
-              async next() {
-                if (i < chunks.length) return { value: chunks[i++], done: false };
-                return { value: undefined as unknown as OutputChunk, done: true };
-              },
-            };
-          },
-        };
-      },
-      kill: async () => {},
-      isRunning: () => false,
-    };
-
-    const tmpDir = mkdtempSync(join(tmpdir(), 'r10-bug2-'));
-    try {
-      const result = await godRouterModule.routePostReviewer(adapter as any, 'Phase done', {
-        round: 2,
-        maxRounds: 10,
-        taskGoal: 'Explore then code',
-        sessionDir: tmpDir,
-        seq: 1,
-      });
-
-      expect(result.event.type).toBe('PHASE_TRANSITION');
-      // nextPhaseId should be passed through to the event
-      expect((result.event as any).nextPhaseId).toBe('implement-phase');
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }

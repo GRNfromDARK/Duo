@@ -90,12 +90,12 @@ export function processKeybinding(
     return { type: 'noop' };
   }
 
-  // === Priority 4: Navigation — only when no overlay and input empty ===
+  // === Priority 4: Navigation — j/k/G only when no overlay and input empty ===
   if (!ctx.overlayOpen && ctx.inputEmpty) {
-    if (input === 'j' || key.downArrow) {
+    if (input === 'j') {
       return { type: 'scroll_down', amount: 1 };
     }
-    if (input === 'k' || key.upArrow) {
+    if (input === 'k') {
       return { type: 'scroll_up', amount: 1 };
     }
     if (input === 'G') {
@@ -103,8 +103,16 @@ export function processKeybinding(
     }
   }
 
-  // Page scroll (arrows work regardless of input state but not in overlay)
+  // Arrow/Page scroll — always active (not in overlay).
+  // Arrow keys double as mouse wheel input via alternate scroll mode (§1007).
+  // InputArea already ignores upArrow/downArrow, so no conflict.
   if (!ctx.overlayOpen) {
+    if (key.downArrow) {
+      return { type: 'scroll_down', amount: 1 };
+    }
+    if (key.upArrow) {
+      return { type: 'scroll_up', amount: 1 };
+    }
     if (key.pageDown) {
       return { type: 'scroll_down', amount: ctx.pageSize };
     }
@@ -143,7 +151,7 @@ export const KEYBINDING_LIST: KeybindingEntry[] = [
   { shortcut: 'Ctrl+G', description: 'God control panel overlay' },
   { shortcut: 'Ctrl+R', description: 'Reclassify task type' },
   { shortcut: 'Ctrl+L', description: 'Clear screen (preserve history)' },
-  { shortcut: 'j/k or ↑/↓', description: 'Scroll messages' },
+  { shortcut: 'j/k or ↑/↓ or wheel', description: 'Scroll messages' },
   { shortcut: 'G', description: 'Jump to latest message' },
   { shortcut: 'Enter', description: 'Expand/collapse code block' },
   { shortcut: 'Tab', description: 'Path autocomplete' },

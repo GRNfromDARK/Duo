@@ -488,27 +488,66 @@ describe('Card F.2: logEnvelopeDecision — enhanced audit logging', () => {
     expect(entries[1].decisionType).toBe('god_decision');
   });
 
-  it('AC-6: inputSummary and outputSummary are truncated to 500 chars', () => {
+  it('AC-6: inputSummary and outputSummary preserve up to 2000 chars', () => {
     const logger = new GodAuditLogger(tmpDir);
-    const longSummaryObs = makeObservation({ summary: 'x'.repeat(600) });
-
-    logEnvelopeDecision(logger, {
+    const shortStr = 'x'.repeat(600);
+    logger.append({
+      timestamp: new Date().toISOString(),
       round: 1,
-      observations: [longSummaryObs],
-      envelope: makeEnvelope({
-        diagnosis: {
-          summary: 'y'.repeat(600),
-          currentGoal: 'test',
-          currentPhaseId: 'p1',
-          notableObservations: [],
-        },
-      }),
-      executionResults: [],
+      decisionType: 'test',
+      inputSummary: shortStr,
+      outputSummary: shortStr,
+      decision: {},
     });
 
     const entries = logger.getEntries();
-    expect(entries[0].inputSummary.length).toBeLessThanOrEqual(500);
-    expect(entries[0].outputSummary.length).toBeLessThanOrEqual(500);
+    expect(entries[0].inputSummary.length).toBe(600);
+    expect(entries[0].outputSummary.length).toBe(600);
+  });
+
+  it('AC-6: inputSummary and outputSummary are truncated at 2000 chars', () => {
+    const logger = new GodAuditLogger(tmpDir);
+    const longStr = 'x'.repeat(3000);
+    logger.append({
+      timestamp: new Date().toISOString(),
+      round: 1,
+      decisionType: 'test',
+      inputSummary: longStr,
+      outputSummary: longStr,
+      decision: {},
+    });
+
+    const entries = logger.getEntries();
+    expect(entries[0].inputSummary.length).toBe(2000);
+    expect(entries[0].outputSummary.length).toBe(2000);
+    expect(entries[0].inputSummary.endsWith('…')).toBe(true);
+  });
+
+  it('AC-6: truncation does not break surrogate pairs (emoji at boundary)', () => {
+    const logger = new GodAuditLogger(tmpDir);
+    // 1998 'a's + '😀' (surrogate pair at code-unit positions 1998-1999) + 'x'
+    // Total length = 2001 code units > 2000, triggers truncation
+    // slice(0, 1999) would cut inside the surrogate pair, leaving a lone high surrogate
+    const input = 'a'.repeat(1998) + '😀' + 'x';
+    expect(input.length).toBe(2001); // sanity check
+
+    logger.append({
+      timestamp: new Date().toISOString(),
+      round: 1,
+      decisionType: 'test',
+      inputSummary: input,
+      outputSummary: input,
+      decision: {},
+    });
+
+    const entries = logger.getEntries();
+    // Should not contain a lone high surrogate — must end cleanly with '…'
+    expect(entries[0].inputSummary.endsWith('…')).toBe(true);
+    // The lone high surrogate should be dropped: 1998 'a's + '…' = 1999 chars
+    expect(entries[0].inputSummary.length).toBe(1999);
+    // Verify no broken characters: round-trip through JSON
+    const roundTripped = JSON.parse(JSON.stringify(entries[0].inputSummary));
+    expect(roundTripped).toBe(entries[0].inputSummary);
   });
 
   // ── Full JSON archive ──

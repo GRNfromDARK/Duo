@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { z } from 'zod';
 import { extractGodJson, extractWithRetry } from '../../parsers/god-json-extractor.js';
 import {
   GodTaskAnalysisSchema,
@@ -92,6 +93,61 @@ describe('extractGodJson', () => {
     if (!result!.success) {
       expect(result!.error).toContain('Schema validation failed');
       expect(result!.error).toContain('taskType');
+    }
+  });
+});
+
+// ── Robustness: code fences and escape sequences inside JSON strings ──
+
+describe('extractGodJson — code fences and escapes inside JSON strings', () => {
+  it('extracts JSON when message field contains Markdown fenced code block', () => {
+    const envelope = {
+      diagnosis: { summary: 'Fix needed', currentGoal: 'test', currentPhaseId: 'p1', notableObservations: [] },
+      authority: { userConfirmation: 'not_required', reviewerOverride: false, acceptAuthority: 'reviewer_aligned' },
+      actions: [{ type: 'send_to_coder', message: '请修改：\n```ts\nconsole.log(1)\n```\n完成后运行测试' }],
+      messages: [],
+    };
+    const output = `Here is my decision:\n\`\`\`json\n${JSON.stringify(envelope, null, 2)}\n\`\`\`\nEnd.`;
+    const result = extractGodJson(output, z.any());
+    expect(result).not.toBeNull();
+    expect(result!.success).toBe(true);
+    if (result!.success) {
+      expect(result!.data.actions[0].message).toContain('console.log(1)');
+      expect(result!.data.actions[0].message).toContain('```ts');
+    }
+  });
+
+  it('extracts JSON when string fields contain ANSI escape sequences', () => {
+    const envelope = {
+      diagnosis: { summary: 'Escape test', currentGoal: 'test', currentPhaseId: 'p1', notableObservations: ['Found \\x1b[?1049h in code'] },
+      authority: { userConfirmation: 'not_required', reviewerOverride: false, acceptAuthority: 'reviewer_aligned' },
+      actions: [{ type: 'send_to_coder', message: 'Fix \\x1b[?1049h and \\x1b[?1007h handling' }],
+      messages: [],
+    };
+    const output = `\`\`\`json\n${JSON.stringify(envelope, null, 2)}\n\`\`\``;
+    const result = extractGodJson(output, z.any());
+    expect(result).not.toBeNull();
+    expect(result!.success).toBe(true);
+    if (result!.success) {
+      expect(result!.data.actions[0].message).toContain('\\x1b[?1049h');
+    }
+  });
+
+  it('extracts JSON when surrounded by prose and JSON has nested triple backticks', () => {
+    const envelope = {
+      diagnosis: { summary: 'Multi-fence test', currentGoal: 'g', currentPhaseId: 'p', notableObservations: [] },
+      authority: { userConfirmation: 'not_required', reviewerOverride: false, acceptAuthority: 'reviewer_aligned' },
+      actions: [{ type: 'send_to_coder', message: 'Step 1:\n```bash\necho hello\n```\nStep 2:\n```ts\nconst x = 1;\n```\nDone.' }],
+      messages: [{ target: 'system_log', content: 'Routing to coder' }],
+    };
+    const output = `I will now output my decision.\n\n\`\`\`json\n${JSON.stringify(envelope, null, 2)}\n\`\`\`\n\nThat is my decision.`;
+    const result = extractGodJson(output, z.any());
+    expect(result).not.toBeNull();
+    expect(result!.success).toBe(true);
+    if (result!.success) {
+      expect(result!.data.actions[0].message).toContain('```bash');
+      expect(result!.data.actions[0].message).toContain('```ts');
+      expect(result!.data.messages[0].content).toBe('Routing to coder');
     }
   });
 });

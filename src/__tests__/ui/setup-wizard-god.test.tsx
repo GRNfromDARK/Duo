@@ -74,7 +74,7 @@ describe('SetupWizard — God selection (Card A.1)', () => {
       const { lastFrame } = render(
         <GodSelector
           detected={DETECTED}
-          reviewer="gemini"
+          reviewer="copilot"
           label="Select God (orchestrator):"
           onSelect={vi.fn()}
         />,
@@ -82,9 +82,9 @@ describe('SetupWizard — God selection (Card A.1)', () => {
       const output = lastFrame()!;
       expect(output).toContain('Claude');
       expect(output).toContain('Codex');
-      expect(output).not.toContain('Gemini');
+      expect(output).toContain('Gemini');
       expect(output).not.toContain('Copilot');
-      expect(output).toContain("Reviewer 'gemini' cannot act as God");
+      expect(output).toContain("Reviewer 'copilot' cannot act as God");
     });
 
     it('calls onSelect with SAME_AS_REVIEWER when reviewer is the default selection', () => {
@@ -106,7 +106,7 @@ describe('SetupWizard — God selection (Card A.1)', () => {
       const { stdin } = render(
         <GodSelector
           detected={DETECTED}
-          reviewer="gemini"
+          reviewer="copilot"
           label="Select God (orchestrator):"
           onSelect={onSelect}
         />,

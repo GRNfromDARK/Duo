@@ -13,7 +13,7 @@ export interface ExecOptions {
   permissionMode?: 'skip' | 'safe';
   /** If true, disable all tools (Claude Code: --tools ""). Used for God orchestrator. */
   disableTools?: boolean;
-  /** Optional model override to pass to the CLI tool (e.g. 'claude-sonnet-4-6'). */
+  /** Optional model override to pass to the CLI tool (e.g. 'sonnet', 'gpt-5.4'). */
   model?: string;
 }
 

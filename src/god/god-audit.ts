@@ -15,8 +15,8 @@ export interface GodAuditEntry {
   timestamp: string;
   round: number;
   decisionType: string;
-  inputSummary: string;   // ≤ 500 chars
-  outputSummary: string;  // ≤ 500 chars
+  inputSummary: string;   // ≤ 2000 chars
+  outputSummary: string;  // ≤ 2000 chars
   inputTokens?: number;
   outputTokens?: number;
   latencyMs?: number;
@@ -26,12 +26,20 @@ export interface GodAuditEntry {
   outputRef?: string;     // god-decisions/ 中的完整输出引用
 }
 
-const MAX_SUMMARY_LEN = 500;
 const AUDIT_FILENAME = 'god-audit.jsonl';
 const DECISIONS_DIR = 'god-decisions';
+const SUMMARY_MAX_LENGTH = 2000;
 
-function truncate(s: string, maxLen: number): string {
-  return s.length > maxLen ? s.slice(0, maxLen) : s;
+/** Truncate a summary string to SUMMARY_MAX_LENGTH, appending '…' if truncated. Unicode-boundary-safe. */
+function truncateSummary(s: string): string {
+  if (s.length <= SUMMARY_MAX_LENGTH) return s;
+  let truncated = s.slice(0, SUMMARY_MAX_LENGTH - 1);
+  // Drop lone high surrogate at the end to avoid broken characters
+  const lastCode = truncated.charCodeAt(truncated.length - 1);
+  if (lastCode >= 0xD800 && lastCode <= 0xDBFF) {
+    truncated = truncated.slice(0, -1);
+  }
+  return truncated + '…';
 }
 
 /**
@@ -48,8 +56,8 @@ export function appendAuditLog(sessionDir: string, entry: GodAuditEntry): void {
 
   const sanitized: GodAuditEntry = {
     ...entry,
-    inputSummary: truncate(entry.inputSummary, MAX_SUMMARY_LEN),
-    outputSummary: truncate(entry.outputSummary, MAX_SUMMARY_LEN),
+    inputSummary: truncateSummary(entry.inputSummary),
+    outputSummary: truncateSummary(entry.outputSummary),
   };
 
   appendFileSync(logPath, JSON.stringify(sanitized) + '\n');
@@ -93,8 +101,8 @@ export class GodAuditLogger {
     const sanitized: GodAuditEntry = {
       ...entry,
       seq: this.seq,
-      inputSummary: truncate(entry.inputSummary, MAX_SUMMARY_LEN),
-      outputSummary: truncate(entry.outputSummary, MAX_SUMMARY_LEN),
+      inputSummary: truncateSummary(entry.inputSummary),
+      outputSummary: truncateSummary(entry.outputSummary),
       ...(outputRef ? { outputRef } : {}),
     };
 
@@ -194,8 +202,8 @@ export function logReviewerOverrideAudit(
     timestamp: new Date().toISOString(),
     round,
     decisionType: isOverride ? 'reviewer_override' : 'reviewer_aligned',
-    inputSummary: `Reviewer verdict: ${reviewerVerdict} — ${reviewerObservation.summary}`.slice(0, 500),
-    outputSummary: `God verdict: ${godVerdict}${isOverride ? ' (override)' : ''}`.slice(0, 500),
+    inputSummary: `Reviewer verdict: ${reviewerVerdict} — ${reviewerObservation.summary}`,
+    outputSummary: `God verdict: ${godVerdict}${isOverride ? ' (override)' : ''}`,
     decision: {
       reviewerVerdict,
       godVerdict,
@@ -236,8 +244,8 @@ export function logIncidentAudit(
     timestamp: new Date().toISOString(),
     round,
     decisionType: 'incident_response',
-    inputSummary: `Incident: ${incidentObservation.type} (${incidentObservation.severity}) — ${incidentObservation.summary}`.slice(0, 500),
-    outputSummary: `God response: ${actionTypes || 'no actions'} — ${envelope.diagnosis.summary}`.slice(0, 500),
+    inputSummary: `Incident: ${incidentObservation.type} (${incidentObservation.severity}) — ${incidentObservation.summary}`,
+    outputSummary: `God response: ${actionTypes || 'no actions'} — ${envelope.diagnosis.summary}`,
     decision: {
       incidentType: incidentObservation.type,
       incidentSeverity: incidentObservation.severity,

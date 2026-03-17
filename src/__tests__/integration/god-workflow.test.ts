@@ -25,15 +25,14 @@ import {
   type WorkflowContext,
 } from '../../engine/workflow-machine.js';
 import type { CLIAdapter, ExecOptions, OutputChunk } from '../../types/adapter.js';
-import type { GodTaskAnalysis, GodPostCoderDecision, GodPostReviewerDecision, GodConvergenceJudgment, GodAutoDecision } from '../../types/god-schemas.js';
+import type { GodTaskAnalysis, GodPostReviewerDecision, GodAutoDecision } from '../../types/god-schemas.js';
 import type { Observation } from '../../types/observation.js';
 import type { GodDecisionEnvelope } from '../../types/god-envelope.js';
 import { initializeTask } from '../../god/task-init.js';
-import { routePostCoder, routePostReviewer } from '../../god/god-router.js';
-import { evaluateConvergence, type ConvergenceLogEntry } from '../../god/god-convergence.js';
+import { type ConvergenceLogEntry } from '../../god/god-convergence.js';
 import { makeAutoDecision } from '../../god/auto-decision.js';
 import { DegradationManager, type FallbackServices } from '../../god/degradation-manager.js';
-import { withGodFallback, withGodFallbackSync } from '../../ui/god-fallback.js';
+import { withGodFallback, withGodFallbackSync, type GodRetryController, type GodAvailabilityGuard } from '../../ui/god-fallback.js';
 import { evaluatePhaseTransition, type Phase } from '../../god/phase-transition.js';
 import { restoreGodSession } from '../../god/god-session-persistence.js';
 import { ContextManager } from '../../session/context-manager.js';
@@ -281,26 +280,13 @@ describe('Scenario 1: Normal God workflow path (AC-1)', () => {
     actor.stop();
   });
 
-  it('God modules produce correct types for state machine events', async () => {
-    // Verify type compatibility between God modules and XState events
-    const adapter = createMockAdapter({
-      action: 'continue_to_review',
-      reasoning: 'OK',
-    } satisfies GodPostCoderDecision);
-
-    const result = await routePostCoder(adapter, 'output', {
-      round: 0, maxRounds: 10, taskGoal: 'test', sessionDir: sessionDir(), seq: 1,
-    });
-
-    // The legacy routePostCoder still works as a module, but the state machine
-    // now uses Observe → Decide → Act. Verify the new event flow instead.
+  it('state machine drives through Observe → Decide → Act flow', () => {
     const actor = startActor();
     actor.send({ type: 'START_TASK', prompt: 'test' });
     actor.send({ type: 'TASK_INIT_SKIP' });
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
     expect(actor.getSnapshot().value).toBe('OBSERVING');
 
-    // Use new events to drive to REVIEWING
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('work_output', 'coder')] });
     expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
 
@@ -325,18 +311,21 @@ describe('Scenario 2: God degradation path (AC-2)', () => {
     actor.send({ type: 'START_TASK', prompt: 'fix bug' });
     expect(actor.getSnapshot().value).toBe('TASK_INIT');
 
-    const dm = new DegradationManager({ fallbackServices: createFallbackServices() });
+    const controller: GodRetryController = {
+      isGodAvailable: () => true,
+      handleGodSuccess: vi.fn(),
+      handleGodFailure: vi.fn().mockResolvedValue({ retry: true }),
+    };
     const failingAdapter = createFailingAdapter(new Error('God process crashed'));
 
     const { result, usedGod } = await withGodFallback(
-      dm,
+      controller,
       async () => {
         const r = await initializeTask(failingAdapter, 'fix bug', 'sys', tmpDir);
         if (!r) throw new Error('TASK_INIT returned null');
         return r;
       },
       () => null, // fallback: no task analysis
-      'process_exit',
     );
 
     expect(usedGod).toBe(false);
@@ -349,16 +338,16 @@ describe('Scenario 2: God degradation path (AC-2)', () => {
   });
 
   it('OBSERVING God failure → fallback to v1 ChoiceDetector via MANUAL_FALLBACK', async () => {
-    const dm = new DegradationManager({ fallbackServices: createFallbackServices() });
-    const failingAdapter = createFailingAdapter(new Error('God timeout'));
+    const controller: GodRetryController = {
+      isGodAvailable: () => true,
+      handleGodSuccess: vi.fn(),
+      handleGodFailure: vi.fn().mockResolvedValue({ retry: true }),
+    };
 
     const { result, usedGod } = await withGodFallback(
-      dm,
-      () => routePostCoder(failingAdapter, 'code output', {
-        round: 0, maxRounds: 10, taskGoal: 'test', sessionDir: sessionDir(), seq: 1,
-      }),
+      controller,
+      async () => { throw new Error('God timeout'); },
       () => ({ event: { type: 'OBSERVATIONS_READY' as const, observations: [makeObs()] }, decision: { action: 'continue_to_review' as const, reasoning: 'v1 fallback' }, rawOutput: '' }),
-      'process_exit',
     );
 
     // After retry-fail cycle, should have fallen back
@@ -366,49 +355,52 @@ describe('Scenario 2: God degradation path (AC-2)', () => {
     expect(result.event.type).toBe('OBSERVATIONS_READY');
   });
 
-  it('3 consecutive failures → L4 → God disabled for session', async () => {
-    const dm = new DegradationManager({ fallbackServices: createFallbackServices() });
-    const failingAdapter = createFailingAdapter(new Error('God crash'));
-
-    // Failure 1 (triggers retry)
-    await withGodFallback(
-      dm,
-      () => routePostCoder(failingAdapter, 'output', {
-        round: 0, maxRounds: 10, taskGoal: 'test', sessionDir: sessionDir(), seq: 1,
+  it('3 consecutive failures → God disabled for session', async () => {
+    // Track failure count to simulate controller disabling God after 3 failures
+    let failures = 0;
+    let godDisabled = false;
+    const controller: GodRetryController = {
+      isGodAvailable: () => !godDisabled,
+      handleGodSuccess: vi.fn(),
+      handleGodFailure: vi.fn().mockImplementation(async () => {
+        failures++;
+        if (failures >= 3) {
+          godDisabled = true;
+          return { retry: false };
+        }
+        // First failure → retry
+        return { retry: true };
       }),
-      () => ({ event: { type: 'OBSERVATIONS_READY' as const, observations: [makeObs()] }, decision: { action: 'continue_to_review' as const, reasoning: 'fb' }, rawOutput: '' }),
-      'process_exit',
-    );
-    // After withGodFallback: fail → retry → fail = 2 consecutive failures
+    };
 
-    // Failure 3 (triggers L4)
+    // Failure 1 (triggers retry via handleGodFailure) → retry → Failure 2
     await withGodFallback(
-      dm,
-      () => routePostCoder(failingAdapter, 'output', {
-        round: 1, maxRounds: 10, taskGoal: 'test', sessionDir: sessionDir(), seq: 2,
-      }),
+      controller,
+      async () => { throw new Error('God crash'); },
       () => ({ event: { type: 'OBSERVATIONS_READY' as const, observations: [makeObs()] }, decision: { action: 'continue_to_review' as const, reasoning: 'fb' }, rawOutput: '' }),
-      'process_exit',
+    );
+    // After withGodFallback: fail → retry(fail#1) → fail → fail#2 → fallback
+
+    // Failure 3 (triggers disable)
+    await withGodFallback(
+      controller,
+      async () => { throw new Error('God crash'); },
+      () => ({ event: { type: 'OBSERVATIONS_READY' as const, observations: [makeObs()] }, decision: { action: 'continue_to_review' as const, reasoning: 'fb' }, rawOutput: '' }),
     );
 
-    expect(dm.isGodAvailable()).toBe(false);
-    expect(dm.getState().level).toBe('L4');
-    expect(dm.getState().godDisabled).toBe(true);
+    expect(controller.isGodAvailable()).toBe(false);
 
     // Subsequent calls skip God entirely
-    const goodAdapter = createMockAdapter({ action: 'continue_to_review', reasoning: 'OK' });
+    let godOperationCalled = false;
     const { usedGod } = await withGodFallback(
-      dm,
-      () => routePostCoder(goodAdapter, 'output', {
-        round: 2, maxRounds: 10, taskGoal: 'test', sessionDir: sessionDir(), seq: 3,
-      }),
+      controller,
+      async () => { godOperationCalled = true; return { event: { type: 'ROUTE_TO_REVIEW' as const }, decision: { action: 'continue_to_review' as const, reasoning: 'OK' }, rawOutput: '' }; },
       () => ({ event: { type: 'OBSERVATIONS_READY' as const, observations: [makeObs()] }, decision: { action: 'continue_to_review' as const, reasoning: 'fb' }, rawOutput: '' }),
-      'process_exit',
     );
 
     expect(usedGod).toBe(false);
-    // Good adapter should NOT have been called
-    expect(goodAdapter.execute).not.toHaveBeenCalled();
+    // God operation should NOT have been called
+    expect(godOperationCalled).toBe(false);
   });
 
   it('full degradation workflow through state machine', async () => {
@@ -646,20 +638,18 @@ describe('Scenario 4: Compound phase transition (AC-4)', () => {
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('review_output', 'reviewer')] });
     expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
 
-    // God says phase_transition via legacy module (for module integration testing)
-    const phaseTransitionAdapter = createMockAdapter({
-      action: 'phase_transition',
-      reasoning: 'Exploration complete, ready to implement.',
-      confidenceScore: 0.9,
-      progressTrend: 'improving',
-      nextPhaseId: 'code',
-    } satisfies GodPostReviewerDecision);
-
-    const postReviewResult = await routePostReviewer(
-      phaseTransitionAdapter,
-      'exploration looks complete',
-      { round: 0, maxRounds: 10, taskGoal: 'compound task', sessionDir: sessionDir(), seq: 3 },
-    );
+    // Construct phase transition result directly (god-router module removed)
+    const postReviewResult = {
+      event: { type: 'PHASE_TRANSITION' as const },
+      decision: {
+        action: 'phase_transition' as const,
+        reasoning: 'Exploration complete, ready to implement.',
+        confidenceScore: 0.9,
+        progressTrend: 'improving' as const,
+        nextPhaseId: 'code',
+      } satisfies GodPostReviewerDecision,
+      rawOutput: '',
+    };
 
     expect(postReviewResult.event.type).toBe('PHASE_TRANSITION');
 
@@ -675,7 +665,7 @@ describe('Scenario 4: Compound phase transition (AC-4)', () => {
     }];
 
     const currentPhase = phases[0];
-    const godDecision = postReviewResult.decision as GodPostReviewerDecision;
+    const godDecision = postReviewResult.decision;
 
     const transitionResult = evaluatePhaseTransition(currentPhase, phases, convergenceLog, godDecision);
     expect(transitionResult.shouldTransition).toBe(true);
@@ -953,38 +943,35 @@ describe('Scenario 5: duo resume (AC-5)', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('Cross-cutting: withGodFallback integration', () => {
-  it('God success → usedGod=true, DM reset to L1', async () => {
-    const dm = new DegradationManager({ fallbackServices: createFallbackServices() });
-    // Add a prior failure
-    dm.handleGodFailure({ kind: 'process_exit', message: 'prior' });
-    expect(dm.getState().consecutiveFailures).toBe(1);
-
-    const adapter = createMockAdapter({
-      action: 'continue_to_review',
-      reasoning: 'OK',
-    } satisfies GodPostCoderDecision);
+  it('God success → usedGod=true, handleGodSuccess called', async () => {
+    const controller: GodRetryController = {
+      isGodAvailable: () => true,
+      handleGodSuccess: vi.fn(),
+      handleGodFailure: vi.fn().mockResolvedValue({ retry: false }),
+    };
 
     const { result, usedGod } = await withGodFallback(
-      dm,
-      () => routePostCoder(adapter, 'output', {
-        round: 0, maxRounds: 10, taskGoal: 'test', sessionDir: sessionDir(), seq: 1,
+      controller,
+      async () => ({
+        event: { type: 'ROUTE_TO_REVIEW' as const },
+        decision: { action: 'continue_to_review' as const, reasoning: 'OK' },
+        rawOutput: '',
       }),
       () => ({ event: { type: 'OBSERVATIONS_READY' as const, observations: [makeObs()] }, decision: { action: 'continue_to_review' as const, reasoning: 'fb' }, rawOutput: '' }),
-      'process_exit',
     );
 
     expect(usedGod).toBe(true);
-    // routePostCoder still returns legacy event types for backward compat
     expect(result.event.type).toBe('ROUTE_TO_REVIEW');
-    expect(dm.getState().consecutiveFailures).toBe(0);
-    expect(dm.getState().level).toBe('L1');
+    expect(controller.handleGodSuccess).toHaveBeenCalled();
   });
 
   it('withGodFallbackSync for prompt generation fallback', () => {
-    const dm = new DegradationManager({ fallbackServices: createFallbackServices() });
+    const guard: GodAvailabilityGuard = {
+      isGodAvailable: () => true,
+    };
 
     const { result, usedGod } = withGodFallbackSync(
-      dm,
+      guard,
       () => 'God-generated prompt: Focus on error handling.',
       () => 'V1 prompt: Please review the code.',
     );
@@ -994,10 +981,12 @@ describe('Cross-cutting: withGodFallback integration', () => {
   });
 
   it('withGodFallbackSync catches throw and falls back', () => {
-    const dm = new DegradationManager({ fallbackServices: createFallbackServices() });
+    const guard: GodAvailabilityGuard = {
+      isGodAvailable: () => true,
+    };
 
     const { result, usedGod } = withGodFallbackSync(
-      dm,
+      guard,
       () => { throw new Error('prompt gen failed'); },
       () => 'V1 fallback prompt',
     );

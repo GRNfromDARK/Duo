@@ -23,6 +23,7 @@ import type { GodDecisionEnvelope } from '../../types/god-envelope.js';
 import { GodDecisionEnvelopeSchema } from '../../types/god-envelope.js';
 import { extractWithRetry, extractGodJson } from '../../parsers/god-json-extractor.js';
 import { stripAnsiEscapes } from '../../god/god-decision-service.js';
+import { createMockWatchdog } from '../helpers/mock-watchdog.js';
 
 // ── Shared helpers ──
 
@@ -78,9 +79,7 @@ describe('BUG-22 regression: fallback envelope must not lose observations', () =
         isRunning: () => false,
       };
 
-      const { DegradationManager } = await import('../../god/degradation-manager.js');
-      const degradation = new DegradationManager();
-      const service = new GodDecisionService(mockAdapter, degradation);
+      const service = new GodDecisionService(mockAdapter, createMockWatchdog());
 
       const envelope = await service.makeDecision(
         [makeObs('work_output', 'coder', 'Coder did some work')],

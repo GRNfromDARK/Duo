@@ -13,7 +13,7 @@ Duo 的终端 UI 基于以下技术栈：
 整个 UI 组件层共 **24 个组件**，分为三组：
 - **Core 组件**（16 个）— 通用 UI 组件：布局、输入、消息渲染、Overlay、状态栏等
 - **God LLM 组件**（5 个）— God 决策层专用组件：决策 banner、阶段切换、重分类、Setup 向导、任务分析
-- **新增组件**（3 个）— 任务完成屏幕、任务 banner、思考指示器
+- **Lifecycle 组件**（3 个）— 任务完成屏幕、任务 banner、思考指示器
 
 ## 组件树结构
 
@@ -25,22 +25,23 @@ App (根组件)
 │       ├── ProgressStepper (内部)     — 6 步进度指示器
 │       ├── DirectoryPicker            — 项目目录选择
 │       ├── CLISelector (内部)         — Coder/Reviewer 选择
-│       ├── GodSelector (内部)         — God adapter 选择
+│       ├── GodSelector (导出)         — God adapter 选择
+│       ├── ModelSelector (导出)       — 模型选择
 │       ├── TaskInput (内部)           — 任务描述输入
-│       └── ConfirmScreen (内部)       — 配置确认
+│       └── ConfirmScreen (导出)       — 配置确认
 │
 └── [Session 阶段] SessionRunner (App 内部)
     ├── TaskAnalysisCard               — God 任务分析卡片
     ├── GodDecisionBanner              — God 决策 escape window
     ├── PhaseTransitionBanner          — 阶段切换 escape window
     ├── ReclassifyOverlay              — 运行时任务重分类
-    ├── CompletionScreen (NEW)         — 任务完成后续选择
+    ├── CompletionScreen               — 任务完成后续选择
     └── MainLayout
         ├── StatusBar                  — 顶部状态栏（含 God 信息）
-        ├── TaskBanner (NEW)           — 持久任务目标展示
+        ├── TaskBanner                 — 持久任务目标展示
         ├── RenderedLineView[]         — 消息行列表（基于 message-lines.ts）
         │   └── LineSpan 渲染          — 逐 span 着色
-        ├── ThinkingIndicator (NEW)    — LLM 思考中动画
+        ├── ThinkingIndicator          — LLM 思考中动画
         ├── ScrollIndicator            — 新输出提示条
         ├── InputArea                  — 用户输入区域
         └── [Overlay 层]（全屏替换布局）
@@ -95,7 +96,7 @@ interface SessionRunnerProps {
 
 SessionRunner 的职责包括：
 - 通过 `useMachine(workflowMachine)` 创建 xstate actor，`MAX_ROUNDS = 20`
-- 持有 adapter（coder、reviewer、god）、ContextManager、ConvergenceService、ChoiceDetector、SessionManager、OutputStreamManager、DegradationManager 等服务的 `useRef`
+- 持有 adapter（coder、reviewer、god）、ContextManager、ConvergenceService、ChoiceDetector、SessionManager、OutputStreamManager 等服务的 `useRef`
 - 管理 `messages`（`Message[]`）、`tokenCount`、`timelineEvents` 等 UI 状态
 - 管理 God 相关状态：`godTaskAnalysis`、`godConvergenceLog`、`degradationState`、`currentPhaseId`
 - 监听 `CODING` 状态：启动 coder adapter 流式执行，通过 `createStreamAggregation` + `applyOutputChunk` 聚合输出
@@ -112,6 +113,8 @@ SessionRunner 的职责包括：
 
 **副作用管理模式**: 每个 xstate 状态对应一个 `useEffect`，依赖 `stateValue` 变化。CODING 和 REVIEWING 的 effect 包含 cleanup 函数（`cancelled = true; osm.interrupt()`），确保组件卸载或状态切换时中断进程。
 
+**关键导入**: `workflowMachine`、`createAdapter`、`createGodAdapter`、`OutputStreamManager`、`ContextManager`、`SessionManager`、`ConvergenceService`、`ChoiceDetector`、`GodAuditLogger`、`GodDecisionService`、`WatchdogService`、`initializeTask`、`classifyInterruptIntent`、`executeActions`（hand-executor）、`processWorkerOutput`（observation-integration）、`dispatchMessages`（message-dispatcher）等。
+
 ---
 
 ### 2. MainLayout.tsx — 主布局组件
@@ -121,10 +124,11 @@ SessionRunner 的职责包括：
 ```ts
 interface MainLayoutProps {
   messages: Message[];
-  statusText?: string;
+  statusText?: string;              // @deprecated，使用 statusBarProps
   columns: number;
   rows: number;
   isLLMRunning?: boolean;
+  workflowState?: WorkflowStateHint;  // 上下文感知的状态指示器
   onInputSubmit?: (text: string) => void;
   onNewSession?: () => void;
   onInterrupt?: () => void;
@@ -141,6 +145,8 @@ interface MainLayoutProps {
     currentPhase?: string;
     godAdapter?: string;
     reviewerAdapter?: string;
+    coderModel?: string;
+    reviewerModel?: string;
     degradationLevel?: string;
     godLatency?: number;
   };
@@ -158,6 +164,20 @@ interface MainLayoutProps {
 }
 ```
 
+**`WorkflowStateHint` 类型**:
+
+```ts
+type WorkflowStateHint =
+  | { phase: 'idle' }
+  | { phase: 'llm_running' }          // CODING/REVIEWING
+  | { phase: 'task_init' }            // God 正在分析任务
+  | { phase: 'god_deciding' }         // God 正在做路由决策
+  | { phase: 'observing' }            // 分类输出
+  | { phase: 'executing' }            // Hand executor 执行动作
+  | { phase: 'classifying_intent' }   // 分类用户中断意图
+  | { phase: 'done' };
+```
+
 **职责**: Session 阶段的核心布局组件，整合所有 UI 状态模块，管理消息区滚动、显示模式、Overlay 和输入。
 
 **布局结构**（从上到下）:
@@ -165,28 +185,30 @@ interface MainLayoutProps {
 | 区域 | 高度 | 内容 |
 |------|------|------|
 | Status Bar | 1 行 | `StatusBar` 组件或 fallback `<Text inverse bold>` |
-| Task Banner | 0-1 行 | `TaskBanner` 组件（仅当有 `taskSummary` 时显示） |
-| 分隔线 + 滚动位置 | 1 行 | `─` 填充 + 可选的 `L45/120` 滚动位置标识 |
+| Task Banner | 0-1 行 | `TaskBanner` 组件（仅当有 `contextData.taskSummary` 时显示） |
+| 分隔线 + 滚动位置 | 1 行 | `─` 填充 + 可选的 ` L45/120 ` 滚动位置标识 |
 | 消息区 | 动态行 | 滚动窗口内的 `RenderedLineView` 列表 + ThinkingIndicator + ScrollIndicator + 可选 scrollbar |
 | 分隔线 | 1 行 | `─` 重复 `columns` 次 |
-| InputArea / Footer | 3 行或自定义 | 用户输入区域或自定义 footer（如 CompletionScreen） |
+| InputArea / Footer | 3 行或自定义 | 用户输入区域或自定义 footer（如 CompletionScreen inline 模式） |
 
 高度计算: `messageAreaHeight = max(1, rows - STATUS_BAR_HEIGHT(1) - bannerHeight(0|1) - activeFooterHeight(3|N) - SEPARATOR_LINES(2))`
 
 **关键行为**:
 
 - **消息渲染管线**: `messages` -> `filterMessages(displayMode)` -> `.slice(clearedCount)` -> `buildRenderedMessageLines(columns)` -> `renderedLines[effectiveOffset..effectiveOffset+visibleSlots]` -> `RenderedLineView` 组件
-- **Scrollbar**: 当消息行数超过可见区域时，在消息区右侧显示单字符宽的滚动条（`█` 表示 thumb，`┃` 表示轨道），cyan 颜色高亮 thumb
-- **鼠标滚轮支持**: 通过 stdin data handler 解析 SGR 和 legacy X10 鼠标事件序列，支持鼠标滚轮上下滚动（每次 3 行）
+- **Scrollbar**: 当消息行数超过可见区域时，在消息区右侧显示单字符宽的滚动条（`buildScrollTrack` 函数：`█` 表示 thumb，`┃` 表示轨道），cyan 颜色高亮 thumb；thumb 大小 = `max(1, round(visibleSlots/totalLines * trackHeight))`
+- **鼠标滚轮支持**: 通过 alternate scroll mode（`\x1b[?1007h`/`\x1b[?1007l`），终端将鼠标滚轮转换为箭头键序列，在 `useEffect` 中启用/禁用
 - **滚动状态**: 持有 `ScrollState`（来自 `scroll-state.ts`），通过 `computeScrollView` 计算可见窗口
 - **显示模式**: 持有 `DisplayMode`（默认 `'minimal'`），通过 `toggleDisplayMode` 切换
-- **Overlay 状态**: 持有 `OverlayState`（来自 `overlay-state.ts`），有 overlay 时全屏替换正常布局
-- **清屏功能**: `Ctrl+L` 记录 `clearedCount`（当前已过滤消息数），后续只显示新消息，不删除历史
-- **键盘处理**: `useInput` -> `processKeybinding(input, key, ctx)` -> `handleAction(action)`，分发到各状态更新函数；`suspendGlobalKeys` 为 true 时忽略所有按键（用于 TaskAnalysisCard 等阶段暂停全局快捷键）
-- **Search overlay 输入**: 当 search overlay 打开时，额外将文本输入路由到 `updateSearchQuery`
-- **ThinkingIndicator 集成**: 当 `isLLMRunning` 为 true 且无实质性 assistant 输出时显示思考动画
-- **Footer 插槽**: `footer` prop 允许替换默认 InputArea 为自定义内容（如 CompletionScreen inline 模式）
-- **InputArea 集成**: InputArea 为非受控模式（管理自身 value/cursor 状态），通过 `onValueChange` 通知 MainLayout 输入是否为空（用于快捷键路由判断），`disabled` 在 overlay 打开时为 true
+- **Overlay 状态**: 持有 `OverlayState`（来自 `overlay-state.ts`），有 overlay 时全屏替换正常布局（渲染 HelpOverlay/ContextOverlay/TimelineOverlay/SearchOverlay）
+- **清屏功能**: `Ctrl+L` 记录 `clearedCount`（当前已过滤消息数），后续只显示新消息，不删除历史；同时重置 `scrollState` 为 `INITIAL_SCROLL_STATE`
+- **上下文感知指示器**: `resolveIndicatorConfig(workflowState, isLLMRunning, messages)` 根据 `WorkflowStateHint.phase` 返回不同的指示器配置（message/color/showElapsed），如 `task_init` -> "Analyzing task..."（yellow, showElapsed:true）；`llm_running` 仅在 `shouldShowThinking` 返回 true 时显示
+- **键盘处理**: `useInput` -> `processKeybinding(input, key, ctx)` -> `handleAction(action)`，分发到各状态更新函数；`suspendGlobalKeys` 为 true 时忽略所有按键
+- **Search overlay 输入**: 当 search overlay 打开时，额外将文本输入路由到 `updateSearchQuery`；Backspace 删末字符，普通字符追加，忽略 ctrl/escape/return/tab/`/`
+- **Footer 插槽**: `footer` prop 允许替换默认 InputArea 为自定义内容；`footerHeight` 指定高度（默认 `INPUT_AREA_HEIGHT = 3`）
+- **InputArea 集成**: InputArea 为非受控模式，通过 `onValueChange` 通知 MainLayout 输入是否为空（驱动 `inputEmpty` 状态，用于 j/k 滚动快捷键路由判断），`disabled` 在 overlay 打开时为 true；`onSpecialKey` 处理 `?` 和 `/` 打开对应 overlay
+
+**内部组件 `RenderedLineView`**: 接收 `RenderedMessageLine`，渲染为 `<Box>` 内的多个 `<Text>` span，每个 span 应用 `color`/`bold`/`dimColor` 样式。
 
 ---
 
@@ -195,16 +217,20 @@ interface MainLayoutProps {
 **Props**:
 
 ```ts
+type WorkflowStatus = 'idle' | 'active' | 'error' | 'routing' | 'interrupted' | 'done';
+
 interface StatusBarProps {
   projectPath: string;
   round: number;
   maxRounds: number;
-  status: WorkflowStatus;    // 'idle' | 'active' | 'error' | 'routing' | 'interrupted' | 'done'
+  status: WorkflowStatus;
   activeAgent: string | null;
   tokenCount: number;
   columns: number;
   godAdapter?: string;
   reviewerAdapter?: string;
+  coderModel?: string;
+  reviewerModel?: string;
   taskType?: string;
   currentPhase?: string;
   degradationLevel?: string;  // L1/L2/L3/L4
@@ -214,20 +240,38 @@ interface StatusBarProps {
 
 **职责**: 渲染顶部 1 行状态栏，固定高度。
 
-**布局**: ` Duo  <项目路径>  Round N/Max  <Agent> <icon> <status>  [taskType]  φ:phase  God:X  ↓L2  Nms  Ntok`
+**布局**: ` Duo  <项目路径>  [████░░] N/Max  <Agent> <icon> <status>  ⊛model  [taskType]  φ:phase  God:X  ↓L2  Nms  Ntok`
 
 **关键行为**:
 - 状态图标和颜色由 `STATUS_CONFIG` 映射：active=绿色 `◆`，idle=白色 `◇`，error=红色 `⚠`，routing=黄色 `◈`，interrupted=白色 `⏸`，done=绿色 `◇`
-- 进度条使用 `buildProgressBar(current, max, barWidth)` 生成 `[████░░]` 样式
-- token 计数 >= 1000 时显示为 `Nk` 格式（如 `1.5k`）
+- 进度条使用 `buildProgressBar(current, max, barWidth)` 生成 `[████░░]` 样式（barWidth=6）
+- token 计数 >= 1000 时显示为 `N.Mk` 格式（如 `1.5k`），后缀 `tok`
 - 使用 `<Text inverse bold>` 实现反色高亮背景
-- **优先级自适应宽度**: 每个段使用 priority（1-5）标记重要度，终端宽度不足时从最低优先级开始隐藏
-- **God 信息显示**：
-  - `taskType` — cyan 颜色显示 `[taskType]`
-  - `currentPhase` — magenta 颜色显示 `φ:phase`
-  - `godAdapter` — 仅与 reviewer 不同时显示 `God:X`（magenta）
-  - `degradationLevel` — L4 显示红色 `God:disabled`（整行红底白字）；L2/L3 显示黄色 `↓L2`/`↓L3`；L1 隐藏
-  - `godLatency` — dim 颜色显示延迟毫秒数
+- **优先级自适应宽度**: 每个 Segment 使用 `priority`（1-5）标记重要度，终端宽度不足时从最低优先级（数字最大）开始隐藏，priority 1 永不隐藏
+
+**段优先级分配**:
+
+| 段 | Priority | 位置 |
+|----|----------|------|
+| `Duo` | 1 | 左侧 |
+| `projectPath` | 4 | 左侧 |
+| 进度条 `[████░░] N/Max` | 1 | 左侧 |
+| agent + status | 2 | 左侧 |
+| model `⊛model` | 4 | 左侧 |
+| taskType `[type]` | 3 | 左侧 |
+| phase `φ:phase` | 3 | 左侧 |
+| God adapter | 4 | 右侧 |
+| degradation | 3 | 右侧 |
+| latency `Nms` | 5 | 右侧 |
+| token count | 2 | 右侧 |
+
+**God 信息显示**:
+- `taskType` — cyan 颜色显示 `[taskType]`
+- `currentPhase` — magenta 颜色显示 `φ:phase`
+- `godAdapter` — 仅与 reviewer 不同时显示 `God:X`（magenta）
+- `degradationLevel` — L4 显示红色 `God:disabled`（整行切换为 `backgroundColor="red" color="white"`）；L2/L3 显示黄色 `↓L2`/`↓L3`；L1 隐藏
+- `godLatency` — dim 颜色显示延迟毫秒数
+- `activeModel` — 根据 activeAgent 是否包含 `:Coder` 或 `:Reviewer` 选择对应 model 显示
 
 ---
 
@@ -249,10 +293,12 @@ interface CodeBlockProps {
 **关键行为**:
 - **折叠阈值**: `FOLD_THRESHOLD = 10` 行
 - **预览行数**: `PREVIEW_LINES = 5` 行
-- 超过 10 行时默认折叠，显示前 5 行 + `[▶ Expand · N lines]` 提示
-- 展开状态下显示 `[▼ Collapse · N lines]`
-- 代码行以 `backgroundColor="gray" color="white"` 渲染
-- 语言标签以 dim 颜色显示在代码块上方
+- 超过 10 行时默认折叠（`expanded ?? false`），显示前 5 行 + `[▶ Expand · N lines]` 提示（cyan）
+- 展开状态下显示 `[▼ Collapse · N lines]`（cyan）
+- 10 行及以下始终展开
+- 代码行以 `backgroundColor="gray" color="white"` 渲染，每行前后各有一个空格
+- 语言标签以 dim 颜色显示在代码块上方（` language`）
+- 空 content 时 lines 为空数组
 
 ---
 
@@ -272,7 +318,7 @@ interface ScrollIndicatorProps {
 
 **关键行为**:
 - `visible` 为 false 时返回 `null`（不渲染）
-- 提示文本: `↓ New output (N new) (press G to follow)`，居中显示，cyan 加粗
+- 提示文本: `↓ New output (N new) (press G to follow)`，水平居中（通过计算 padding），cyan 加粗
 - `newMessageCount` 大于 0 时显示 `(N new)` 计数
 - 固定高度 1 行
 
@@ -294,15 +340,18 @@ interface DirectoryPickerProps {
 **职责**: Setup 阶段的项目目录选择器。
 
 **关键行为**:
+- **初始化**: 使用 `useMemo` 在挂载时加载 MRU（`loadMRU`）和发现 Git 仓库（`discoverGitRepos`）
 - **路径输入** — 用户可直接输入路径，Tab 键触发自动补全
-- **Tab 补全** — 单个匹配直接填入（末尾加 `/`），多个匹配显示补全列表
-- **MRU 列表** — 从 `~/.duo/recent.json` 加载最近使用的目录，选择后更新
-- **Git 仓库发现** — 扫描 `DEFAULT_SCAN_DIRS` 下的一级子目录，发现含 `.git` 的目录
-- **非 Git 警告** — 选择非 Git 仓库时显示黄色警告 `Warning: Selected directory is not a git repository (Codex requires git)`
-- **导航** — 上下箭头在 MRU + discovered 合并列表中切换，Enter 选择，Esc 取消
-- 外框 `borderStyle="single"`，标题 `Select Project Directory`
+- **Tab 补全** — 单个匹配直接填入（末尾加 `/`），多个匹配显示 cyan 颜色的补全列表
+- **MRU 列表** — 从 `mruFile` 加载最近使用的目录，选择后调用 `addToMRU` + `saveMRU` 更新
+- **Git 仓库发现** — 扫描 `scanDirs` 下的一级子目录，发现含 `.git` 的目录
+- **非 Git 警告** — 选择非 Git 仓库时设置黄色 warning `"Warning: Selected directory is not a git repository (Codex requires git)"`
+- **导航** — 上下箭头在合并列表中切换（MRU 在前，discovered 在后），Enter 选择，Esc 取消
+- **列表合并和去重**: `items = [...mru]`，然后添加不在 MRU 中的 discovered 项
+- 外框 `borderStyle="single"`，标题 `Select Project Directory`（cyan 加粗）
 - 路径中的 `$HOME` 显示为 `~`
-- 列表去重：discovered 中已在 MRU 的条目不重复显示
+- 选中项以 `> ` 前缀和绿色高亮
+- 处理逻辑委托给 `processPickerInput` 纯函数
 
 ---
 
@@ -317,14 +366,15 @@ interface HelpOverlayProps {
 }
 ```
 
-**职责**: 显示完整的快捷键列表。
+**职责**: 全屏显示完整的快捷键列表。
 
 **关键行为**:
 - 数据源为 `keybindings.ts` 的 `KEYBINDING_LIST`（15 项，含 God 相关快捷键）
 - 圆角边框 (`borderStyle="round"`)，cyan 边框色
 - 快捷键列宽 18 字符，黄色加粗；描述为默认颜色
-- 根据终端行数限制可见条目数 (`rows - 6`)
-- 底部提示 `Press Esc to close`
+- 根据终端行数限制可见条目数 (`maxVisible = rows - 6`，预留标题 + 边框 + 底部提示)
+- 居中标题 `Keybindings`（cyan 加粗）
+- 底部居中提示 `Press Esc to close`（dim 颜色）
 
 ---
 
@@ -344,12 +394,18 @@ interface ContextOverlayProps {
 }
 ```
 
-**职责**: 显示当前会话的上下文摘要信息。
+**职责**: 全屏显示当前会话的上下文摘要信息。
 
 **关键行为**:
-- 标签列宽 16 字符，显示 5 项信息：Round、Coder（蓝色）、Reviewer（绿色）、Task、Tokens
-- 圆角边框，cyan 边框色
-- 底部提示 `Press Esc to close`
+- 标签列宽 16 字符，显示 5 项信息：
+  - Round — 默认颜色
+  - Coder — 蓝色
+  - Reviewer — 绿色
+  - Task — 默认颜色
+  - Tokens — 默认颜色
+- 居中标题 `Context Summary`（cyan 加粗）
+- 圆角边框，cyan 边框色，`paddingX={1}`
+- 底部居中提示 `Press Esc to close`
 
 ---
 
@@ -358,22 +414,27 @@ interface ContextOverlayProps {
 **Props**:
 
 ```ts
+interface TimelineEvent {
+  timestamp: number;
+  type: 'task_start' | 'coding' | 'reviewing' | 'converged' | 'interrupted' | 'error';
+  description: string;
+}
+
 interface TimelineOverlayProps {
   columns: number;
   rows: number;
-  events: TimelineEvent[];  // { timestamp, type, description }
+  events: TimelineEvent[];
 }
 ```
-
-**`TimelineEvent.type`**: `'task_start'` | `'coding'` | `'reviewing'` | `'converged'` | `'interrupted'` | `'error'`
 
 **职责**: 按时间顺序展示工作流事件历史。
 
 **关键行为**:
-- 每个事件类型有对应颜色：task_start=白色，coding=蓝色，reviewing=绿色，converged=青色，interrupted=黄色，error=红色
-- 时间列宽 12 字符，显示 `toLocaleTimeString()` 格式
-- 只显示最近 `rows - 6` 条事件（从尾部截取）
-- 无事件时显示 `No events yet`
+- 每个事件类型有对应颜色：task_start=白色，coding=蓝色，reviewing=绿色，converged=青色，interrupted=黄色，error=红色（`EVENT_COLORS` 映射）
+- 时间列宽 12 字符，显示 `new Date(event.timestamp).toLocaleTimeString()` 格式（dim 颜色）
+- 只显示最近 `maxVisible = rows - 6` 条事件（从尾部截取 `events.slice(-maxVisible)`）
+- 无事件时显示 `No events yet`（dim 颜色）
+- 居中标题 `Event Timeline`（cyan 加粗）
 - 圆角边框，cyan 边框色
 
 ---
@@ -391,13 +452,14 @@ interface SearchOverlayProps {
 }
 ```
 
-**职责**: 搜索消息历史并展示匹配结果。
+**职责**: 全屏搜索消息历史并展示匹配结果。
 
 **关键行为**:
-- 搜索栏前缀 `/ `（黄色加粗），空查询时显示占位符 `Type to search...`
-- 结果列表：左侧 10 字符宽显示角色名（使用 `ROLE_STYLES` 配色），右侧显示消息预览
-- 消息预览根据终端宽度截断（`columns - 20`），超长时末尾添加 `...`
-- 最大结果数 `rows - 7`
+- 搜索栏前缀 `/ `（黄色加粗），空查询时显示占位符 `Type to search...`（dim），有查询时在末尾显示 `█` 光标（dim）
+- 结果列表：左侧 10 字符宽显示角色名（使用 `ROLE_STYLES[msg.role]` 配色加粗），右侧显示消息预览
+- 消息预览根据终端宽度截断（`columns - 20`），超长时末尾添加 `...`（截断到 `columns - 23`）
+- 最大结果数 `maxResults = rows - 7`（标题 + 搜索栏 + 底部提示 + 边框）
+- 空查询显示 `Enter a search term`；无匹配显示 `No results found`
 - 搜索逻辑在 `overlay-state.ts` 的 `computeSearchResults` 中实现（大小写不敏感子串匹配）
 - 圆角边框，cyan 边框色
 
@@ -421,16 +483,17 @@ interface InputAreaProps {
 **职责**: 用户文本输入区域，支持多行输入和光标控制。
 
 **关键行为**:
-- **非受控模式**：组件内部通过 `useState` 管理 `InputState`（`value` + `cursorPos`），通过 `onValueChange` 通知外部值变化
-- **提交**: Enter 提交（非空时），提交后清空输入
-- **多行**: Alt+Enter / Ctrl+Enter / Shift+Enter 插入换行，最多 `maxLines` 行
-- **光标移动**: 左右箭头移动光标；Home/End 跳到行首/行尾；Ctrl+A/Ctrl+E 同 Home/End
-- **行编辑**: Ctrl+K 删除光标到行尾的内容；Backspace 删除光标前字符
-- **鼠标序列过滤**: 使用正则 `MOUSE_SEQUENCE_RE` 过滤终端鼠标模式下泄漏的 escape 序列
-- **特殊键**: 输入为空时按 `?` 或 `/` 触发 `onSpecialKey` 回调（用于打开 overlay）
-- **占位符**: LLM 运行中显示 `Type to interrupt, or wait for completion...`；空闲时显示 `Type a message...`
+- **非受控模式**：组件内部通过 `useState` 管理 `InputState`（`value` + `cursorPos`），通过 `onValueChange` 通知外部值变化（在 `useEffect` 中检测 `state.value` 变化后调用）
+- **提交**: Enter 提交（仅 `value.trim()` 非空时），提交后重置为 `INITIAL_INPUT_STATE`（空值 + 光标位置 0）
+- **多行**: Alt+Enter / Ctrl+Enter / Shift+Enter 在光标位置插入换行，最多 `maxLines` 行
+- **光标移动**: 左右箭头移动光标；Home 跳到当前行首（`lastIndexOf('\n', cursorPos-1) + 1`）；End 跳到当前行尾；Ctrl+A 同 Home；Ctrl+E 同 End
+- **行编辑**: Ctrl+K 删除光标到行尾的内容（若光标在行尾则删除换行符）；Backspace 删除光标前一个字符
+- **特殊键**: 输入为空时按 `?` 或 `/` 返回 `{ type: 'special', key: input }` 触发 `onSpecialKey` 回调
+- **忽略的键**: upArrow、downArrow、pageUp、pageDown、tab、escape、未处理的 ctrl 组合
+- **占位符**: LLM 运行中显示 `"Type to interrupt, or wait for completion..."`；空闲时显示 `"Type a message..."`
 - 输入提示符: LLM 运行中 `◆`（黄色），空闲时 `▸`（cyan）
-- `disabled` 为 true 时忽略所有输入事件
+- `disabled` 为 true 时 `useInput` 回调直接 return
+- 多行显示时，第一行显示提示符，后续行缩进 2 空格；光标所在行在光标位置显示 `█`（dim）
 
 **纯函数 `processInput(currentValue, cursorPos, input, key, maxLines)`**:
 - 提取为独立纯函数以便测试
@@ -438,7 +501,7 @@ interface InputAreaProps {
 
 **辅助函数**:
 - `getDisplayLines(value, maxLines)` — 按 `\n` 分割并截取前 `maxLines` 行用于渲染
-- `getCursorLineCol(value, cursorPos)` — 计算光标所在的行号和列号
+- `getCursorLineCol(value, cursorPos)` — 计算光标所在的行号和列号（基于 `cursorPos` 前的文本按 `\n` 分割）
 
 ---
 
@@ -462,13 +525,14 @@ interface SystemMessageProps {
 
 | type | Minimal 模式 | Verbose 模式 |
 |------|-------------|-------------|
-| `routing` | `· [Router] Choice detected → Forwarding to <Agent>` | 额外显示 question 和 choices 列表（缩进 + 编号） |
+| `routing` | `· [Router] Choice detected → Forwarding to <Agent>` | 额外显示 question 和 choices 列表（`·   ` 缩进 + 编号） |
 | `interrupt` | `⚠ INTERRUPTED - <Agent> process terminated (output: N chars)` | 同上 |
 | `waiting` | `> Waiting for your instructions...` | 同上 |
 
-- routing 消息全部为黄色
-- interrupt 消息为黄色 `⚠` 标记
+- routing 消息全部为黄色（`·` 前缀 + `[Router]` 加粗 + 正文）
+- interrupt 消息为黄色 `⚠` 标记 + `INTERRUPTED` 加粗
 - waiting 消息为白色 `>` 前缀
+- 内部由三个子组件 `RoutingMessage`、`InterruptMessage`、`WaitingMessage` 分别渲染
 
 ---
 
@@ -477,22 +541,26 @@ interface SystemMessageProps {
 **Props**:
 
 ```ts
+type ConvergenceAction = 'accept' | 'continue' | 'review';
+
 interface ConvergenceCardProps {
   roundCount: number;
   filesChanged: number;
   insertions: number;
   deletions: number;
-  onAction: (action: ConvergenceAction) => void;  // 'accept' | 'continue' | 'review'
+  onAction: (action: ConvergenceAction) => void;
 }
 ```
 
 **职责**: 当 Coder 和 Reviewer 达成一致时显示收敛信息和操作选项。
 
 **关键行为**:
-- 绿色圆角边框，标题 `✓ CONVERGED after N rounds`
-- 显示变更统计：`Files modified: N  Lines changed: +N / -N`（insertions 绿色，deletions 红色）
-- 三个操作按钮：`[A] Accept`、`[C] Continue`、`[R] Review Changes`
-- 键盘 `a`/`c`/`r`（不区分大小写）触发对应 action
+- 绿色圆角边框 (`borderStyle="round" borderColor="green"`)
+- 标题 `✓ CONVERGED after N rounds`（绿色加粗 + 绿色）
+- 描述 `Both agents agree on the implementation.`（灰色）
+- 变更统计：`Files modified: N  Lines changed: +N / -N`（insertions 绿色，deletions 红色）
+- 三个操作按钮（`marginTop={1}`）：`[A] Accept`、`[C] Continue`、`[R] Review Changes`（按键 cyan 加粗）
+- 键盘 `a`/`c`/`r`（`input.toLowerCase()` 不区分大小写）触发对应 action
 
 ---
 
@@ -501,20 +569,25 @@ interface ConvergenceCardProps {
 **Props**:
 
 ```ts
+type DisagreementAction = 'continue' | 'decide' | 'accept_coder' | 'accept_reviewer';
+
 interface DisagreementCardProps {
   currentRound: number;
   agreedPoints: number;
   totalPoints: number;
-  onAction: (action: DisagreementAction) => void;  // 'continue' | 'decide' | 'accept_coder' | 'accept_reviewer'
+  onAction: (action: DisagreementAction) => void;
 }
 ```
 
 **职责**: 当 Coder 和 Reviewer 存在分歧时显示分歧信息和操作选项。
 
 **关键行为**:
-- 黄色圆角边框，标题 `⚡ DISAGREEMENT · Round N`
-- 显示一致度统计：`Agreed: M/N    Disputed: K/N`（K = totalPoints - agreedPoints）
-- 四个操作按钮分两行：`[C] Continue` `[D] Decide manually` / `[A] Accept Coder's` `[B] Accept Reviewer's`
+- 黄色圆角边框 (`borderColor="yellow"`)
+- 标题 `⚡ DISAGREEMENT · Round N`（黄色加粗 + 黄色）
+- 一致度统计：`Agreed: M/N    Disputed: K/N`（K = totalPoints - agreedPoints，灰色）
+- 四个操作按钮分两行（`marginTop={1}`）：
+  - 第一行：`[C] Continue`  `[D] Decide manually`
+  - 第二行：`[A] Accept Coder's`  `[B] Accept Reviewer's`
 - 键盘 `c`/`d`/`a`/`b`（不区分大小写）触发对应 action
 
 ---
@@ -536,8 +609,9 @@ interface MessageViewProps {
 
 **关键行为**:
 - **角色头**: 使用 `ROLE_STYLES[message.role]` 获取颜色和边框字符，格式 `<border> [<displayName> · <roleLabel>] HH:MM`
-- **Verbose 模式额外信息**: 时间戳精确到秒，显示 token 计数，显示 CLI 命令
+- **Verbose 模式额外信息**: 时间戳精确到秒 (`HH:MM:SS`)，显示 `[Nk tokens]`（灰色），显示 `$ cliCommand`（dimColor 灰色）
 - **内容委托**: 将 `message.content` 和 `message.isStreaming` 传递给 `StreamRenderer` 渲染
+- `marginBottom={1}` 提供消息间距
 
 ---
 
@@ -557,22 +631,28 @@ interface StreamRendererProps {
 
 **关键行为**:
 - 通过 `useMemo` 调用 `parseMarkdown(content)` 并做 `compactSegments` 处理
-- **Activity block 压缩** (Minimal 模式): 连续的 `activity_block` 在 minimal 模式下压缩为单个 `activity_summary`，格式 `⏺ N actions · M results · K errors · latest <title>: <summary>`
-- **代码块状态管理**: 使用 `expandedBlocks` (`Record<number, boolean>`) 追踪每个代码块的展开/折叠状态
-- **流式指示器**: `isStreaming` 为 true 时在内容末尾显示旋转 spinner（`⣾⣽⣻⢿⡿⣟⣯⣷`），字符基于 `content.length % 8` 选择（确保测试输出确定性）
-- **Segment 渲染映射**:
+- **Activity block 压缩** (Minimal 模式): `compactSegments` 将连续的 `activity_block` 压缩为单个 `activity_summary`，格式 `⏺ N actions · M results · K errors · latest <title>: <summary>`；Verbose 模式保持原样
+- **代码块状态管理**: 使用 `expandedBlocks` (`Record<number, boolean>`) 追踪每个代码块的展开/折叠状态（`useState`），`toggleBlock` 通过 `useCallback` 切换指定 index 的展开状态
+- **流式指示器**: `isStreaming` 为 true 时在内容末尾显示旋转 spinner（`⣾⣽⣻⢿⡿⣟⣯⣷`），字符基于 `content.length % 8` 选择（确保测试输出确定性），cyan 颜色
+- **Segment 渲染映射**（通过内部 `SegmentView` 组件）:
 
 | Segment 类型 | 渲染方式 |
 |-------------|---------|
 | `text` | 按 `\n` 分行，每行一个 `<Text>` |
 | `code_block` | 委托给 `<CodeBlock>`，传入 `expanded` 和 `onToggle` |
-| `activity_block` | 根据 kind 显示图标（`⏺`/`⎿`/`⚠`）+ 标题摘要；verbose 模式下展开为 CodeBlock |
-| `activity_summary` | 单行摘要 `<Text color={color}>{icon} {summary}</Text>` |
-| `inline_code` | 灰底白字 |
+| `activity_block` | `ActivityBlock` 子组件：根据 kind 显示图标（`⏺`/`⎿`/`⚠`）+ 颜色（cyan/gray/red）+ 标题摘要；verbose 模式下剩余内容行展开为 `CodeBlock(language="text")` |
+| `activity_summary` | `ActivitySummary` 子组件：单行 `<Text color={color}>{icon} {summary}</Text>` |
+| `inline_code` | 灰底白字 `backgroundColor="gray" color="white"` |
 | `bold` | `<Text bold>` |
 | `italic` | `<Text italic>` |
-| `list_item` | `*`/`-` 显示为 `  •`，有序列表保留标记 |
-| `table` | 动态列宽，`-+-` 分隔线 |
+| `list_item` | `*`/`-` 显示为 `  •`（Unicode bullet），有序列表保留原始标记 |
+| `table` | `TableView` 子组件：动态列宽（`max(headerWidth, maxDataWidth) + 2`），`-+-` 分隔线 |
+
+**内部子组件**:
+- `SegmentView` — segment 类型分发渲染
+- `TableView` — 表格渲染，计算每列最大宽度，使用 `padEnd` 对齐
+- `ActivitySummary` — 简洁的单行活动摘要
+- `ActivityBlock` — 完整的活动块渲染，支持 minimal/verbose 模式
 
 ---
 
@@ -596,13 +676,14 @@ interface GodDecisionBannerProps {
 
 **关键行为**:
 - 使用 `god-decision-banner.ts` 的纯状态函数管理 countdown、key press、tick
-- **AI-driven 模式**: `ESCAPE_WINDOW_MS = 0`，决策创建即执行，`onExecute` 立即触发
-- **Progress bar**: 20 字符宽，`█` 已填充 + `░` 未填充，显示剩余秒数
+- **AI-driven 模式**: `ESCAPE_WINDOW_MS = 0`，`createGodDecisionBannerState` 创建即 `executed: true`，`onExecute` 立即通过 `useEffect` 触发
+- **Progress bar**: 20 字符宽（`BAR_WIDTH = 20`），`█` 已填充 + `░` 未填充，显示剩余秒数（`(countdown/1000).toFixed(1)s`）
 - **决策摘要**: `formatDecisionSummary` 生成 `"God: accepting output"` 或 `"God: continuing - \"instruction\""`
-- **键盘**: `[Space]` 立即执行，`[Esc]` 取消
+- **键盘**: `[Space]` 立即执行（`handleBannerKeyPress(prev, 'space')`），`[Esc]` 取消
 - **样式**: 黄色圆角边框，标题 `⚡ GOD 决策`
 - **回调保护**: 使用 `firedRef` 确保 `onExecute`/`onCancel` 只触发一次
-- **Countdown timer**: 100ms interval tick，通过 `useEffect` 管理生命周期
+- **Countdown timer**: `TICK_INTERVAL_MS(100)` interval，通过 `useEffect` 管理生命周期（`state.cancelled || state.executed` 时清除 interval）
+- 底部提示：`[Space] 立即执行   [Esc] 取消此决策`（dim 颜色）
 
 ---
 
@@ -627,10 +708,12 @@ interface PhaseTransitionBannerProps {
 - 使用 `phase-transition-banner.ts` 的纯状态函数管理状态转换
 - **2 秒等待窗口**: `PHASE_ESCAPE_WINDOW_MS = 2000`，超时自动确认
 - **Progress bar**: 同 GodDecisionBanner，20 字符宽
-- **摘要显示**: `previousPhaseSummary` 截断到 120 字符，dim 颜色
+- **摘要显示**: `previousPhaseSummary` 截断到 120 字符（`.slice(0, 120)`），dim 颜色，仅非空时显示
 - **键盘**: `[Space]` 立即确认，`[Esc]` 取消（留在当前阶段）
 - **样式**: magenta 圆角边框，标题 `⚡ Phase Transition → <nextPhaseId>`
 - **回调保护**: 使用 `firedRef` 确保回调只触发一次
+- **Countdown timer**: `PHASE_TICK_INTERVAL_MS(100)` interval
+- 底部提示：`[Space] confirm transition   [Esc] stay in current phase`
 
 ---
 
@@ -653,18 +736,18 @@ interface ReclassifyOverlayProps {
 
 **关键行为**:
 - 使用 `reclassify-overlay.ts` 的纯状态函数管理选择和导航
-- **可选类型**: `explore`、`code`、`review`、`debug`（不含 `compound`）
-- **当前信息显示**: 当前任务类型和当前轮次
-- **选择列表**: 每项显示 `[N] type  description`，当前类型标记 `← current`
-- **键盘**:
-  - `↑/↓` 移动选择
+- **可选类型**: `explore`、`code`、`review`、`debug`（不含 `compound` 和 `discuss`）
+- **当前信息显示**: 当前任务类型 `[currentType]` 和当前轮次 `Round N`
+- **选择列表**: 每项显示 `[N] type  description`，当前类型标记 `← current`（黄色）
+- **键盘**: 将 Ink 的 key 对象转换为字符串（`arrow_down`/`arrow_up`/`enter`/`escape`/原始 input），然后委托给 `handleReclassifyKey`
+  - `↑/↓` 循环移动选择
   - `Enter` 确认当前选择
   - `1-4` 数字键直接选中并确认
   - `Esc` 取消（恢复原类型）
-- **选中项高亮**: cyan 颜色 + `❯` 前缀
-- **样式**: cyan 圆角边框，标题 `◈ Reclassify Task`
+- **选中项高亮**: cyan 颜色 + `❯` 前缀 + 加粗
+- **样式**: cyan 圆角边框，居中标题 `◈ Reclassify Task`（cyan 加粗）
 
-**类型描述**:
+**类型描述** (`RECLASSIFY_LABELS`):
 
 | 类型 | 描述 |
 |------|------|
@@ -677,8 +760,6 @@ interface ReclassifyOverlayProps {
 
 ### 20. SetupWizard.tsx — Setup 向导
 
-**来源**: v2 Setup 交互重构
-
 **Props**:
 
 ```ts
@@ -689,32 +770,40 @@ interface SetupWizardProps {
 }
 ```
 
-**职责**: 完整的交互式 Setup 向导，引导用户完成 6 步配置流程，替代 App 内部的分散 Setup 逻辑。
+**职责**: 完整的交互式 Setup 向导，引导用户完成多步配置流程。
 
-**6 步流程** (`SetupPhase`):
+**9 步流程** (`SetupPhase`):
 
-| 步骤 | Phase | 内部组件 | 说明 |
-|------|-------|---------|------|
-| 1 | `select-dir` | `DirectoryPicker` | 选择项目目录 |
-| 2 | `select-coder` | `CLISelector` | 选择 Coder CLI |
-| 3 | `select-reviewer` | `CLISelector` | 选择 Reviewer CLI（排除已选 Coder） |
-| 4 | `select-god` | `GodSelector` | 选择 God adapter |
-| 5 | `enter-task` | `TaskInput` | 输入任务描述 |
-| 6 | `confirm` | `ConfirmScreen` | 确认配置并启动 |
+| Phase | 内部组件 | 说明 | 下一步 |
+|-------|---------|------|--------|
+| `select-dir` | `DirectoryPicker` | 选择项目目录 | -> `select-coder` |
+| `select-coder` | `CLISelector` | 选择 Coder CLI | -> `coder-model`（如支持）或 `select-reviewer` |
+| `coder-model` | `ModelSelector` | 选择 Coder 模型 | -> `select-reviewer` |
+| `select-reviewer` | `CLISelector` | 选择 Reviewer CLI（排除已选 Coder） | -> `reviewer-model`（如支持）或 `select-god` |
+| `reviewer-model` | `ModelSelector` | 选择 Reviewer 模型 | -> `select-god` |
+| `select-god` | `GodSelector` | 选择 God adapter | -> `god-model`（如支持）或 `enter-task` |
+| `god-model` | `ModelSelector` | 选择 God 模型 | -> `enter-task` |
+| `enter-task` | `TaskInput` | 输入任务描述 | -> `confirm` |
+| `confirm` | `ConfirmScreen` | 确认配置并启动 | -> `onComplete` |
+
+**模型选择跳过逻辑**: `adapterSupportsModel(name)` 通过 `getRegistryEntry(name).modelFlag` 判断适配器是否支持模型选择；不支持时直接跳过 model phase。
 
 **内部子组件**:
 
-- **BrandHeader** — 渲染 ASCII art logo（`Duo`）+ 版本号 + slogan `"Coder writes. Reviewer guards. God decides."`，cyan 加粗，固定宽度 70 字符边框
-- **ProgressStepper** — 6 步进度指示器，使用 `●`（已完成，绿色）/ `◉`（当前，cyan）/ `○`（未来，灰色）图标，步骤间用 `─` 连接
-- **CLISelector** — 通用 CLI 选择器，过滤已安装的 CLI，支持 `exclude` 排除已选项，上下箭头 + Enter 选择
-- **GodSelector** — God adapter 专用选择器，显示 `"Same as Reviewer"` 选项（如果 reviewer 支持作为 God），推荐 `claude-code`（标记 `★ recommended`），提示 God 以 stateless + tools disabled 模式运行
-- **TaskInput** — 任务描述输入，`▸` 前缀，Enter 提交
-- **ConfirmScreen** — 配置确认面板，圆角灰色边框，显示 Project/Coder/Reviewer/God/Task 五项配置，God 与 Reviewer 相同时显示 `(same as Reviewer)`，Enter 启动 / Esc 返回
+- **BrandHeader** — 渲染 ASCII art logo（`DUO` 大字）+ 版本号 + slogan `"Coder writes. Reviewer guards. God decides."`，cyan 加粗，固定宽度 `HEADER_BOX_WIDTH = 70` 字符圆角边框；3 个 feature bullets 使用 `◆` 前缀（cyan）
+- **ProgressStepper** — 6 步进度指示器（将 9 个 phase 分组为 6 个 stepper：Project/Coder/Reviewer/God/Task/Confirm），使用 `●`（已完成，绿色）/ `◉`（当前，cyan 加粗）/ `○`（未来，灰色）图标，步骤间用 `─` 连接
+- **CLISelector** — 通用 CLI 选择器：过滤 `detected` 列表中已安装且不在 `exclude` 中的项；上下箭头导航 + Enter 选择；选中项 `▸` 前缀（cyan 加粗），显示 `displayName` + 可选的 `(version)`
+- **GodSelector** — God adapter 专用选择器：通过 `getInstalledGodAdapters` 获取支持的适配器列表；reviewer 支持作为 God 时显示 `"Same as Reviewer"` 选项（`SAME_AS_REVIEWER` 常量）；推荐 `claude-code`（标记 `★ recommended` 黄色）；提示 God 以 stateless + tools disabled 模式运行
+- **ModelSelector** — 模型选择器：通过 `getAdapterModels(cliName)` 获取可用模型列表；首项为 `"Use default"`；包含 `CUSTOM_MODEL_SENTINEL` 时支持切换到自定义输入模式（`mode: 'select' | 'custom'`）；使用 `useRef` 避免 `useInput` 闭包中的 stale 状态问题
+- **TaskInput** — 任务描述输入：`▸ ` 前缀（cyan 加粗），Enter 提交（非空 trim），支持 Backspace
+- **ConfirmScreen** — 配置确认面板：灰色圆角边框，14 字符宽标签列，显示 Project（路径 `~` 替换）/Coder（蓝色）/Reviewer（绿色）/God（magenta，与 Reviewer 相同时显示 `(same as Reviewer)`）/Task 五项配置，底部提示 `Enter` 启动 / `Esc` 返回
 
 **导出常量**:
 - `PHASE_LABELS` — 各步骤标签映射
-- `PHASE_ORDER` — 步骤顺序数组
-- `SAME_AS_REVIEWER` — God 选择中 "Same as Reviewer" 的特殊标记值
+- `PHASE_ORDER` — 步骤顺序数组（9 个 phase）
+- `SAME_AS_REVIEWER` — God 选择中 "Same as Reviewer" 的特殊标记值 `'__same_as_reviewer__'`
+- `CUSTOM_MODEL_SENTINEL` — 自定义模型的哨兵值（从 registry 重导出）
+- `LOGO_LINES` / `BRAND_SLOGAN` / `FEATURE_BULLETS` / `SEPARATOR_WIDTH` / `HEADER_BOX_WIDTH` / `MAX_HEADER_CONTENT` — BrandHeader 相关常量
 
 ---
 
@@ -736,23 +825,23 @@ interface TaskAnalysisCardProps {
 
 **关键行为**:
 - 使用 `task-analysis-card.ts` 的纯状态函数管理选择、倒计时和确认
-- **国际化**: 自动检测 CJK 字符（`analysis.reasoning`），选择中文或英文界面
-- **倒计时**: 8 秒，1 秒 interval tick；箭头键导航时暂停；超时自动确认
-- **任务类型列表**: 6 种类型（explore/code/discuss/review/debug/compound），God 推荐类型标记 `★ recommended` / `★ 推荐`
-- **置信度显示**: `Confidence: N%`、`Rounds: N`、`Criteria: ...`
-- **键盘**:
-  - `1-6` 数字键直接选中并确认
+- **国际化**: `isCJK(analysis.reasoning)` 检测是否含有中日韩字符（U+4E00-U+9FFF / U+3040-U+30FF / U+AC00-U+D7AF），选择 `ZH` 或 `EN` 界面字符串集
+- **倒计时**: 8 秒，1000ms interval tick；箭头键导航时暂停（state 的 `countdownPaused`）；超时自动确认
+- **任务类型列表**: 6 种类型（explore/code/discuss/review/debug/compound），God 推荐类型标记 `★ recommended` / `★ 推荐`（黄色）
+- **置信度显示**: `Confidence: N%`（`Math.round(analysis.confidence * 100)`）、`Rounds: N`（`analysis.suggestedMaxRounds`）、`Criteria: ...`（`analysis.terminationCriteria.join(', ')`，非空时显示）
+- **任务摘要**: 截取 `analysis.reasoning` 前 60 字符，超长添加 `…`，用引号包裹
+- **键盘**: 将 Ink 的 key/input 映射为字符串后委托给 `handleKeyPress`
+  - `1-9` 数字键直接选中并确认
   - `↑/↓` 移动选择并暂停倒计时
   - `Enter` 确认当前选择
   - `Space` 确认 God 推荐类型
-- **Header**: 显示 `◈ TASK ANALYSIS` / `◈ 任务分析` + 状态（confirmed/paused/auto-start: Ns）
-- **任务摘要**: 截取 `analysis.reasoning` 前 60 字符
+- **Header**: 显示 `◈ TASK ANALYSIS` / `◈ 任务分析`（cyan 加粗） + 右侧状态（confirmed=`已确认` / paused=`已暂停` / `自动开始: Ns`）
 - **样式**: cyan 圆角边框
-- **回调保护**: 使用 `confirmedRef` 确保 `onConfirm` 只触发一次；超时时额外触发 `onTimeout`
+- **回调保护**: 使用 `confirmedRef` 确保 `onConfirm` 只触发一次；`countdown <= 0` 时额外触发 `onTimeout`
 
 ---
 
-## 新增组件（3 个）
+## Lifecycle 组件（3 个）
 
 ### 22. CompletionScreen.tsx — 任务完成屏幕
 
@@ -772,12 +861,16 @@ interface CompletionScreenProps {
 
 **关键行为**:
 - **三阶段模式** (`CompletionMode`): `'menu'` -> `'continue'` / `'new-task'`
-- **Menu 模式**: 显示三个选项（1. Continue current task / 2. Create new task / 3. Exit Duo），支持上下箭头导航、Enter 选择、数字键直接选择
-- **Continue 模式**: 显示文本输入框，用户输入追加需求后按 Enter 提交（调用 `onContinueCurrentTask`），Esc 返回 menu
+- **Menu 模式**: 显示三个选项：
+  1. Continue current task — 添加追加需求并继续
+  2. Create new task — 全新任务描述
+  3. Exit Duo — 退出
+  - 支持上下箭头导航、Enter 选择、数字键 `1`/`2`/`3` 直接选择
+- **Continue 模式**: 显示文本输入框，用户输入追加需求后按 Enter 提交（调用 `onContinueCurrentTask`），Esc 返回 menu（重置 value 为空）
 - **New-task 模式**: 显示文本输入框，用户输入新任务描述后按 Enter 提交（调用 `onCreateNewTask`），Esc 返回 menu
 - **两种变体**:
-  - `fullscreen`：带 padding 的完整布局，显示选项描述文本和当前任务上下文
-  - `inline`：紧凑布局，适合嵌入 MainLayout 的 footer 区域
+  - `fullscreen`：带 `paddingX={1}` 的完整布局，显示选项描述文本和当前任务上下文，`marginBottom={1}` 间距
+  - `inline`：紧凑布局，无 padding/margin，适合嵌入 MainLayout 的 footer 区域
 - **标题**: 绿色加粗 `"Task completed"`
 - **纯函数**: `processCompletionInput(state, input, key)` 提取为独立纯函数，返回 `CompletionInputAction`
 
@@ -817,16 +910,16 @@ interface TaskBannerProps {
 
 **关键行为**:
 - **固定高度 1 行**: 紧凑的单行显示
-- **前缀**: `▸ Task: `（cyan 加粗）
-- **CJK 感知截断**: 使用 `truncateText(text, maxWidth)` 函数按终端列宽截断，正确处理双宽度 CJK 字符，超长时末尾添加 `…`
-- **文本规范化**: 将换行和多余空白折叠为单个空格
-- **宽度计算**: 可用宽度 = `columns - prefixWidth - 1`（预留右侧 1 字符）
+- **前缀**: `▸ Task: `（cyan 加粗），使用 `computeStringWidth` 计算前缀的终端宽度
+- **CJK 感知截断**: 使用 `truncateText(text, maxWidth)` 函数按终端列宽截断，正确处理双宽度 CJK 字符，超长时末尾添加 `…`（1 列宽）
+- **文本规范化**: `text.replace(/\s+/g, ' ').trim()` 将换行和多余空白折叠为单个空格
+- **宽度计算**: 可用宽度 = `columns - prefixWidth - 1`（预留右侧 1 字符 padding）
 
 **导出的辅助函数**:
 
 | 函数 | 输入 | 输出 | 关键逻辑 |
 |------|------|------|----------|
-| `truncateText(text, maxWidth)` | 文本 + 最大终端列宽 | `string` | 规范化空白，逐字符累加 `getCharWidth`，超出时截断并添加 `…`（1 列宽） |
+| `truncateText(text, maxWidth)` | 文本 + 最大终端列宽 | `string` | 规范化空白后逐字符累加 `getCharWidth`（从 `message-lines.ts` 导入），超出 `maxWidth - 1`（为 `…` 留位）时截断并添加 `…`；`maxWidth <= 1` 时直接返回 `…` |
 
 ---
 
@@ -837,24 +930,28 @@ interface TaskBannerProps {
 ```ts
 interface ThinkingIndicatorProps {
   columns: number;
+  message?: string;       // 默认 "Thinking..."
+  color?: string;         // 默认 "cyan"
+  showElapsed?: boolean;  // 默认 false
 }
 ```
 
-**职责**: 在 LLM 运行但尚未产生实质性输出时，显示旋转动画指示 LLM 正在思考。
+**职责**: 在 LLM 运行但尚未产生实质性输出时，显示旋转动画指示 LLM 正在思考。支持上下文感知的自定义消息和颜色。
 
 **关键行为**:
-- **Spinner 动画**: 使用 Braille 字符序列 `⣾⣽⣻⢿⡿⣟⣯⣷`，80ms 间隔旋转
-- **文本**: spinner 后跟 dim 颜色的 ` Thinking...`
+- **Spinner 动画**: 使用 Braille 字符序列 `⣾⣽⣻⢿⡿⣟⣯⣷`，`SPIN_INTERVAL_MS = 80` 间隔旋转
+- **文本**: spinner 后跟 `message` 文本（同色），可选 `(Ns)` 经过时间后缀
+- **经过时间颜色升级**: `showElapsed` 为 true 时，>= 60s 切换为红色，>= 30s 切换为黄色（覆盖 `color` prop）
 - **固定高度 1 行**
-- **生命周期**: 挂载时重置帧到 0 并启动 interval，卸载时清除 interval
+- **生命周期**: 挂载时重置 frame 和 elapsedSeconds 到 0 并启动 interval，卸载时清除所有 interval（通过 `useRef` 持有 interval ID）
 
 **导出的判断函数**:
 
 | 函数 | 输入 | 输出 | 关键逻辑 |
 |------|------|------|----------|
-| `shouldShowThinking(isLLMRunning, messages)` | LLM 运行状态 + 消息列表 | `boolean` | LLM 未运行时返回 false；从消息列表末尾向前遍历：跳过空的 streaming placeholder（`isStreaming: true` 且 `content` 为空）；遇到非空 assistant 消息返回 false（已有输出）；遇到 user 消息返回 true（等待输出）；空数组或仅 system 消息时返回 true（首轮） |
+| `shouldShowThinking(isLLMRunning, messages)` | LLM 运行状态 + 消息列表 | `boolean` | LLM 未运行时返回 false；从消息列表末尾向前遍历：空的 streaming placeholder（`isStreaming: true` 且 `content.trim() === ''`）-> true（等待首个 token）；非空的 streaming assistant 消息 -> false（已有输出）；非 streaming 的 assistant 消息 -> true（新 round 启动中）；遇到 user 消息 -> true（等待输出）；空数组或仅 system 消息 -> true（首轮） |
 
-**使用场景**: MainLayout 在消息区底部、ScrollIndicator 之上有条件地渲染 ThinkingIndicator，仅在 `shouldShowThinking` 返回 true 时显示。
+**使用场景**: MainLayout 通过 `resolveIndicatorConfig(workflowState, isLLMRunning, messages)` 函数决定显示哪种指示器消息和颜色：`task_init` -> "Analyzing task..."（yellow, showElapsed）；`god_deciding` -> "God deciding next step..."（yellow, showElapsed）；`classifying_intent` -> "Understanding your input..."（yellow, showElapsed）；`observing` -> "Analyzing output..."（yellow）；`executing` -> "Executing actions..."（yellow）；`llm_running` -> 仅在 `shouldShowThinking` 返回 true 时显示 "Thinking..."（cyan）。同时支持 legacy 路径：无 `workflowState` 时直接使用 `shouldShowThinking`。
 
 ---
 
@@ -875,7 +972,7 @@ interface ThinkingIndicatorProps {
 | `G` | 跳到最新消息（重新启用 auto-follow） | 无 overlay 且输入为空 |
 | `PageDown` | 向下滚动一页（pageSize = messageAreaHeight） | 无 overlay |
 | `PageUp` | 向上滚动一页 | 无 overlay |
-| Mouse wheel | 上下滚动 3 行 | 无 overlay |
+| Mouse wheel | 上下滚动（通过 alternate scroll mode 转为箭头键） | 无 overlay |
 | `Enter` | 展开/折叠代码块 | 无 overlay 且输入为空 |
 | `Enter` | 提交输入 | 输入非空 |
 | `Alt+Enter` / `Ctrl+Enter` / `Shift+Enter` | 插入换行（多行输入） | 输入区域 |
@@ -889,6 +986,7 @@ interface ThinkingIndicatorProps {
 | `d` | Decide manually（手动决策） | DisagreementCard |
 | `b` | Accept Reviewer's（接受 Reviewer 方案） | DisagreementCard |
 | `Space` | 立即执行/确认 | GodDecisionBanner / PhaseTransitionBanner / TaskAnalysisCard |
-| `1-6` | 快速选择任务类型 | TaskAnalysisCard / ReclassifyOverlay |
+| `1-6` | 快速选择任务类型 | TaskAnalysisCard |
+| `1-4` | 快速选择重分类类型 | ReclassifyOverlay |
 | `1-3` | 快速选择后续操作 | CompletionScreen menu |
 | `R/S/F/P` | God overlay 手动干预 | God Overlay (Ctrl+G) |

@@ -9,6 +9,7 @@ import { handleResumeList, handleResume, handleLog } from './cli-commands.js';
 import { App } from './ui/components/App.js';
 import type { SessionConfig } from './types/session.js';
 import * as path from 'node:path';
+import { enterAlternateScreen } from './ui/alternate-screen.js';
 
 const args = process.argv.slice(2);
 
@@ -47,6 +48,7 @@ if (command === 'start') {
     }
 
     // Render TUI — either with full config (direct start) or without (interactive setup)
+    const cleanupScreen = enterAlternateScreen();
     const { waitUntilExit } = render(
       React.createElement(App, {
         initialConfig: config,
@@ -56,6 +58,7 @@ if (command === 'start') {
     );
 
     await waitUntilExit();
+    cleanupScreen();
   })().catch((err) => {
     console.error('Failed to start Duo:', err);
     process.exit(1);
@@ -96,6 +99,7 @@ if (command === 'start') {
         godModel: result.session.metadata.godModel,
       };
 
+      const cleanupScreen = enterAlternateScreen();
       const { waitUntilExit } = render(
         React.createElement(App, {
           initialConfig,
@@ -106,6 +110,7 @@ if (command === 'start') {
       );
 
       await waitUntilExit();
+      cleanupScreen();
     })().catch((err) => {
       console.error('Failed to resume Duo session:', err);
       process.exit(1);
@@ -126,11 +131,11 @@ if (command === 'start') {
   const type = typeIdx !== -1 ? args[typeIdx + 1] : undefined;
 
   handleLog(sessionId, { type }, sessionsDir, console.log);
-} else {
+} else if (command === 'help' || args.includes('--help') || args.includes('-h')) {
   console.log(`Duo v${VERSION} — Multi AI Coding Assistant Collaboration Platform`);
   console.log('');
   console.log('Usage:');
-  console.log('  duo start                                             Interactive mode');
+  console.log('  duo                                                   Interactive mode (same as duo start)');
   console.log('  duo start --dir <path> --coder <cli> --reviewer <cli> --task <desc>');
   console.log('  duo resume                List resumable sessions');
   console.log('  duo resume <session-id>   Resume a session');
@@ -141,14 +146,53 @@ if (command === 'start') {
   console.log('Options:');
   console.log('  --coder <cli>             CLI tool for coding (e.g. claude-code, codex)');
   console.log('  --reviewer <cli>          CLI tool for reviewing');
-  console.log('  --coder-model <model>     Model override for coder (e.g. claude-sonnet-4-6)');
-  console.log('  --reviewer-model <model>  Model override for reviewer (e.g. o4-mini)');
+  console.log('  --coder-model <model>     Model override for coder (e.g. sonnet, gpt-5.4)');
+  console.log('  --reviewer-model <model>  Model override for reviewer');
   console.log('  --god <cli>               CLI tool for God orchestrator');
-  console.log('  --god-model <model>       Model override for God (e.g. claude-opus-4-6)');
+  console.log('  --god-model <model>       Model override for God (e.g. opus, gemini-2.5-pro)');
   console.log('  --task <desc>             Task description');
   console.log('');
   console.log('Examples:');
-  console.log('  duo start --coder claude-code --reviewer codex --task "Add JWT auth"');
-  console.log('  duo start --coder claude-code --coder-model claude-sonnet-4-6 --reviewer codex --reviewer-model o4-mini --task "Fix bug"');
-  console.log('  duo start   # Interactive setup wizard');
+  console.log('  duo --coder claude-code --reviewer codex --task "Add JWT auth"');
+  console.log('  duo --coder claude-code --coder-model sonnet --reviewer codex --reviewer-model gpt-5.4 --task "Fix bug"');
+  console.log('  duo   # Interactive setup wizard');
+} else {
+  // Default: no subcommand → treat as "start" (interactive mode or with flags)
+  (async () => {
+    const detected = await detectInstalledCLIs();
+    const parsed = parseStartArgs(['start', ...args]);
+    let config: SessionConfig | undefined;
+
+    if (parsed.coder && parsed.reviewer && parsed.task) {
+      const result = await createSessionConfig(parsed, detected);
+
+      if (!result.validation.valid) {
+        for (const err of result.validation.errors) {
+          console.error(`Error: ${err}`);
+        }
+        process.exit(1);
+      }
+
+      for (const warn of result.validation.warnings) {
+        console.warn(`Warning: ${warn}`);
+      }
+
+      config = result.config ?? undefined;
+    }
+
+    const cleanupScreen = enterAlternateScreen();
+    const { waitUntilExit } = render(
+      React.createElement(App, {
+        initialConfig: config,
+        detected,
+      }),
+      { exitOnCtrlC: false },
+    );
+
+    await waitUntilExit();
+    cleanupScreen();
+  })().catch((err) => {
+    console.error('Failed to start Duo:', err);
+    process.exit(1);
+  });
 }

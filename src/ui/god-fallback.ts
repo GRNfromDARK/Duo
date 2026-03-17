@@ -1,63 +1,94 @@
 /**
- * withGodFallback — Unified God call wrapper with retry + degradation.
- * Source: Card C.2, FR-G01 (AC-055, AC-056, AC-057), FR-G04 (AC-062, AC-063)
+ * withGodFallback — Unified God call wrapper with Watchdog-powered retry.
  *
- * Wraps all God call points with consistent degradation behavior:
- * - L1: Normal God call
- * - L2/L3: Retry once on failure (process_exit/timeout or parse/schema)
- * - L4: 3 consecutive failures → God disabled, full fallback to v1
+ * Async version: on failure, asks GodRetryController (backed by WatchdogService)
+ * whether to retry or fallback. Max 1 retry per call.
+ *
+ * Sync version: only checks God availability. No retry, no AI diagnosis
+ * (prompt generation is local computation, not a God adapter call).
  */
 
-import type { DegradationManager, GodErrorKind, DegradationNotification } from '../god/degradation-manager.js';
+import type { DegradationNotification } from '../types/degradation.js';
+
+// ── Interfaces ──
+
+/**
+ * Async retry controller — wraps WatchdogService.diagnose() at the call site.
+ * Decouples withGodFallback from WatchdogService implementation details.
+ */
+export interface GodRetryController {
+  isGodAvailable(): boolean;
+  handleGodSuccess(): void;
+  /** Returns { retry: true } to retry once, or { retry: false } to fallback. */
+  handleGodFailure(error: {
+    kind: string;
+    message: string;
+  }): Promise<{ retry: boolean; notification?: DegradationNotification }>;
+}
+
+/**
+ * Sync availability guard — just checks if God is available.
+ * Used by withGodFallbackSync where no async diagnosis is possible.
+ */
+export interface GodAvailabilityGuard {
+  isGodAvailable(): boolean;
+}
+
+// ── Result type ──
 
 export interface GodFallbackResult<T> {
   result: T;
   usedGod: boolean;
+  cancelled?: boolean;
   notification?: DegradationNotification;
 }
 
+// ── Async: withGodFallback ──
+
 /**
- * Wraps an async God call with degradation-aware retry and fallback.
+ * Wraps an async God call with Watchdog-powered retry and fallback.
  *
  * Flow:
  * 1. If God disabled → fallback immediately
- * 2. Try God call → success → recordSuccess → return
- * 3. God fails → handleGodFailure → if retry → try once more
+ * 2. Try God call → success → handleGodSuccess → return
+ * 3. God fails → handleGodFailure (asks Watchdog) → if retry → try once more
  * 4. Retry fails → handleGodFailure again → fallback
  * 5. Non-retryable → fallback immediately
  */
 export async function withGodFallback<TGod, TFallback>(
-  dm: DegradationManager,
+  controller: GodRetryController,
   godCall: () => Promise<TGod>,
   fallbackCall: () => TFallback,
-  errorKind: GodErrorKind,
 ): Promise<GodFallbackResult<TGod | TFallback>> {
-  if (!dm.isGodAvailable()) {
+  if (!controller.isGodAvailable()) {
     return { result: fallbackCall(), usedGod: false };
   }
 
   try {
     const result = await godCall();
-    dm.handleGodSuccess();
+    controller.handleGodSuccess();
     return { result, usedGod: true };
   } catch (err) {
-    const action = dm.handleGodFailure({
-      kind: errorKind,
+    const errorInfo = {
+      kind: 'process_exit',
       message: err instanceof Error ? err.message : String(err),
-    });
+    };
 
-    if (action.type === 'retry' || action.type === 'retry_with_correction') {
+    const action = await controller.handleGodFailure(errorInfo);
+
+    if (action.retry) {
       // Retry once
       try {
         const result = await godCall();
-        dm.handleGodSuccess();
+        controller.handleGodSuccess();
         return { result, usedGod: true, notification: action.notification };
       } catch (retryErr) {
         // Retry failed — record second failure
-        const retryAction = dm.handleGodFailure({
-          kind: errorKind,
+        const retryErrorInfo = {
+          kind: 'process_exit',
           message: retryErr instanceof Error ? retryErr.message : String(retryErr),
-        });
+        };
+        const retryAction = await controller.handleGodFailure(retryErrorInfo);
         return {
           result: fallbackCall(),
           usedGod: false,
@@ -66,7 +97,7 @@ export async function withGodFallback<TGod, TFallback>(
       }
     }
 
-    // No retry (fallback action) — use v1
+    // No retry — fallback immediately
     return {
       result: fallbackCall(),
       usedGod: false,
@@ -75,33 +106,32 @@ export async function withGodFallback<TGod, TFallback>(
   }
 }
 
+// ── Sync: withGodFallbackSync ──
+
 /**
- * Synchronous version of withGodFallback for prompt generation.
- * No retry support — prompt generation failures are schema/logic errors.
+ * Synchronous version for prompt generation (local computation).
+ * No retry support — prompt generation failures are code errors, not God failures.
  */
 export function withGodFallbackSync<TGod, TFallback>(
-  dm: DegradationManager,
+  guard: GodAvailabilityGuard,
   godCall: () => TGod,
   fallbackCall: () => TFallback,
-  errorKind: GodErrorKind = 'schema_validation',
 ): GodFallbackResult<TGod | TFallback> {
-  if (!dm.isGodAvailable()) {
+  if (!guard.isGodAvailable()) {
     return { result: fallbackCall(), usedGod: false };
   }
 
   try {
     const result = godCall();
-    // No recordSuccess for sync calls — only async God adapter calls count
     return { result, usedGod: true };
   } catch (err) {
-    const action = dm.handleGodFailure({
-      kind: errorKind,
-      message: err instanceof Error ? err.message : String(err),
-    });
     return {
       result: fallbackCall(),
       usedGod: false,
-      notification: action.notification,
+      notification: {
+        type: 'fallback_activated',
+        message: `[System] Prompt generation failed: ${err instanceof Error ? err.message : String(err)}`,
+      },
     };
   }
 }

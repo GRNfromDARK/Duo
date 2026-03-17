@@ -216,7 +216,7 @@ describe('God Incident Response', () => {
   // AC-2: God can output switch / wait / stop after incident
   // AC-4: God can switch adapter for coder/reviewer/god
   describe('AC-2/AC-4: switch_adapter for any role', () => {
-    it('switch_adapter works for coder', async () => {
+    it('switch_adapter returns not-implemented warning for coder', async () => {
       const ctx = makeHandContext(sessionDir);
       const actions: GodAction[] = [
         { type: 'switch_adapter', role: 'coder', adapter: 'codex', reason: 'quota exhausted on claude-code' },
@@ -224,27 +224,31 @@ describe('God Incident Response', () => {
       const results = await executeActions(actions, ctx);
       expect(results).toHaveLength(1);
       expect(results[0].type).toBe('phase_progress_signal');
-      expect(ctx.adapterConfig.get('coder')).toBe('codex');
+      expect(results[0].severity).toBe('warning');
+      expect(results[0].summary).toContain('not yet implemented');
+      expect(ctx.adapterConfig.get('coder')).toBe('claude-code');
     });
 
-    it('switch_adapter works for reviewer', async () => {
+    it('switch_adapter returns not-implemented warning for reviewer', async () => {
       const ctx = makeHandContext(sessionDir);
       const actions: GodAction[] = [
         { type: 'switch_adapter', role: 'reviewer', adapter: 'codex', reason: 'auth failed' },
       ];
       const results = await executeActions(actions, ctx);
       expect(results).toHaveLength(1);
-      expect(ctx.adapterConfig.get('reviewer')).toBe('codex');
+      expect(results[0].severity).toBe('warning');
+      expect(ctx.adapterConfig.get('reviewer')).toBe('claude-code');
     });
 
-    it('switch_adapter works for god', async () => {
+    it('switch_adapter returns not-implemented warning for god', async () => {
       const ctx = makeHandContext(sessionDir);
       const actions: GodAction[] = [
         { type: 'switch_adapter', role: 'god', adapter: 'gpt-4', reason: 'god adapter unavailable' },
       ];
       const results = await executeActions(actions, ctx);
       expect(results).toHaveLength(1);
-      expect(ctx.adapterConfig.get('god')).toBe('gpt-4');
+      expect(results[0].severity).toBe('warning');
+      expect(ctx.adapterConfig.get('god')).toBe('claude-code');
     });
   });
 
@@ -289,7 +293,8 @@ describe('God Incident Response', () => {
       ];
       const results = await executeActions(actions, ctx);
       expect(results).toHaveLength(2);
-      expect(ctx.adapterConfig.get('coder')).toBe('codex');
+      // switch_adapter is not yet implemented, so adapterConfig stays unchanged
+      expect(ctx.adapterConfig.get('coder')).toBe('claude-code');
     });
   });
 });

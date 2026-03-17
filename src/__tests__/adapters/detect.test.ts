@@ -28,7 +28,7 @@ describe('detectInstalledCLIs', () => {
 
     const result = await detectInstalledCLIs();
     expect(Array.isArray(result)).toBe(true);
-    expect(result.length).toBe(12);
+    expect(result.length).toBe(3);
   });
 
   it('should detect installed CLIs', async () => {
@@ -72,11 +72,11 @@ describe('detectInstalledCLIs', () => {
       return {} as any;
     });
 
-    const result = await detectInstalledCLIs([], ['claude-code', 'codex', 'aider']);
-    expect(result.length).toBe(9);
+    const result = await detectInstalledCLIs([], ['claude-code', 'codex']);
+    expect(result.length).toBe(1);
     expect(result.find((r) => r.name === 'claude-code')).toBeUndefined();
     expect(result.find((r) => r.name === 'codex')).toBeUndefined();
-    expect(result.find((r) => r.name === 'aider')).toBeUndefined();
+    expect(result.find((r) => r.name === 'gemini')).toBeDefined();
   });
 
   it('should handle mixed installed/not-installed results', async () => {
@@ -101,7 +101,7 @@ describe('detectInstalledCLIs', () => {
     const installed = result.filter((r) => r.installed);
     const notInstalled = result.filter((r) => !r.installed);
     expect(installed.length).toBe(2);
-    expect(notInstalled.length).toBe(10);
+    expect(notInstalled.length).toBe(1);
   });
 });
 
@@ -156,13 +156,13 @@ describe('loadAdaptersConfig', () => {
           parserType: 'text',
         },
       ],
-      disabled: ['aider', 'codex'],
+      disabled: ['gemini', 'codex'],
     }) as any);
 
     const config = await loadAdaptersConfig('/project');
     expect(config.custom).toHaveLength(1);
     expect(config.custom[0].name).toBe('my-tool');
-    expect(config.disabled).toEqual(['aider', 'codex']);
+    expect(config.disabled).toEqual(['gemini', 'codex']);
   });
 
   it('should treat array format as custom-only (backward compat)', async () => {

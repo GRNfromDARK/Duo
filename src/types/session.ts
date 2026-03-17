@@ -11,11 +11,11 @@ export interface SessionConfig {
   reviewer: string;
   god: GodAdapterName;
   task: string;
-  /** Optional model override for the coder adapter (e.g. 'claude-sonnet-4-6'). */
+  /** Optional model override for the coder adapter (e.g. 'sonnet', 'gpt-5.4'). */
   coderModel?: string;
-  /** Optional model override for the reviewer adapter (e.g. 'o4-mini'). */
+  /** Optional model override for the reviewer adapter. */
   reviewerModel?: string;
-  /** Optional model override for the god adapter (e.g. 'claude-opus-4-6'). */
+  /** Optional model override for the god adapter (e.g. 'opus', 'gemini-2.5-pro'). */
   godModel?: string;
 }
 

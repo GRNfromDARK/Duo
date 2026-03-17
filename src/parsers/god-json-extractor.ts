@@ -41,20 +41,83 @@ export function extractGodJson<T>(
 
 /**
  * Extract the last ```json ... ``` code block from text.
- * BUG-23 fix: case-insensitive matching for the json tag.
+ *
+ * Uses a state-machine JSON scanner instead of regex to handle JSON strings
+ * that contain triple backticks (e.g. Markdown code fences in message fields).
+ * The scanner tracks braceDepth, inString, and escaped states to find the
+ * complete top-level JSON object regardless of string content.
+ *
  * Returns null if no JSON block found.
  */
 function extractLastJsonBlock(text: string): string | null {
-  // Match ```json ... ``` blocks (case-insensitive for "json" tag)
-  const pattern = /```json\s*\n([\s\S]*?)```/gi;
-  let lastMatch: string | null = null;
-  let match: RegExpExecArray | null;
+  // Find all ```json fence openings (case-insensitive)
+  const fencePattern = /```json\s*\n/gi;
+  let lastJsonBody: string | null = null;
+  let fenceMatch: RegExpExecArray | null;
 
-  while ((match = pattern.exec(text)) !== null) {
-    lastMatch = match[1].trim();
+  while ((fenceMatch = fencePattern.exec(text)) !== null) {
+    const bodyStart = fenceMatch.index + fenceMatch[0].length;
+    const jsonBody = extractJsonObjectByScanning(text, bodyStart);
+    if (jsonBody !== null) {
+      lastJsonBody = jsonBody;
+    }
   }
 
-  return lastMatch;
+  return lastJsonBody;
+}
+
+/**
+ * State-machine scanner: starting from `offset`, find the first '{' and scan
+ * forward tracking brace depth, string boundaries, and escape sequences
+ * to locate the matching '}' that closes the top-level object.
+ *
+ * Returns the trimmed JSON substring, or null if no complete object is found.
+ */
+function extractJsonObjectByScanning(text: string, offset: number): string | null {
+  // Find the opening brace
+  let i = offset;
+  while (i < text.length && text[i] !== '{') {
+    i++;
+  }
+  if (i >= text.length) return null;
+
+  const jsonStart = i;
+  let braceDepth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (; i < text.length; i++) {
+    const ch = text[i];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (ch === '\\' && inString) {
+      escaped = true;
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) continue;
+
+    if (ch === '{') {
+      braceDepth++;
+    } else if (ch === '}') {
+      braceDepth--;
+      if (braceDepth === 0) {
+        return text.slice(jsonStart, i + 1).trim();
+      }
+    }
+  }
+
+  // Unbalanced braces — no complete object found
+  return null;
 }
 
 /**

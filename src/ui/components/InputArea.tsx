@@ -31,13 +31,6 @@ export type InputAction =
   | { type: 'noop' };
 
 /**
- * Detect mouse escape sequence fragments in input.
- * When terminal mouse mode is enabled, SGR and legacy mouse events
- * arrive on stdin and may leak into useInput as regular text.
- */
-const MOUSE_SEQUENCE_RE = /\x1b?\[<\d+;\d+;\d+[Mm]|\x1b?\[M.|[\x1b\x9b]\[<|\[<\d/;
-
-/**
  * Pure function: given current state, input char and key flags, return the action.
  * Supports cursor movement (left/right, Home/End, Ctrl+A/Ctrl+E) and
  * insertion/deletion at cursor position.
@@ -49,11 +42,6 @@ export function processInput(
   key: Key,
   maxLines: number,
 ): InputAction {
-  // Filter out mouse escape sequences that leak through from terminal mouse mode
-  if (input && MOUSE_SEQUENCE_RE.test(input)) {
-    return { type: 'noop' };
-  }
-
   // Enter without modifiers -> submit
   if (key.return && !key.meta && !key.ctrl && !key.shift) {
     if (currentValue.trim().length > 0) {
@@ -143,6 +131,13 @@ export function processInput(
 
   // Ignore ctrl combinations not handled above
   if (key.ctrl) {
+    return { type: 'noop' };
+  }
+
+  // Safety filter: ignore raw mouse escape sequences if a terminal passes them
+  // through unexpectedly. Ink strips the ESC (\x1b) prefix from some unknown
+  // sequences, so match both full and stripped forms.
+  if (input && (/\x1b?\[<\d+;\d+;\d+[Mm]/.test(input) || /\x1b?\[M/.test(input))) {
     return { type: 'noop' };
   }
 

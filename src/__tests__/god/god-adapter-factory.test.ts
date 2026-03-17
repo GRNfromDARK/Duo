@@ -3,11 +3,11 @@ import { describe, expect, it } from 'vitest';
 import { createGodAdapter, isSupportedGodAdapterName, SUPPORTED_GOD_ADAPTERS } from '../../god/god-adapter-factory.js';
 
 describe('God adapter factory', () => {
-  it('only advertises claude-code and codex as supported God adapters', () => {
-    expect(SUPPORTED_GOD_ADAPTERS).toEqual(['claude-code', 'codex']);
+  it('advertises claude-code, codex, and gemini as supported God adapters', () => {
+    expect(SUPPORTED_GOD_ADAPTERS).toEqual(['claude-code', 'codex', 'gemini']);
     expect(isSupportedGodAdapterName('claude-code')).toBe(true);
     expect(isSupportedGodAdapterName('codex')).toBe(true);
-    expect(isSupportedGodAdapterName('gemini')).toBe(false);
+    expect(isSupportedGodAdapterName('gemini')).toBe(true);
   });
 
   it('creates a Claude Code God adapter', () => {
@@ -26,7 +26,15 @@ describe('God adapter factory', () => {
     expect(typeof adapter.kill).toBe('function');
   });
 
+  it('creates a Gemini God adapter', () => {
+    const adapter = createGodAdapter('gemini');
+
+    expect(adapter.name).toBe('gemini');
+    expect(typeof adapter.execute).toBe('function');
+    expect(typeof adapter.kill).toBe('function');
+  });
+
   it('rejects unsupported God adapters', () => {
-    expect(() => createGodAdapter('gemini')).toThrow(/Unsupported God adapter/);
+    expect(() => createGodAdapter('unknown-tool')).toThrow(/Unsupported God adapter/);
   });
 });

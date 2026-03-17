@@ -3,7 +3,7 @@
  * Source: FR-014 (AC-048, AC-049, AC-050, AC-051)
  */
 
-export type RoleName = 'claude-code' | 'codex' | 'gemini' | 'copilot' | 'aider' | 'amazon-q' | 'cursor' | 'cline' | 'continue' | 'goose' | 'amp' | 'qwen' | 'system' | 'user';
+export type RoleName = 'claude-code' | 'codex' | 'gemini' | 'system' | 'user';
 
 export interface RoleStyle {
   displayName: string;
@@ -17,15 +17,6 @@ export const ROLE_STYLES: Record<RoleName, RoleStyle> = {
   'claude-code': { displayName: 'Claude', color: 'blue', border: '┃' },
   codex:         { displayName: 'Codex',  color: 'green', border: '║' },
   gemini:        { displayName: 'Gemini', color: '#FFA500', border: '│' },
-  copilot:       { displayName: 'Copilot', color: '#6e40c9', border: '│' },
-  aider:         { displayName: 'Aider', color: '#00cc66', border: '│' },
-  'amazon-q':    { displayName: 'Amazon Q', color: '#FF9900', border: '│' },
-  cursor:        { displayName: 'Cursor', color: '#00b4d8', border: '│' },
-  cline:         { displayName: 'Cline', color: '#e06c75', border: '│' },
-  continue:      { displayName: 'Continue', color: '#be4bdb', border: '│' },
-  goose:         { displayName: 'Goose', color: '#fab005', border: '│' },
-  amp:           { displayName: 'Amp', color: '#20c997', border: '│' },
-  qwen:          { displayName: 'Qwen', color: '#7048e8', border: '│' },
   system:        { displayName: 'System', color: 'yellow', border: '·' },
   user:          { displayName: 'You',    color: 'white', border: '>' },
 };

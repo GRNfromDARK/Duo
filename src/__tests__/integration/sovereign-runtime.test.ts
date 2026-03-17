@@ -282,9 +282,11 @@ describe('Test 2: External Fault (AC-2)', () => {
     const ctx = makeHandExecutionContext();
     const execResults = await executeActions(envelopeSwitchRetry.actions, ctx);
     expect(execResults).toHaveLength(2);
-    expect(execResults[0].type).toBe('phase_progress_signal'); // switch succeeded
+    expect(execResults[0].type).toBe('phase_progress_signal'); // switch (not-implemented warning)
+    expect(execResults[0].severity).toBe('warning');
     expect(execResults[1].type).toBe('phase_progress_signal'); // retry succeeded
-    expect(ctx.adapterConfig.get('coder')).toBe('openai-codex');
+    // switch_adapter is not yet implemented, so adapterConfig stays unchanged (empty map)
+    expect(ctx.adapterConfig.has('coder')).toBe(false);
     expect(ctx.activeRole).toBe('coder');
 
     // Verify switch_adapter action is in the envelope
@@ -903,7 +905,7 @@ describe('KPI: Critical Override Auditability = 100% (NFR-002, AC-10)', () => {
     expect(overrides.reviewerOverrideReason).toContain('cosmetic');
   });
 
-  it('switch_adapter is auditable through Hand executor', async () => {
+  it('switch_adapter is auditable through Hand executor (returns not-implemented warning)', async () => {
     const ctx = makeHandExecutionContext();
     const switchAction: GodAction = {
       type: 'switch_adapter',
@@ -915,7 +917,10 @@ describe('KPI: Critical Override Auditability = 100% (NFR-002, AC-10)', () => {
     const results = await executeActions([switchAction], ctx);
     expect(results).toHaveLength(1);
     expect(results[0].summary).toContain('switch_adapter');
-    expect(ctx.adapterConfig.get('god')).toBe('openai-gpt4');
+    expect(results[0].summary).toContain('not yet implemented');
+    expect(results[0].severity).toBe('warning');
+    // adapterConfig stays unchanged since switch is not implemented (empty map)
+    expect(ctx.adapterConfig.has('god')).toBe(false);
   });
 
   it('god_override accept_task without system_log message → violation (D.3 enforcement)', async () => {

@@ -36,7 +36,7 @@ describe('ModelSelector', () => {
     expect(lastFrame()).toContain('Use default');
   });
 
-  it('renders known models for claude-code adapter', () => {
+  it('renders known models for claude-code adapter (stable aliases)', () => {
     const { lastFrame } = render(
       <ModelSelector
         roleName="Coder"
@@ -46,12 +46,24 @@ describe('ModelSelector', () => {
       />,
     );
     const output = lastFrame()!;
-    expect(output).toContain('claude-sonnet-4-5');
-    expect(output).toContain('claude-opus-4-5');
-    expect(output).toContain('claude-haiku-4-5');
+    // Claude Code uses stable aliases, not full model IDs.
+    expect(output).toContain('sonnet');
+    expect(output).toContain('opus');
+    expect(output).toContain('haiku');
+    // Must also show __custom__ fallback entry
+    expect(output).toContain('Custom model');
   });
 
-  it('renders known models for codex adapter', () => {
+  it('renders dynamically discovered models for codex adapter', () => {
+    // The actual models depend on ~/.codex/models_cache.json — mock to control
+    mockAdapterModels = (name: string) => {
+      if (name === 'codex')
+        return [
+          { id: 'gpt-5.4', label: 'gpt-5.4' },
+          { id: CUSTOM_MODEL_SENTINEL, label: 'Custom model…' },
+        ];
+      return [];
+    };
     const { lastFrame } = render(
       <ModelSelector
         roleName="Coder"
@@ -61,9 +73,8 @@ describe('ModelSelector', () => {
       />,
     );
     const output = lastFrame()!;
-    expect(output).toContain('codex-mini-latest');
-    expect(output).toContain('o4-mini');
-    expect(output).toContain('o3');
+    expect(output).toContain('gpt-5.4');
+    expect(output).toContain('Custom model');
   });
 
   it('shows only "Use default" for adapter with no known models', () => {
@@ -111,24 +122,23 @@ describe('ModelSelector', () => {
     // After down arrow, the first model should be highlighted
     stdin.write('\u001B[B');
     const output = lastFrame()!;
-    // The selector indicator should now be on the first model line
-    expect(output).toContain('claude-sonnet-4-5');
+    // The selector indicator should now be on the first model line (sonnet alias)
+    expect(output).toContain('sonnet');
   });
 
   it('submits correct model after navigation and Enter', () => {
     const onSubmit = vi.fn();
     const { stdin } = render(
       <ModelSelector
-        roleName="God"
-        adapterName="Codex"
-        cliName="codex"
+        roleName="Coder"
+        adapterName="Claude Code"
+        cliName="claude-code"
         onSubmit={onSubmit}
       />,
     );
-    // Navigate down then submit — written as combined sequence to ensure
-    // ink processes them in the same input flush
+    // Navigate down to first model (sonnet) then submit
     stdin.write('\u001B[B\r');
-    expect(onSubmit).toHaveBeenCalledWith('codex-mini-latest');
+    expect(onSubmit).toHaveBeenCalledWith('sonnet');
   });
 
   // ── __custom__ sentinel tests ──
@@ -137,16 +147,24 @@ describe('ModelSelector', () => {
     expect(CUSTOM_MODEL_SENTINEL).toBe('__custom__');
   });
 
-  it('qwen adapter list includes the __custom__ sentinel entry', () => {
+  it('codex adapter list shows model options via mock', () => {
+    mockAdapterModels = (name: string) => {
+      if (name === 'codex')
+        return [
+          { id: 'gpt-5.4', label: 'gpt-5.4' },
+          { id: CUSTOM_MODEL_SENTINEL, label: 'Custom model…' },
+        ];
+      return [];
+    };
     const { lastFrame } = render(
       <ModelSelector
         roleName="Coder"
-        adapterName="Qwen"
-        cliName="qwen"
+        adapterName="Codex"
+        cliName="codex"
         onSubmit={vi.fn()}
       />,
     );
-    expect(lastFrame()).toContain('Enter custom model');
+    expect(lastFrame()).toContain('gpt-5.4');
   });
 
   // For __custom__ tests, mock the adapter to return [__custom__] only

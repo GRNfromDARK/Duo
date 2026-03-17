@@ -171,7 +171,6 @@ vi.mock('fs', async () => {
 
 import { appendFileSync } from 'fs';
 import { evaluateConvergence } from '../../god/god-convergence.js';
-import { routePostReviewer } from '../../god/god-router.js';
 
 describe('checkConsistency — audit log integration', () => {
   beforeEach(() => {
@@ -238,41 +237,6 @@ describe('checkConsistency — audit log integration', () => {
     expect(parsed.decision.violations.length).toBeGreaterThan(0);
   });
 
-  test('routePostReviewer writes HALLUCINATION_DETECTED to audit log on violations', async () => {
-    // Create a mock adapter that returns a low-confidence converged decision
-    const inconsistentJson = JSON.stringify({
-      action: 'converged',
-      reasoning: 'done',
-      confidenceScore: 0.2,
-      progressTrend: 'stagnant',
-    });
-    const mockAdapter = {
-      execute: async function* () {
-        yield { type: 'text' as const, content: '```json\n' + inconsistentJson + '\n```' };
-      },
-    };
-
-    const context = {
-      round: 1,
-      maxRounds: 5,
-      taskGoal: 'test',
-      sessionDir: '/tmp/test-session',
-      seq: 1,
-    };
-
-    await routePostReviewer(mockAdapter as any, 'reviewer output', context);
-
-    const calls = vi.mocked(appendFileSync).mock.calls;
-    const hallucinationEntry = calls.find(call => {
-      const content = call[1] as string;
-      return content.includes('HALLUCINATION_DETECTED');
-    });
-
-    expect(hallucinationEntry).toBeDefined();
-    const parsed = JSON.parse(hallucinationEntry![1] as string);
-    expect(parsed.decisionType).toBe('HALLUCINATION_DETECTED');
-    expect(parsed.decision.violations.some((v: any) => v.type === 'low_confidence')).toBe(true);
-  });
 });
 
 // ── AC-5: Cross-validation, local wins on disagreement ──

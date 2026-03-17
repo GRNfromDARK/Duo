@@ -17,34 +17,27 @@ import type { ConvergenceService } from '../decision/convergence-service.js';
 import type { ChoiceDetector } from '../decision/choice-detector.js';
 import type { GodAuditEntry } from './god-audit.js';
 
-// ── Types ──
+// Re-export types from canonical location for backward compatibility
+export type {
+  DegradationLevel,
+  DegradationState,
+  GodErrorKind,
+  DegradationNotification,
+} from '../types/degradation.js';
 
-export type DegradationLevel = 'L1' | 'L2' | 'L3' | 'L4';
+import type { DegradationLevel, DegradationState, GodErrorKind, DegradationNotification } from '../types/degradation.js';
 
-export type GodErrorKind = 'process_exit' | 'timeout' | 'parse_failure' | 'schema_validation';
+// ── Types (local to DegradationManager) ──
 
 export interface GodError {
   kind: GodErrorKind;
   message: string;
 }
 
-export interface DegradationState {
-  level: DegradationLevel;
-  consecutiveFailures: number;
-  godDisabled: boolean;
-  fallbackActive: boolean;
-  lastError?: string;
-}
-
 export interface FallbackServices {
   contextManager: ContextManager;
   convergenceService: ConvergenceService;
   choiceDetector: ChoiceDetector;
-}
-
-export interface DegradationNotification {
-  type: 'retrying' | 'fallback_activated' | 'god_disabled';
-  message: string;
 }
 
 export interface DegradationAction {

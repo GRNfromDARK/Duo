@@ -28,11 +28,10 @@ describe('message-lines', () => {
     expect(lines.length).toBeGreaterThan(3);
   });
 
-  // BUG-1 regression: all 12 adapters should render without crashing
+  // BUG-1 regression: all adapters should render without crashing
   it('test_regression_bug1_all_adapters_have_role_styles', () => {
     const adapterNames: RoleName[] = [
-      'claude-code', 'codex', 'gemini', 'copilot', 'aider', 'amazon-q',
-      'cursor', 'cline', 'continue', 'goose', 'amp', 'qwen',
+      'claude-code', 'codex', 'gemini',
     ];
 
     for (const name of adapterNames) {
@@ -41,23 +40,6 @@ describe('message-lines', () => {
       expect(style.displayName).toBeTruthy();
       expect(style.color).toBeTruthy();
       expect(style.border).toBeTruthy();
-    }
-  });
-
-  it('test_regression_bug1_renders_message_for_all_adapters', () => {
-    const adapterNames: RoleName[] = [
-      'aider', 'amazon-q', 'amp', 'cline', 'continue', 'copilot', 'cursor', 'goose', 'qwen',
-    ];
-
-    for (const name of adapterNames) {
-      const lines = buildRenderedMessageLines(
-        [makeMessage({ id: `msg-${name}`, role: name, content: 'test output' })],
-        'minimal',
-        80,
-      );
-      expect(lines.length).toBeGreaterThan(0);
-      // Should not throw TypeError
-      expect(lines[0].spans.length).toBeGreaterThan(0);
     }
   });
 

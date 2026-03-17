@@ -107,7 +107,7 @@ export function validateCLIChoices(
   const rolesToCheck: [string, string][] = [['Coder', coder], ['Reviewer', reviewer]];
   if (god) {
     if (!isSupportedGodAdapterName(god)) {
-      errors.push(`God adapter '${god}' is not supported. Supported God adapters: claude-code, codex.`);
+      errors.push(`God adapter '${god}' is not supported. Supported God adapters: claude-code, codex, gemini.`);
       return { valid: false, errors, warnings: [] };
     }
 

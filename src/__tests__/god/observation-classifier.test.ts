@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest';
 import {
   classifyOutput,
   createObservation,
+  deduplicateObservations,
   guardNonWorkOutput,
 } from '../../god/observation-classifier.js';
 import { ObservationSchema } from '../../types/observation.js';
@@ -453,5 +454,70 @@ describe('guardNonWorkOutput', () => {
   it('runtime_invariant_violation is non-work', () => {
     const result = guardNonWorkOutput(makeObs('runtime_invariant_violation', 'runtime'));
     expect(result.isWork).toBe(false);
+  });
+});
+
+// ── deduplicateObservations ──
+
+describe('deduplicateObservations', () => {
+  it('removes duplicate observations by timestamp+source+type', () => {
+    const obs1: Observation = {
+      type: 'work_output',
+      source: 'coder',
+      summary: 'First output',
+      severity: 'info',
+      round: 1,
+      timestamp: '2026-03-17T00:00:01.000Z',
+    };
+    const obs2: Observation = {
+      type: 'review_output',
+      source: 'reviewer',
+      summary: 'Review result',
+      severity: 'info',
+      round: 1,
+      timestamp: '2026-03-17T00:00:02.000Z',
+    };
+    // Duplicate of obs1 (same timestamp+source+type)
+    const obs1Dup: Observation = {
+      type: 'work_output',
+      source: 'coder',
+      summary: 'First output',
+      severity: 'info',
+      round: 1,
+      timestamp: '2026-03-17T00:00:01.000Z',
+    };
+
+    const result = deduplicateObservations([obs1, obs2, obs1Dup]);
+    expect(result).toHaveLength(2);
+    expect(result[0]).toBe(obs1);
+    expect(result[1]).toBe(obs2);
+  });
+
+  it('preserves order of first occurrence', () => {
+    const clarification: Observation = {
+      type: 'human_input',
+      source: 'human',
+      summary: 'User answered question',
+      severity: 'info',
+      round: 1,
+      timestamp: '2026-03-17T00:00:01.000Z',
+    };
+    const current: Observation = {
+      type: 'work_output',
+      source: 'coder',
+      summary: 'Coder output',
+      severity: 'info',
+      round: 2,
+      timestamp: '2026-03-17T00:00:02.000Z',
+    };
+
+    const result = deduplicateObservations([clarification, current, clarification]);
+    expect(result).toHaveLength(2);
+    expect(result[0]).toBe(clarification);
+    expect(result[1]).toBe(current);
+  });
+
+  it('returns empty array for empty input', () => {
+    expect(deduplicateObservations([])).toEqual([]);
   });
 });

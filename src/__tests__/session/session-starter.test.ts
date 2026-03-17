@@ -140,7 +140,7 @@ describe('validateCLIChoices', () => {
   });
 
   test('returns error when explicit God adapter is unsupported', () => {
-    const result = validateCLIChoices('claude-code', 'codex', mockDetected, 'gemini');
+    const result = validateCLIChoices('claude-code', 'codex', mockDetected, 'unknown-god');
     expect(result.valid).toBe(false);
     expect(result.errors[0]).toContain('not supported');
   });
@@ -213,7 +213,7 @@ describe('createSessionConfig', () => {
     expect(result.detectedCLIs).not.toContain('gemini');
   });
 
-  test('falls back to Claude Code when reviewer is not a supported God adapter', async () => {
+  test('uses gemini as God when reviewer is gemini (supported God adapter)', async () => {
     const mockDetected: DetectedCLI[] = [
       { name: 'claude-code', displayName: 'Claude Code', command: 'claude', installed: true, version: '1.0.0' },
       { name: 'codex', displayName: 'Codex', command: 'codex', installed: true, version: '2.0.0' },
@@ -226,20 +226,18 @@ describe('createSessionConfig', () => {
     );
 
     expect(result.validation.valid).toBe(true);
-    expect(result.config?.god).toBe('claude-code');
-    expect(result.validation.warnings).toEqual(expect.arrayContaining([
-      expect.stringContaining("Reviewer 'gemini' cannot act as God"),
-    ]));
+    expect(result.config?.god).toBe('gemini');
   });
 
   test('fails when no supported God adapter is installed', async () => {
+    // Use two non-God adapters: custom adapters (none can be God)
     const mockDetected: DetectedCLI[] = [
-      { name: 'gemini', displayName: 'Gemini CLI', command: 'gemini', installed: true, version: '1.5.0' },
-      { name: 'copilot', displayName: 'GitHub Copilot', command: 'copilot', installed: true, version: '1.0.0' },
+      { name: 'custom-tool', displayName: 'Custom', command: 'custom', installed: true, version: '1.0.0' },
+      { name: 'another-tool', displayName: 'Another', command: 'another', installed: true, version: '1.0.0' },
     ];
 
     const result = await createSessionConfig(
-      { dir: '/tmp', coder: 'gemini', reviewer: 'copilot', task: 'test' },
+      { dir: '/tmp', coder: 'custom-tool', reviewer: 'another-tool', task: 'test' },
       mockDetected,
     );
 

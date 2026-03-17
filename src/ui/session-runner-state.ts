@@ -1,6 +1,6 @@
 import type { ChoiceDetectionResult } from '../decision/choice-detector.js';
 import type { WorkflowContext } from '../engine/workflow-machine.js';
-import type { DegradationState } from '../god/degradation-manager.js';
+import type { DegradationState } from '../types/degradation.js';
 import type { ConvergenceLogEntry } from '../god/god-convergence.js';
 import type { RoundRecord } from '../session/context-manager.js';
 import type { LoadedSession, SessionState } from '../session/session-manager.js';
@@ -45,7 +45,8 @@ export type RestoreEventType =
   | 'RESTORED_TO_CODING'
   | 'RESTORED_TO_REVIEWING'
   | 'RESTORED_TO_WAITING'
-  | 'RESTORED_TO_INTERRUPTED';
+  | 'RESTORED_TO_INTERRUPTED'
+  | 'RESTORED_TO_CLARIFYING';
 
 export interface RestoredSessionRuntime {
   workflowInput: Partial<WorkflowContext>;
@@ -58,6 +59,8 @@ export interface RestoredSessionRuntime {
   coderSessionId?: string;
   /** Persisted CLI session ID for the reviewer adapter */
   reviewerSessionId?: string;
+  /** Persisted CLI session ID for the god adapter */
+  godSessionId?: string;
   /** God task analysis restored from session (FR-011) */
   godTaskAnalysis?: GodTaskAnalysis;
   /** God convergence log restored from session (FR-011) */
@@ -127,6 +130,11 @@ export function applyOutputChunk(
     if (chunk.metadata?.fatal !== false) {
       errorMessages.push(chunk.content);
     }
+  } else if (chunk.type === 'status') {
+    // Status chunks (e.g. Codex stderr transport warnings) are informational —
+    // append to fullText for diagnostic visibility but don't treat as error or display content.
+    // This prevents stderr-only runs from producing 'no_output'.
+    fullText = appendLine(fullText, `[status] ${chunk.content}`);
   }
 
   const displayText = buildDisplayText(displayBodyText, {
@@ -289,6 +297,7 @@ export function buildRestoredSessionRuntime(
     tokenCount,
     coderSessionId: loaded.state.coderSessionId,
     reviewerSessionId: loaded.state.reviewerSessionId,
+    godSessionId: loaded.state.godSessionId,
     godTaskAnalysis: loaded.state.godTaskAnalysis,
     godConvergenceLog: loaded.state.godConvergenceLog,
     degradationState: loaded.state.degradationState,
@@ -514,9 +523,8 @@ function mapRestoreEvent(state: SessionState): RestoreEventType {
       return 'RESTORED_TO_REVIEWING';
     case 'interrupted':
       return 'RESTORED_TO_INTERRUPTED';
-    // BUG-16 fix: CLARIFYING state maps to INTERRUPTED so user can re-provide input
     case 'clarifying':
-      return 'RESTORED_TO_INTERRUPTED';
+      return 'RESTORED_TO_CLARIFYING';
     case 'god_deciding':
     case 'manual_fallback':
     case 'routing_post_review':

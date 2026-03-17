@@ -112,7 +112,7 @@ describe('AC-039: Tri-party session ID atomic commit', () => {
 // ── AC-040: 任一方 session 丢失不影响其他方 ──
 
 describe('AC-040: Individual session loss does not affect others', () => {
-  test('coder session lost — reviewer still restored and god remains stateless', async () => {
+  test('coder session lost — reviewer and god still restored', async () => {
     const triParty: TriPartySessionState = {
       coderSessionId: null, // lost
       reviewerSessionId: 'reviewer-session-001',
@@ -127,10 +127,11 @@ describe('AC-040: Individual session loss does not affect others', () => {
     expect(result.reviewer).not.toBeNull();
     expect(result.reviewer!.adapter.name).toBe('codex');
     expect(result.reviewer!.sessionId).toBe('reviewer-session-001');
-    expect(result.god).toBeNull();
+    expect(result.god).not.toBeNull();
+    expect(result.god!.sessionId).toBe('god-session-001');
   });
 
-  test('reviewer session lost — coder still restored and god remains stateless', async () => {
+  test('reviewer session lost — coder and god still restored', async () => {
     const triParty: TriPartySessionState = {
       coderSessionId: 'coder-session-001',
       reviewerSessionId: null, // lost
@@ -144,7 +145,8 @@ describe('AC-040: Individual session loss does not affect others', () => {
     expect(result.coder).not.toBeNull();
     expect(result.coder!.adapter.name).toBe('claude-code');
     expect(result.reviewer).toBeNull();
-    expect(result.god).toBeNull();
+    expect(result.god).not.toBeNull();
+    expect(result.god!.sessionId).toBe('god-session-001');
   });
 
   test('god session lost — coder and reviewer still restored', async () => {
@@ -179,7 +181,7 @@ describe('AC-040: Individual session loss does not affect others', () => {
     const result = await restoreTriPartySession(triParty, config, mockFactory);
     expect(result.coder).not.toBeNull();
     expect(result.reviewer).toBeNull(); // factory threw for codex (reviewer)
-    expect(result.god).toBeNull();
+    expect(result.god).toBeNull(); // factory also throws for codex (god)
   });
 
   test('all sessions lost — all return null', async () => {
@@ -199,10 +201,10 @@ describe('AC-040: Individual session loss does not affect others', () => {
   });
 });
 
-// ── AC-041a: God remains stateless even when adapter names overlap ──
+// ── AC-041a: Session isolation when all parties use same CLI ──
 
 describe('AC-041a: Session isolation when God and Coder use same CLI', () => {
-  test('God and Coder both use claude-code — only coder/reviewer sessions are restored', async () => {
+  test('God and Coder both use claude-code — all three sessions restored with isolation', async () => {
     const triParty: TriPartySessionState = {
       coderSessionId: 'coder-session-001',
       reviewerSessionId: 'reviewer-session-001',
@@ -217,16 +219,17 @@ describe('AC-041a: Session isolation when God and Coder use same CLI', () => {
 
     const result = await restoreTriPartySession(triParty, config, mockFactory);
 
-    // Coder/reviewer restore normally; God stays stateless
+    // All three restore with separate adapter instances
     expect(result.coder).not.toBeNull();
     expect(result.reviewer).not.toBeNull();
-    expect(result.god).toBeNull();
+    expect(result.god).not.toBeNull();
 
     expect(result.coder!.sessionId).toBe('coder-session-001');
     expect(result.reviewer!.sessionId).toBe('reviewer-session-001');
+    expect(result.god!.sessionId).toBe('god-session-002');
   });
 
-  test('all three use the same CLI — coder and reviewer still restore independently', async () => {
+  test('all three use the same CLI — all restore independently with isolation', async () => {
     const triParty: TriPartySessionState = {
       coderSessionId: 'coder-session-001',
       reviewerSessionId: 'reviewer-session-002',
@@ -240,16 +243,19 @@ describe('AC-041a: Session isolation when God and Coder use same CLI', () => {
 
     const result = await restoreTriPartySession(triParty, config, mockFactory);
 
-    // Only coder and reviewer restore
+    // All three restore
     expect(result.coder).not.toBeNull();
     expect(result.reviewer).not.toBeNull();
-    expect(result.god).toBeNull();
+    expect(result.god).not.toBeNull();
 
-    // Different adapter instances for the resumable roles
+    // Different adapter instances for each role
     expect(result.coder!.adapter).not.toBe(result.reviewer!.adapter);
+    expect(result.coder!.adapter).not.toBe(result.god!.adapter);
+    expect(result.reviewer!.adapter).not.toBe(result.god!.adapter);
 
     expect(result.coder!.sessionId).toBe('coder-session-001');
     expect(result.reviewer!.sessionId).toBe('reviewer-session-002');
+    expect(result.god!.sessionId).toBe('god-session-003');
   });
 });
 
@@ -288,7 +294,8 @@ describe('Tri-party session restore via SessionManager', () => {
     expect(result.coder!.sessionId).toBe('coder-roundtrip-001');
     expect(result.reviewer).not.toBeNull();
     expect(result.reviewer!.sessionId).toBe('reviewer-roundtrip-001');
-    expect(result.god).toBeNull();
+    expect(result.god).not.toBeNull();
+    expect(result.god!.sessionId).toBe('god-roundtrip-001');
   });
 
   test('legacy session without god fields — backward compatible restore', async () => {

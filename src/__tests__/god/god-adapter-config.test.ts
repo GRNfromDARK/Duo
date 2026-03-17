@@ -60,7 +60,7 @@ describe('createSessionConfig God resolution', () => {
     expect(result.config!.god).toBe('claude-code');
   });
 
-  test('falls back to an installed supported God adapter when reviewer cannot act as God', async () => {
+  test('god defaults to gemini when reviewer is gemini (now a supported God adapter)', async () => {
     const result = await createSessionConfig(
       { dir: '/tmp', coder: 'codex', reviewer: 'gemini', task: 'fix bug' },
       [
@@ -71,23 +71,21 @@ describe('createSessionConfig God resolution', () => {
     );
 
     expect(result.config).not.toBeNull();
-    expect(result.config!.god).toBe('claude-code');
-    expect(result.validation.warnings).toEqual(expect.arrayContaining([
-      expect.stringContaining("Reviewer 'gemini' cannot act as God"),
-    ]));
+    expect(result.config!.god).toBe('gemini');
+    // No God-related warnings (may have git directory warning)
+    const godWarnings = result.validation.warnings.filter(w => w.includes('God'));
+    expect(godWarnings).toHaveLength(0);
   });
 
-  test('rejects unsupported explicit God adapters', async () => {
+  test('accepts gemini as explicit God adapter', async () => {
     const result = await createSessionConfig(
       { dir: '/tmp', coder: 'claude-code', reviewer: 'codex', god: 'gemini', task: 'fix bug' },
       supportedDetected,
     );
 
-    expect(result.config).toBeNull();
-    expect(result.validation.valid).toBe(false);
-    expect(result.validation.errors).toEqual(expect.arrayContaining([
-      expect.stringContaining("God adapter 'gemini' is not supported"),
-    ]));
+    expect(result.config).not.toBeNull();
+    expect(result.config!.god).toBe('gemini');
+    expect(result.validation.valid).toBe(true);
   });
 });
 

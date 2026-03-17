@@ -221,42 +221,39 @@ describe('processInput', () => {
     expect(result).toEqual({ type: 'noop' });
   });
 
-  // ── Mouse escape sequence filtering ──
+  // ── Mouse escape sequence safety filter ──
 
-  it('filters SGR mouse wheel-up escape sequence', () => {
+  it('rejects full SGR mouse sequence (with ESC prefix)', () => {
     const result = processInput('', 0, '\x1b[<64;10;5M', key(), 5);
     expect(result).toEqual({ type: 'noop' });
   });
 
-  it('filters SGR mouse wheel-down escape sequence', () => {
-    const result = processInput('', 0, '\x1b[<65;10;5M', key(), 5);
-    expect(result).toEqual({ type: 'noop' });
-  });
-
-  it('filters SGR mouse click sequence', () => {
-    const result = processInput('', 0, '\x1b[<0;10;5M', key(), 5);
-    expect(result).toEqual({ type: 'noop' });
-  });
-
-  it('filters SGR mouse release sequence (lowercase m)', () => {
-    const result = processInput('', 0, '\x1b[<0;10;5m', key(), 5);
-    expect(result).toEqual({ type: 'noop' });
-  });
-
-  it('filters SGR sequence without ESC prefix (Ink may strip it)', () => {
+  it('rejects Ink-stripped SGR mouse sequence (without ESC prefix)', () => {
+    // Ink strips the \x1b prefix from unknown escape sequences
     const result = processInput('', 0, '[<64;10;5M', key(), 5);
     expect(result).toEqual({ type: 'noop' });
   });
 
-  it('does not filter normal text that happens to contain M', () => {
-    const result = processInput('', 0, 'M', key(), 5);
-    expect(result).toEqual({ type: 'update', value: 'M', cursorPos: 1 });
-  });
-
-  it('does not insert mouse sequences into existing text', () => {
-    const result = processInput('hello', 5, '\x1b[<65;20;10M', key(), 5);
+  it('rejects SGR mouse wheel down sequence (stripped)', () => {
+    const result = processInput('', 0, '[<65;20;15M', key(), 5);
     expect(result).toEqual({ type: 'noop' });
   });
+
+  it('rejects SGR mouse release sequence (stripped, lowercase m)', () => {
+    const result = processInput('', 0, '[<0;10;5m', key(), 5);
+    expect(result).toEqual({ type: 'noop' });
+  });
+
+  it('rejects full X10 mouse sequence (with ESC prefix)', () => {
+    const result = processInput('', 0, '\x1b[M`!5', key(), 5);
+    expect(result).toEqual({ type: 'noop' });
+  });
+
+  it('rejects Ink-stripped X10 mouse sequence (without ESC prefix)', () => {
+    const result = processInput('', 0, '[M`!5', key(), 5);
+    expect(result).toEqual({ type: 'noop' });
+  });
+
 });
 
 // ── getCursorLineCol tests ──

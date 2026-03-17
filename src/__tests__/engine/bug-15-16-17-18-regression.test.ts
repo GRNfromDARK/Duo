@@ -205,7 +205,7 @@ describe('BUG-16 regression: CLARIFYING state restoration on session resume', ()
     projectDir: '/tmp/test',
   };
 
-  it('mapRestoreEvent maps clarifying status to RESTORED_TO_INTERRUPTED', () => {
+  it('mapRestoreEvent maps clarifying status to RESTORED_TO_CLARIFYING', () => {
     const loaded = makeLoadedSession({
       status: 'clarifying',
       clarification: {
@@ -215,7 +215,7 @@ describe('BUG-16 regression: CLARIFYING state restoration on session resume', ()
     });
 
     const result = buildRestoredSessionRuntime(loaded, config);
-    expect(result.restoreEvent).toBe('RESTORED_TO_INTERRUPTED');
+    expect(result.restoreEvent).toBe('RESTORED_TO_CLARIFYING');
   });
 
   it('buildRestoredSessionRuntime extracts clarification context into workflowInput', () => {

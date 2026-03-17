@@ -21,7 +21,7 @@ export interface InterruptContext {
   projectDir?: string;
 }
 
-const GOD_TIMEOUT_MS = 15_000;
+const GOD_TIMEOUT_MS = 600_000;
 
 const INTERRUPT_SYSTEM_PROMPT = `You are the God orchestrator classifying a human observer interrupt.
 The human rarely interrupts, so treat the message as important directional guidance.
@@ -62,8 +62,8 @@ export async function classifyInterruptIntent(
       timestamp: new Date().toISOString(),
       round: context.round,
       decisionType: 'INTERRUPT_CLASSIFICATION',
-      inputSummary: context.userInput.slice(0, 500),
-      outputSummary: JSON.stringify(parsed).slice(0, 500),
+      inputSummary: context.userInput,
+      outputSummary: JSON.stringify(parsed),
       decision: parsed,
     };
     appendAuditLog(context.sessionDir, entry);

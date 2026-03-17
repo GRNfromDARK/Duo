@@ -7,7 +7,7 @@
 import type { GodAdapter } from '../types/god-adapter.js';
 import type { GodTaskAnalysis } from '../types/god-schemas.js';
 import { GodTaskAnalysisSchema } from '../types/god-schemas.js';
-import { extractWithRetry } from '../parsers/god-json-extractor.js';
+import { extractGodJson } from '../parsers/god-json-extractor.js';
 import { collectGodAdapterOutput } from './god-call.js';
 
 export interface TaskInitResult {
@@ -48,8 +48,7 @@ export function applyDynamicRounds(
   return validateRoundsForType(taskType, suggested);
 }
 
-/** God calls should respond quickly — timeout after 30s to trigger degradation */
-const GOD_TIMEOUT_MS = 30_000;
+const GOD_TIMEOUT_MS = 600_000;
 
 function buildTaskInitPrompt(taskPrompt: string): string {
   return [
@@ -100,32 +99,9 @@ export async function initializeTask(
       : {}),
   });
 
-  const result = await extractWithRetry(
-    rawOutput,
-    GodTaskAnalysisSchema,
-    async (errorHint: string) => {
-      // Retry with error hint appended to the prompt
-      const retryPrompt = `${prompt}\n\n[FORMAT ERROR] Your previous output had a schema validation error:\n${errorHint}\n\nPlease output a corrected JSON block.`;
-      return collectGodAdapterOutput({
-        adapter: godAdapter,
-        prompt: retryPrompt,
-        systemPrompt,
-        projectDir,
-        timeoutMs: GOD_TIMEOUT_MS,
-        model,
-        ...(sessionDir
-          ? {
-              logging: {
-                sessionDir,
-                round: 0,
-                kind: 'god_task_init',
-                meta: { attempt: 2, retryReason: 'schema_validation' },
-              },
-            }
-          : {}),
-      });
-    },
-  );
+  // Single extraction attempt — no internal retry.
+  // Outer withGodFallback (Watchdog-powered) handles retries if needed.
+  const result = extractGodJson(rawOutput, GodTaskAnalysisSchema);
 
   if (!result || !result.success) {
     return null;
@@ -133,6 +109,6 @@ export async function initializeTask(
 
   return {
     analysis: result.data,
-    rawOutput: result.sourceOutput ?? rawOutput,
+    rawOutput,
   };
 }

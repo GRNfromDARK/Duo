@@ -84,18 +84,22 @@ describe('CodexGodAdapter', () => {
     adapter = new CodexGodAdapter();
   });
 
-  it('builds a stateless read-only Codex God command', () => {
+  it('builds a stateless full-auto Codex God command', () => {
     const args = adapter.buildArgs('Return JSON', defaultOpts(), { skipGitCheck: true });
 
     expect(args[0]).toBe('exec');
     expect(args).toContain('--json');
     expect(args).toContain('--ephemeral');
-    expect(args).toContain('--sandbox');
-    expect(args).toContain('read-only');
+    expect(args).toContain('--full-auto');
     expect(args).toContain('--skip-git-repo-check');
     expect(args.join(' ')).toContain('SYSTEM ROLE');
     expect(args.join(' ')).toContain('USER TASK');
-    expect(args).not.toContain('--full-auto');
+  });
+
+  it('includes --full-auto for autonomous God operation', () => {
+    const args = adapter.buildArgs('Return JSON', defaultOpts());
+
+    expect(args).toContain('--full-auto');
   });
 
   it('uses timeoutMs for the spawned God process', async () => {

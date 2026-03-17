@@ -252,12 +252,18 @@ function executeSwitchAdapter(
   action: Extract<GodAction, { type: 'switch_adapter' }>,
   ctx: HandExecutionContext,
 ): Observation {
-  ctx.adapterConfig.set(action.role, action.adapter);
-  return makeResultObservation(
-    action,
-    ctx,
-    `switch_adapter: ${action.role} → ${action.adapter}`,
-  );
+  // switch_adapter is not yet implemented — adapter instances are held by refs
+  // in App.tsx, GodDecisionService, and WatchdogService; updating adapterConfig
+  // alone has no effect. Return a warning so God knows the action was a no-op.
+  return {
+    source: 'runtime',
+    type: 'phase_progress_signal',
+    summary: `switch_adapter: not yet implemented — ${action.role} remains on current adapter`,
+    severity: 'warning',
+    timestamp: makeTimestamp(),
+    round: ctx.round,
+    phaseId: ctx.currentPhaseId,
+  };
 }
 
 function executeWait(

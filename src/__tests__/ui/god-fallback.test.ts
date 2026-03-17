@@ -1,25 +1,69 @@
 /**
  * Tests for withGodFallback — unified God call wrapper with retry + degradation.
  * Card C.2: AC-2 (all call points use withGodFallback), AC-3 (retry), AC-4 (L4 disable)
+ *
+ * Updated to use GodRetryController / GodAvailabilityGuard interfaces
+ * instead of the deprecated DegradationManager.
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
-import { withGodFallback, withGodFallbackSync } from '../../ui/god-fallback.js';
-import { DegradationManager, type FallbackServices } from '../../god/degradation-manager.js';
+import {
+  withGodFallback,
+  withGodFallbackSync,
+  type GodRetryController,
+  type GodAvailabilityGuard,
+} from '../../ui/god-fallback.js';
+import type { DegradationNotification } from '../../types/degradation.js';
 
-function makeFallbackServices(): FallbackServices {
+// ── Mock factories ──
+
+/**
+ * Creates a mock GodRetryController for async withGodFallback tests.
+ * By default: God is available, handleGodFailure returns { retry: true } on first call,
+ * then { retry: false } on subsequent calls.
+ */
+function makeController(overrides?: {
+  isGodAvailable?: boolean;
+  handleGodFailure?: GodRetryController['handleGodFailure'];
+}): GodRetryController {
+  const failureCalls: Array<{ kind: string; message: string }> = [];
+
   return {
-    contextManager: {} as any,
-    convergenceService: {} as any,
-    choiceDetector: {} as any,
+    isGodAvailable: vi.fn().mockReturnValue(overrides?.isGodAvailable ?? true),
+    handleGodSuccess: vi.fn(),
+    handleGodFailure: overrides?.handleGodFailure
+      ? vi.fn().mockImplementation(overrides.handleGodFailure)
+      : vi.fn().mockImplementation(async (error: { kind: string; message: string }) => {
+          failureCalls.push(error);
+          // Default: retry on first failure, fallback on second
+          if (failureCalls.length === 1) {
+            return {
+              retry: true,
+              notification: { type: 'retrying' as const, message: '[System] God error — retrying' },
+            };
+          }
+          return {
+            retry: false,
+            notification: { type: 'fallback_activated' as const, message: '[System] Falling back to v1' },
+          };
+        }),
+  };
+}
+
+/**
+ * Creates a mock GodAvailabilityGuard for sync withGodFallbackSync tests.
+ */
+function makeGuard(isGodAvailable = true): GodAvailabilityGuard {
+  return {
+    isGodAvailable: vi.fn().mockReturnValue(isGodAvailable),
   };
 }
 
 describe('withGodFallback', () => {
-  let dm: DegradationManager;
+  let controller: GodRetryController;
 
   beforeEach(() => {
-    dm = new DegradationManager({ fallbackServices: makeFallbackServices() });
+    controller = makeController();
   });
 
   // ── AC-2: God available → God call succeeds ──
@@ -28,41 +72,32 @@ describe('withGodFallback', () => {
     const godCall = vi.fn().mockResolvedValue('god-result');
     const fallbackCall = vi.fn().mockReturnValue('v1-result');
 
-    const { result, usedGod } = await withGodFallback(dm, godCall, fallbackCall, 'process_exit');
+    const { result, usedGod } = await withGodFallback(controller, godCall, fallbackCall);
 
     expect(result).toBe('god-result');
     expect(usedGod).toBe(true);
     expect(fallbackCall).not.toHaveBeenCalled();
-    expect(dm.getState().consecutiveFailures).toBe(0);
+    expect(controller.handleGodSuccess).toHaveBeenCalled();
   });
 
-  test('calls recordSuccess on God success', async () => {
-    // Cause a prior failure to verify success resets it
-    dm.handleGodFailure({ kind: 'process_exit', message: 'prior' });
-    expect(dm.getState().consecutiveFailures).toBe(1);
-
+  test('calls handleGodSuccess on God success', async () => {
     const godCall = vi.fn().mockResolvedValue('ok');
     const fallbackCall = vi.fn().mockReturnValue('v1');
 
-    await withGodFallback(dm, godCall, fallbackCall, 'process_exit');
+    await withGodFallback(controller, godCall, fallbackCall);
 
-    expect(dm.getState().consecutiveFailures).toBe(0);
-    expect(dm.getState().level).toBe('L1');
+    expect(controller.handleGodSuccess).toHaveBeenCalledTimes(1);
   });
 
   // ── AC-2: God disabled → immediate fallback ──
 
   test('returns fallback when God is disabled (L4)', async () => {
-    // Reach L4 by 3 consecutive failures
-    dm.handleGodFailure({ kind: 'process_exit', message: 'e1' });
-    dm.handleGodFailure({ kind: 'process_exit', message: 'e2' });
-    dm.handleGodFailure({ kind: 'process_exit', message: 'e3' });
-    expect(dm.isGodAvailable()).toBe(false);
+    controller = makeController({ isGodAvailable: false });
 
     const godCall = vi.fn().mockResolvedValue('god-result');
     const fallbackCall = vi.fn().mockReturnValue('v1-result');
 
-    const { result, usedGod } = await withGodFallback(dm, godCall, fallbackCall, 'process_exit');
+    const { result, usedGod } = await withGodFallback(controller, godCall, fallbackCall);
 
     expect(result).toBe('v1-result');
     expect(usedGod).toBe(false);
@@ -81,7 +116,7 @@ describe('withGodFallback', () => {
     const fallbackCall = vi.fn().mockReturnValue('v1');
 
     const { result, usedGod, notification } = await withGodFallback(
-      dm, godCall, fallbackCall, 'process_exit',
+      controller, godCall, fallbackCall,
     );
 
     expect(result).toBe('retry-ok');
@@ -89,8 +124,8 @@ describe('withGodFallback', () => {
     expect(godCall).toHaveBeenCalledTimes(2);
     expect(fallbackCall).not.toHaveBeenCalled();
     expect(notification?.type).toBe('retrying');
-    // Success resets counters
-    expect(dm.getState().consecutiveFailures).toBe(0);
+    // Success on retry calls handleGodSuccess
+    expect(controller.handleGodSuccess).toHaveBeenCalled();
   });
 
   test('retries once on timeout and succeeds', async () => {
@@ -102,7 +137,7 @@ describe('withGodFallback', () => {
     });
     const fallbackCall = vi.fn().mockReturnValue('v1');
 
-    const { result, usedGod } = await withGodFallback(dm, godCall, fallbackCall, 'timeout');
+    const { result, usedGod } = await withGodFallback(controller, godCall, fallbackCall);
 
     expect(result).toBe('retry-ok');
     expect(usedGod).toBe(true);
@@ -121,7 +156,7 @@ describe('withGodFallback', () => {
     const fallbackCall = vi.fn().mockReturnValue('v1');
 
     const { result, usedGod, notification } = await withGodFallback(
-      dm, godCall, fallbackCall, 'parse_failure',
+      controller, godCall, fallbackCall,
     );
 
     expect(result).toBe('corrected');
@@ -139,7 +174,7 @@ describe('withGodFallback', () => {
     const fallbackCall = vi.fn().mockReturnValue('v1');
 
     const { result, usedGod } = await withGodFallback(
-      dm, godCall, fallbackCall, 'schema_validation',
+      controller, godCall, fallbackCall,
     );
 
     expect(result).toBe('fixed');
@@ -153,47 +188,58 @@ describe('withGodFallback', () => {
     const fallbackCall = vi.fn().mockReturnValue('v1-result');
 
     const { result, usedGod, notification } = await withGodFallback(
-      dm, godCall, fallbackCall, 'process_exit',
+      controller, godCall, fallbackCall,
     );
 
     expect(result).toBe('v1-result');
     expect(usedGod).toBe(false);
     expect(godCall).toHaveBeenCalledTimes(2); // original + retry
     expect(notification).toBeDefined();
-    // 2 consecutive failures recorded
-    expect(dm.getState().consecutiveFailures).toBe(2);
+    // handleGodFailure called twice (first failure + retry failure)
+    expect(controller.handleGodFailure).toHaveBeenCalledTimes(2);
   });
 
-  // ── AC-4: 3 consecutive failures → L4 ──
+  // ── AC-4: Controller says no retry → immediate fallback ──
 
-  test('reaches L4 after 3 consecutive failures across calls', async () => {
+  test('reaches fallback immediately when controller denies retry', async () => {
+    controller = makeController({
+      handleGodFailure: async () => ({
+        retry: false,
+        notification: { type: 'fallback_activated', message: '[System] God disabled' },
+      }),
+    });
+
     const godCall = vi.fn().mockRejectedValue(new Error('fail'));
     const fallbackCall = vi.fn().mockReturnValue('v1');
 
-    // First withGodFallback: fail + retry fail = 2 consecutive failures
-    await withGodFallback(dm, godCall, fallbackCall, 'process_exit');
-    expect(dm.getState().consecutiveFailures).toBe(2);
-    expect(dm.isGodAvailable()).toBe(true);
+    const { result, usedGod, notification } = await withGodFallback(
+      controller, godCall, fallbackCall,
+    );
 
-    // Second withGodFallback: fail = 3rd consecutive → L4
-    await withGodFallback(dm, godCall, fallbackCall, 'process_exit');
-    expect(dm.isGodAvailable()).toBe(false);
-    expect(dm.getState().level).toBe('L4');
-    expect(dm.getState().godDisabled).toBe(true);
+    expect(result).toBe('v1');
+    expect(usedGod).toBe(false);
+    expect(godCall).toHaveBeenCalledTimes(1); // no retry
+    expect(notification?.type).toBe('fallback_activated');
   });
 
-  test('L4 is permanent — success does not reset', async () => {
-    const godCall = vi.fn().mockRejectedValue(new Error('fail'));
+  test('L4 is permanent — God is never called when disabled', async () => {
+    controller = makeController({ isGodAvailable: false });
+
+    const godCall = vi.fn().mockResolvedValue('god-result');
     const fallbackCall = vi.fn().mockReturnValue('v1');
 
-    // Reach L4
-    await withGodFallback(dm, godCall, fallbackCall, 'process_exit');
-    await withGodFallback(dm, godCall, fallbackCall, 'process_exit');
-    expect(dm.isGodAvailable()).toBe(false);
+    // First call
+    const r1 = await withGodFallback(controller, godCall, fallbackCall);
+    expect(r1.usedGod).toBe(false);
 
-    // Now even with a "success" call, God stays disabled
-    dm.handleGodSuccess();
-    expect(dm.isGodAvailable()).toBe(false);
+    // Second call — still disabled
+    const r2 = await withGodFallback(controller, godCall, fallbackCall);
+    expect(r2.usedGod).toBe(false);
+
+    // God was never invoked
+    expect(godCall).not.toHaveBeenCalled();
+    // handleGodSuccess was never called
+    expect(controller.handleGodSuccess).not.toHaveBeenCalled();
   });
 
   // ── AC-5: Notification returned ──
@@ -207,7 +253,7 @@ describe('withGodFallback', () => {
     });
     const fallbackCall = vi.fn().mockReturnValue('v1');
 
-    const { notification } = await withGodFallback(dm, godCall, fallbackCall, 'process_exit');
+    const { notification } = await withGodFallback(controller, godCall, fallbackCall);
 
     expect(notification).toBeDefined();
     expect(notification!.type).toBe('retrying');
@@ -218,21 +264,32 @@ describe('withGodFallback', () => {
     const godCall = vi.fn().mockRejectedValue(new Error('fail'));
     const fallbackCall = vi.fn().mockReturnValue('v1');
 
-    const { notification } = await withGodFallback(dm, godCall, fallbackCall, 'process_exit');
+    const { notification } = await withGodFallback(controller, godCall, fallbackCall);
 
     expect(notification).toBeDefined();
     expect(notification!.type).toBe('fallback_activated');
   });
 
-  test('returns god_disabled notification at L4', async () => {
+  test('returns god_disabled notification when controller reports it', async () => {
+    let failCount = 0;
+    controller = makeController({
+      handleGodFailure: async () => {
+        failCount++;
+        if (failCount === 1) {
+          return { retry: true, notification: { type: 'retrying', message: '[System] retrying' } };
+        }
+        // Second failure (retry failed) → return god_disabled
+        return {
+          retry: false,
+          notification: { type: 'god_disabled', message: '[System] God permanently disabled' },
+        };
+      },
+    });
+
     const godCall = vi.fn().mockRejectedValue(new Error('fail'));
     const fallbackCall = vi.fn().mockReturnValue('v1');
 
-    // First call: 2 failures
-    await withGodFallback(dm, godCall, fallbackCall, 'process_exit');
-
-    // Second call: 3rd failure → L4
-    const { notification } = await withGodFallback(dm, godCall, fallbackCall, 'process_exit');
+    const { notification } = await withGodFallback(controller, godCall, fallbackCall);
 
     expect(notification).toBeDefined();
     expect(notification!.type).toBe('god_disabled');
@@ -240,17 +297,17 @@ describe('withGodFallback', () => {
 });
 
 describe('withGodFallbackSync', () => {
-  let dm: DegradationManager;
+  let guard: GodAvailabilityGuard;
 
   beforeEach(() => {
-    dm = new DegradationManager({ fallbackServices: makeFallbackServices() });
+    guard = makeGuard(true);
   });
 
   test('returns God result when call succeeds', () => {
     const godCall = vi.fn().mockReturnValue('god-prompt');
     const fallbackCall = vi.fn().mockReturnValue('v1-prompt');
 
-    const { result, usedGod } = withGodFallbackSync(dm, godCall, fallbackCall);
+    const { result, usedGod } = withGodFallbackSync(guard, godCall, fallbackCall);
 
     expect(result).toBe('god-prompt');
     expect(usedGod).toBe(true);
@@ -258,15 +315,12 @@ describe('withGodFallbackSync', () => {
   });
 
   test('falls back when God is disabled', () => {
-    // Reach L4
-    dm.handleGodFailure({ kind: 'process_exit', message: 'e1' });
-    dm.handleGodFailure({ kind: 'process_exit', message: 'e2' });
-    dm.handleGodFailure({ kind: 'process_exit', message: 'e3' });
+    guard = makeGuard(false);
 
     const godCall = vi.fn().mockReturnValue('god');
     const fallbackCall = vi.fn().mockReturnValue('v1');
 
-    const { result, usedGod } = withGodFallbackSync(dm, godCall, fallbackCall);
+    const { result, usedGod } = withGodFallbackSync(guard, godCall, fallbackCall);
 
     expect(result).toBe('v1');
     expect(usedGod).toBe(false);
@@ -277,118 +331,92 @@ describe('withGodFallbackSync', () => {
     const godCall = vi.fn().mockImplementation(() => { throw new Error('boom'); });
     const fallbackCall = vi.fn().mockReturnValue('v1-prompt');
 
-    const { result, usedGod, notification } = withGodFallbackSync(dm, godCall, fallbackCall);
+    const { result, usedGod, notification } = withGodFallbackSync(guard, godCall, fallbackCall);
 
     expect(result).toBe('v1-prompt');
     expect(usedGod).toBe(false);
     expect(notification).toBeDefined();
   });
 
-  test('records failure in DegradationManager', () => {
+  test('returns fallback_activated notification on throw', () => {
     const godCall = vi.fn().mockImplementation(() => { throw new Error('boom'); });
     const fallbackCall = vi.fn().mockReturnValue('v1');
 
-    withGodFallbackSync(dm, godCall, fallbackCall);
+    const { notification } = withGodFallbackSync(guard, godCall, fallbackCall);
 
-    expect(dm.getState().consecutiveFailures).toBe(1);
+    expect(notification).toBeDefined();
+    expect(notification!.type).toBe('fallback_activated');
+    expect(notification!.message).toContain('Prompt generation failed');
   });
 });
 
-describe('DegradationManager state persistence (AC-6, AC-7)', () => {
-  test('serializeState captures current degradation level', () => {
-    const dm = new DegradationManager({ fallbackServices: makeFallbackServices() });
+describe('GodRetryController + withGodFallback interaction', () => {
+  test('handleGodFailure receives error info from failed God call', async () => {
+    const controller = makeController();
 
-    // Cause a failure
-    dm.handleGodFailure({ kind: 'process_exit', message: 'test' });
+    const godCall = vi.fn().mockRejectedValue(new Error('specific crash'));
+    const fallbackCall = vi.fn().mockReturnValue('v1');
 
-    const state = dm.serializeState();
-    expect(state.level).toBe('L2');
-    expect(state.consecutiveFailures).toBe(1);
-    expect(state.godDisabled).toBe(false);
+    await withGodFallback(controller, godCall, fallbackCall);
+
+    expect(controller.handleGodFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'specific crash' }),
+    );
   });
 
-  test('restores state from previous session', () => {
-    const savedState = {
-      level: 'L4' as const,
-      consecutiveFailures: 3,
-      godDisabled: true,
-      fallbackActive: true,
-      lastError: 'previous session error',
-    };
-
-    const dm = new DegradationManager({
-      fallbackServices: makeFallbackServices(),
-      restoredState: savedState,
+  test('controller that never retries goes straight to fallback', async () => {
+    const controller = makeController({
+      handleGodFailure: async () => ({
+        retry: false,
+        notification: { type: 'fallback_activated', message: '[System] no retry' },
+      }),
     });
 
-    expect(dm.isGodAvailable()).toBe(false);
-    expect(dm.getState().level).toBe('L4');
-    expect(dm.getState().consecutiveFailures).toBe(3);
-    expect(dm.getState().godDisabled).toBe(true);
+    const godCall = vi.fn().mockRejectedValue(new Error('fail'));
+    const fallbackCall = vi.fn().mockReturnValue('v1');
+
+    const { result, usedGod } = await withGodFallback(controller, godCall, fallbackCall);
+
+    expect(result).toBe('v1');
+    expect(usedGod).toBe(false);
+    expect(godCall).toHaveBeenCalledTimes(1);
   });
 
-  test('restored L4 state keeps God disabled permanently', async () => {
-    const dm = new DegradationManager({
-      fallbackServices: makeFallbackServices(),
-      restoredState: {
-        level: 'L4',
-        consecutiveFailures: 3,
-        godDisabled: true,
-        fallbackActive: true,
-      },
-    });
+  test('controller with God disabled skips God call entirely', async () => {
+    const controller = makeController({ isGodAvailable: false });
 
     const godCall = vi.fn().mockResolvedValue('should-not-reach');
     const fallbackCall = vi.fn().mockReturnValue('v1');
 
-    const { result, usedGod } = await withGodFallback(dm, godCall, fallbackCall, 'process_exit');
+    const { result, usedGod } = await withGodFallback(controller, godCall, fallbackCall);
 
     expect(result).toBe('v1');
     expect(usedGod).toBe(false);
     expect(godCall).not.toHaveBeenCalled();
   });
 
-  test('restored L1 state allows God calls', async () => {
-    const dm = new DegradationManager({
-      fallbackServices: makeFallbackServices(),
-      restoredState: {
-        level: 'L1',
-        consecutiveFailures: 0,
-        godDisabled: false,
-        fallbackActive: false,
-      },
-    });
+  test('controller with God available allows God calls', async () => {
+    const controller = makeController({ isGodAvailable: true });
 
     const godCall = vi.fn().mockResolvedValue('god-result');
     const fallbackCall = vi.fn().mockReturnValue('v1');
 
-    const { result, usedGod } = await withGodFallback(dm, godCall, fallbackCall, 'process_exit');
+    const { result, usedGod } = await withGodFallback(controller, godCall, fallbackCall);
 
     expect(result).toBe('god-result');
     expect(usedGod).toBe(true);
   });
 
-  test('round-trip: serialize → restore → same behavior', () => {
-    const dm1 = new DegradationManager({ fallbackServices: makeFallbackServices() });
+  test('handleGodFailure called once per failure attempt', async () => {
+    const controller = makeController();
 
-    // Build up some state
-    dm1.handleGodFailure({ kind: 'timeout', message: 'slow' });
-    dm1.handleGodFailure({ kind: 'timeout', message: 'slow again' });
+    // God fails every time; controller retries once then gives up
+    const godCall = vi.fn().mockRejectedValue(new Error('fail'));
+    const fallbackCall = vi.fn().mockReturnValue('v1');
 
-    const serialized = dm1.serializeState();
+    await withGodFallback(controller, godCall, fallbackCall);
 
-    // Restore in a new instance
-    const dm2 = new DegradationManager({
-      fallbackServices: makeFallbackServices(),
-      restoredState: serialized,
-    });
-
-    expect(dm2.getState()).toEqual(serialized);
-    expect(dm2.isGodAvailable()).toBe(dm1.isGodAvailable());
-
-    // One more failure should trigger L4
-    dm2.handleGodFailure({ kind: 'timeout', message: 'third' });
-    expect(dm2.isGodAvailable()).toBe(false);
-    expect(dm2.getState().level).toBe('L4');
+    // First failure + retry failure = 2 calls
+    expect(controller.handleGodFailure).toHaveBeenCalledTimes(2);
   });
 });

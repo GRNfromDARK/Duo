@@ -74,8 +74,7 @@ describe('shouldShowThinking', () => {
 
   it('handles all adapter roles as assistant (completed = show, streaming with content = hide)', () => {
     const adapterRoles: RoleName[] = [
-      'claude-code', 'codex', 'gemini', 'copilot', 'aider',
-      'amazon-q', 'cursor', 'cline', 'continue', 'goose', 'amp', 'qwen',
+      'claude-code', 'codex', 'gemini',
     ];
     for (const role of adapterRoles) {
       // Completed assistant → new round pending → show

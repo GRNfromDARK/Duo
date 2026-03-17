@@ -58,11 +58,8 @@ export interface AutoDecisionResult {
   reasoning: string;
 }
 
-const GOD_TIMEOUT_MS = 30_000;
+const GOD_TIMEOUT_MS = 600_000;
 
-function summarizeForPrompt(value: string, maxLength = 1500): string {
-  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
-}
 
 function evaluateDecision(
   decision: GodAutoDecision,
@@ -139,11 +136,11 @@ function buildAutoDecisionPrompt(context: AutoDecisionContext): string {
   }
 
   if (context.lastCoderOutput) {
-    sections.push('', `## Last Coder Output\n${summarizeForPrompt(context.lastCoderOutput)}`);
+    sections.push('', `## Last Coder Output\n${context.lastCoderOutput}`);
   }
 
   if (context.lastReviewerOutput) {
-    sections.push('', `## Last Reviewer Output\n${summarizeForPrompt(context.lastReviewerOutput)}`);
+    sections.push('', `## Last Reviewer Output\n${context.lastReviewerOutput}`);
   }
 
   if (context.unresolvedIssues && context.unresolvedIssues.length > 0) {
@@ -236,8 +233,8 @@ export async function makeAutoDecision(
     timestamp: new Date().toISOString(),
     round: context.round,
     decisionType: 'AUTO_DECISION',
-    inputSummary: `waitingReason=${context.waitingReason}, taskGoal=${context.taskGoal}`.slice(0, 500),
-    outputSummary: JSON.stringify(result.decision).slice(0, 500),
+    inputSummary: `waitingReason=${context.waitingReason}, taskGoal=${context.taskGoal}`,
+    outputSummary: JSON.stringify(result.decision),
     decision: { ...result.decision, blocked: result.blocked },
   };
   appendAuditLog(context.sessionDir, entry);

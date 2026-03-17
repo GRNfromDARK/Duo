@@ -1,7 +1,7 @@
 import type { DetectedCLI } from '../adapters/detect.js';
 import type { GodAdapterName } from '../types/god-adapter.js';
 
-export const SUPPORTED_GOD_ADAPTERS: GodAdapterName[] = ['claude-code', 'codex'];
+export const SUPPORTED_GOD_ADAPTERS: GodAdapterName[] = ['claude-code', 'codex', 'gemini'];
 
 export function isSupportedGodAdapterName(name: string): name is GodAdapterName {
   return SUPPORTED_GOD_ADAPTERS.includes(name as GodAdapterName);

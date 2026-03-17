@@ -119,13 +119,23 @@ describe('processKeybinding', () => {
       expect(result).toEqual({ type: 'scroll_down', amount: 1 });
     });
 
-    it('does not scroll when overlay is open', () => {
+    it('does not scroll j when overlay is open', () => {
       const result = processKeybinding('j', key(), ctx({ overlayOpen: 'help' }));
       expect(result).toEqual({ type: 'noop' });
     });
 
-    it('does not scroll when input has text', () => {
+    it('j does not scroll when input has text', () => {
       const result = processKeybinding('j', key(), ctx({ inputEmpty: false }));
+      expect(result).toEqual({ type: 'noop' });
+    });
+
+    it('down arrow scrolls even when input has text (mouse wheel support)', () => {
+      const result = processKeybinding('', key({ downArrow: true }), ctx({ inputEmpty: false }));
+      expect(result).toEqual({ type: 'scroll_down', amount: 1 });
+    });
+
+    it('down arrow does not scroll when overlay is open', () => {
+      const result = processKeybinding('', key({ downArrow: true }), ctx({ overlayOpen: 'help' }));
       expect(result).toEqual({ type: 'noop' });
     });
   });
@@ -138,6 +148,11 @@ describe('processKeybinding', () => {
 
     it('up arrow scrolls up by 1', () => {
       const result = processKeybinding('', key({ upArrow: true }), ctx());
+      expect(result).toEqual({ type: 'scroll_up', amount: 1 });
+    });
+
+    it('up arrow scrolls even when input has text (mouse wheel support)', () => {
+      const result = processKeybinding('', key({ upArrow: true }), ctx({ inputEmpty: false }));
       expect(result).toEqual({ type: 'scroll_up', amount: 1 });
     });
   });

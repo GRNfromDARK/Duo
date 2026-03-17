@@ -115,9 +115,9 @@ describe('cli resume entry', () => {
       metadata: {
         id: 'session-unsupported-god',
         projectDir: '/tmp/project',
-        coder: 'gemini',
-        reviewer: 'gemini',
-        god: 'gemini',
+        coder: 'claude-code',
+        reviewer: 'codex',
+        god: 'old-unsupported-tool',
         task: 'Fix login',
         createdAt: 1,
         updatedAt: 2,
@@ -144,9 +144,9 @@ describe('cli resume entry', () => {
         version: '1.0.0',
       },
       {
-        name: 'gemini',
-        displayName: 'Gemini',
-        command: 'gemini',
+        name: 'codex',
+        displayName: 'Codex',
+        command: 'codex',
         installed: true,
         version: '1.0.0',
       },
@@ -162,11 +162,11 @@ describe('cli resume entry', () => {
     const renderedElement = renderCalls[0]![0];
     expect(renderedElement.props.initialConfig).toEqual({
       projectDir: '/tmp/project',
-      coder: 'gemini',
-      reviewer: 'gemini',
-      god: 'claude-code',
+      coder: 'claude-code',
+      reviewer: 'codex',
+      god: 'codex',
       task: 'Fix login',
     });
-    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("Persisted God adapter 'gemini'"));
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("Persisted God adapter 'old-unsupported-tool'"));
   });
 });

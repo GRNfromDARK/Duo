@@ -169,15 +169,18 @@ describe('HandExecutor', () => {
       expect(results).toHaveLength(1);
     });
 
-    it('switch_adapter updates adapterConfig', async () => {
+    it('switch_adapter returns warning observation indicating not yet implemented', async () => {
       const actions: GodAction[] = [
         { type: 'switch_adapter', role: 'coder', adapter: 'codex', reason: 'Performance' },
       ];
 
       const results = await executeActions(actions, ctx);
 
-      expect(ctx.adapterConfig.get('coder')).toBe('codex');
       expect(results).toHaveLength(1);
+      expect(results[0].severity).toBe('warning');
+      expect(results[0].summary).toContain('not yet implemented');
+      // adapterConfig should NOT change since the action has no effect
+      expect(ctx.adapterConfig.get('coder')).toBe('claude-code');
     });
 
     it('wait sets waitState', async () => {
@@ -474,14 +477,16 @@ describe('HandExecutor', () => {
       expect(results[0].source).toBe('runtime');
     });
 
-    it('switch_adapter for god role updates adapterConfig', async () => {
+    it('switch_adapter for god role also returns not-implemented warning', async () => {
       const actions: GodAction[] = [
         { type: 'switch_adapter', role: 'god', adapter: 'codex', reason: 'Fallback' },
       ];
 
-      await executeActions(actions, ctx);
+      const results = await executeActions(actions, ctx);
 
-      expect(ctx.adapterConfig.get('god')).toBe('codex');
+      expect(results[0].severity).toBe('warning');
+      expect(results[0].summary).toContain('not yet implemented');
+      expect(ctx.adapterConfig.get('god')).toBe('claude-code');
     });
 
     it('resume_after_interrupt with stop strategy', async () => {

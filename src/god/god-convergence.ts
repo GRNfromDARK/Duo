@@ -49,7 +49,7 @@ export interface ConvergenceResult {
 // ── Exception reasons that bypass normal consistency checks ──
 
 const EXCEPTION_REASONS = new Set(['max_rounds', 'loop_detected']);
-const GOD_TIMEOUT_MS = 30_000;
+const GOD_TIMEOUT_MS = 600_000;
 
 // ── Default fallback judgment ──
 
@@ -382,7 +382,7 @@ function writeHallucinationAudit(
     round: context.round,
     decisionType: 'HALLUCINATION_DETECTED',
     inputSummary: violations.map(v => `[${v.type}] ${v.description}`).join('; '),
-    outputSummary: JSON.stringify(judgment).slice(0, 500),
+    outputSummary: JSON.stringify(judgment),
     decision: { originalJudgment: judgment, violations },
   };
   appendAuditLog(context.sessionDir, entry);
@@ -399,8 +399,8 @@ function writeConvergenceAudit(
     timestamp: new Date().toISOString(),
     round: context.round,
     decisionType: 'CONVERGENCE',
-    inputSummary: reviewerOutput.length > 500 ? reviewerOutput.slice(0, 500) : reviewerOutput,
-    outputSummary: rawOutput.length > 500 ? rawOutput.slice(0, 500) : rawOutput,
+    inputSummary: reviewerOutput,
+    outputSummary: rawOutput,
     decision: judgment,
   };
   appendAuditLog(context.sessionDir, entry);

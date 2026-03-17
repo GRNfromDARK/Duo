@@ -62,12 +62,10 @@ export const GodConvergenceJudgmentSchema = z.object({
 });
 
 // GodAutoDecision — FR-008 GOD_DECIDING 自主决策
-/** Max reasoning length to prevent UI overflow in escape window preview */
-export const MAX_REASONING_LENGTH = 2000;
 
 export const GodAutoDecisionSchema = z.object({
   action: z.enum(['accept', 'continue_with_instruction']),
-  reasoning: z.string().max(MAX_REASONING_LENGTH),
+  reasoning: z.string(),
   instruction: z.string().optional(), // continue_with_instruction 时提供
 });
 

@@ -14,6 +14,7 @@ export class ClaudeCodeGodAdapter implements GodAdapter {
 
   private processManager: ProcessManager;
   private parser: StreamJsonParser;
+  private lastSessionId: string | null = null;
 
   constructor() {
     this.processManager = new ProcessManager();
@@ -42,13 +43,21 @@ export class ClaudeCodeGodAdapter implements GodAdapter {
   }
 
   buildArgs(prompt: string, opts: GodExecOptions): string[] {
+    const isResuming = this.lastSessionId !== null;
+
     const args = [
       '-p', prompt,
       '--output-format', 'stream-json',
       '--verbose',
-      '--system-prompt', opts.systemPrompt,
-      '--tools', '',
+      '--dangerously-skip-permissions',
     ];
+
+    if (isResuming) {
+      args.push('--resume', this.lastSessionId!);
+    } else {
+      args.push('--system-prompt', opts.systemPrompt);
+    }
+    args.push('--tools', '');
 
     if (opts.model) {
       args.push('--model', opts.model);
@@ -120,14 +129,34 @@ export class ClaudeCodeGodAdapter implements GodAdapter {
       },
     });
 
+    const wasResuming = this.lastSessionId !== null;
+    let sessionIdUpdated = false;
+
     try {
       for await (const chunk of this.parser.parse(stream)) {
+        // Capture session_id from status chunks (same pattern as Coder adapter)
+        if (chunk.type === 'status' && chunk.metadata?.session_id) {
+          this.lastSessionId = chunk.metadata.session_id as string;
+          sessionIdUpdated = true;
+        }
         yield chunk;
       }
+    } catch (err) {
+      // Error recovery: if we were resuming and it failed, clear the stale session ID
+      // so next round falls back to fresh session with full system prompt
+      if (wasResuming) {
+        this.lastSessionId = null;
+      }
+      throw err;
     } finally {
       if (this.processManager.isRunning()) {
         await this.processManager.kill();
       }
+    }
+
+    // If we were resuming but no new session_id was captured, clear stale ID
+    if (wasResuming && !sessionIdUpdated) {
+      this.lastSessionId = null;
     }
   }
 
@@ -137,5 +166,21 @@ export class ClaudeCodeGodAdapter implements GodAdapter {
 
   isRunning(): boolean {
     return this.processManager.isRunning();
+  }
+
+  hasActiveSession(): boolean {
+    return this.lastSessionId !== null;
+  }
+
+  getLastSessionId(): string | null {
+    return this.lastSessionId;
+  }
+
+  restoreSessionId(id: string): void {
+    this.lastSessionId = id;
+  }
+
+  clearSession(): void {
+    this.lastSessionId = null;
   }
 }

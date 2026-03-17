@@ -185,7 +185,8 @@ export class JsonlParser {
   private mapErrorLikeEvent(message: string): OutputChunk {
     const isTransientTransportIssue =
       /Reconnecting\.\.\.\s+\d+\/\d+/i.test(message)
-      || /Falling back from WebSockets to HTTPS transport/i.test(message);
+      || /Falling back from WebSockets to HTTPS transport/i.test(message)
+      || /in-process app-server event stream lagged/i.test(message);
 
     return {
       type: isTransientTransportIssue ? 'status' : 'error',

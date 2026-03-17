@@ -80,7 +80,7 @@ describe('initializeTask', () => {
     expect(result).toBeNull();
   });
 
-  test('returns null when schema validation fails after retry', async () => {
+  test('returns null when schema validation fails (single attempt, no internal retry)', async () => {
     const { initializeTask } = await import('../../god/task-init.js');
 
     // Invalid: missing required fields
@@ -88,10 +88,10 @@ describe('initializeTask', () => {
 { "taskType": "code" }
 \`\`\``;
 
-    // Adapter returns bad output both times (initial + retry)
+    // Adapter returns bad output
     let callCount = 0;
     const adapter = createMockAdapter(badOutput);
-    // Override execute to track calls and always return bad output
+    // Override execute to track calls
     adapter.execute = function (_prompt: string, _opts: GodExecOptions): AsyncIterable<OutputChunk> {
       callCount++;
       const chunks: OutputChunk[] = [
@@ -113,8 +113,8 @@ describe('initializeTask', () => {
     const result = await initializeTask(adapter, 'test', 'system prompt');
 
     expect(result).toBeNull();
-    // Should have been called twice (initial + retry)
-    expect(callCount).toBe(2);
+    // Should only be called once (no internal retry — outer withGodFallback handles retries)
+    expect(callCount).toBe(1);
   });
 
   test('test_regression_bug6_initializeTask_passes_projectDir_to_adapter', async () => {
@@ -190,68 +190,9 @@ describe('initializeTask', () => {
   });
 });
 
-// ── Regression: BUG-1 R15 — rawOutput must match the call that produced valid data ──
+// ── rawOutput tracking ──
 
-describe('test_regression_bug1_r15: rawOutput tracks retry output', () => {
-  test('rawOutput comes from retry when first attempt has schema errors', async () => {
-    const { initializeTask } = await import('../../god/task-init.js');
-
-    const badOutput = `First attempt with bad JSON:
-\`\`\`json
-{ "taskType": "code" }
-\`\`\``;
-
-    const goodOutput = `Corrected output:
-\`\`\`json
-{
-  "taskType": "code",
-  "reasoning": "Retry succeeded",
-  "confidence": 0.8,
-  "suggestedMaxRounds": 4,
-  "terminationCriteria": ["Tests pass"]
-}
-\`\`\``;
-
-    let callCount = 0;
-    const adapter: GodAdapter = {
-      name: 'mock-god',
-      displayName: 'Mock God',
-      version: '1.0.0',
-      toolUsePolicy: 'forbid',
-      isInstalled: async () => true,
-      getVersion: async () => '1.0.0',
-      execute(_prompt: string, _opts: GodExecOptions): AsyncIterable<OutputChunk> {
-        callCount++;
-        const output = callCount === 1 ? badOutput : goodOutput;
-        const chunks: OutputChunk[] = [
-          { type: 'text', content: output, timestamp: Date.now() },
-        ];
-        return {
-          [Symbol.asyncIterator]() {
-            let i = 0;
-            return {
-              async next() {
-                if (i < chunks.length) return { value: chunks[i++], done: false };
-                return { value: undefined as unknown as OutputChunk, done: true };
-              },
-            };
-          },
-        };
-      },
-      kill: async () => {},
-      isRunning: () => false,
-    };
-
-    const result = await initializeTask(adapter, 'test', 'system prompt');
-
-    expect(result).not.toBeNull();
-    expect(result!.analysis.reasoning).toBe('Retry succeeded');
-    // Key assertion: rawOutput must be from the retry call, not the first bad call
-    expect(result!.rawOutput).toBe(goodOutput);
-    expect(result!.rawOutput).not.toBe(badOutput);
-    expect(callCount).toBe(2);
-  });
-
+describe('rawOutput tracking', () => {
   test('rawOutput comes from first call when first attempt succeeds', async () => {
     const { initializeTask } = await import('../../god/task-init.js');
 
@@ -521,7 +462,7 @@ describe('God audit log', () => {
     expect(JSON.parse(lines[1]).seq).toBe(2);
   });
 
-  test('inputSummary and outputSummary are truncated to 500 chars', async () => {
+  test('inputSummary and outputSummary are preserved in full', async () => {
     const { appendAuditLog } = await import('../../god/god-audit.js');
 
     const longString = 'x'.repeat(1000);
@@ -537,8 +478,8 @@ describe('God audit log', () => {
 
     const logPath = join(tempDir, 'god-audit.jsonl');
     const parsed = JSON.parse(readFileSync(logPath, 'utf-8').trim());
-    expect(parsed.inputSummary.length).toBeLessThanOrEqual(500);
-    expect(parsed.outputSummary.length).toBeLessThanOrEqual(500);
+    expect(parsed.inputSummary.length).toBe(1000);
+    expect(parsed.outputSummary.length).toBe(1000);
   });
 
   test('optional fields (model, phaseId) are included when provided', async () => {

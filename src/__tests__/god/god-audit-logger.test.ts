@@ -60,14 +60,14 @@ describe('GodAuditLogger', () => {
     expect(entries[2].seq).toBe(3);
   });
 
-  it('should truncate inputSummary and outputSummary to 500 chars', () => {
+  it('should preserve full inputSummary and outputSummary', () => {
     const logger = new GodAuditLogger(tmpDir);
     const longStr = 'x'.repeat(600);
     logger.append(makeEntry({ inputSummary: longStr, outputSummary: longStr }));
 
     const entries = logger.getEntries();
-    expect(entries[0].inputSummary.length).toBe(500);
-    expect(entries[0].outputSummary.length).toBe(500);
+    expect(entries[0].inputSummary.length).toBe(600);
+    expect(entries[0].outputSummary.length).toBe(600);
   });
 
   it('should store complete God output in god-decisions/ with outputRef (AC-052)', () => {

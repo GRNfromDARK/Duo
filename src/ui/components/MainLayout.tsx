@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Box, Text, useInput, useStdin } from 'ink';
+import React, { useState } from 'react';
+import { Box, Text, useInput } from 'ink';
 import { InputArea } from './InputArea.js';
 import { ScrollIndicator } from './ScrollIndicator.js';
 import { StatusBar, type WorkflowStatus } from './StatusBar.js';
@@ -94,17 +94,6 @@ const STATUS_BAR_HEIGHT = 1;
 const TASK_BANNER_HEIGHT = 1;
 const INPUT_AREA_HEIGHT = 3;
 const SEPARATOR_LINES = 2; // two separator lines
-const MOUSE_SCROLL_LINES = 3; // lines per mouse wheel tick
-
-// Module-level mouse mode tracking to avoid duplicate exit listeners
-let mouseModeEnabled = false;
-function disableMouseMode(): void {
-  if (!mouseModeEnabled) return;
-  mouseModeEnabled = false;
-  process.stdout.write('\x1b[?1000l');
-  process.stdout.write('\x1b[?1006l');
-}
-
 /**
  * Build a single-column text scrollbar track.
  * Returns an array of single-character strings, one per row.
@@ -232,60 +221,6 @@ export function MainLayout({
   const scrollTrack = needsScrollbar
     ? buildScrollTrack(messageAreaHeight, totalLines, effectiveOffset, visibleSlots)
     : [];
-
-  // ── Mouse scroll support ──
-  // Use refs to avoid stale closures in the stdin data handler
-  const scrollParamsRef = useRef({ totalLines, messageAreaHeight });
-  scrollParamsRef.current = { totalLines, messageAreaHeight };
-
-  const { stdin } = useStdin();
-
-  useEffect(() => {
-    if (!stdin) return;
-
-    const handleMouseData = (data: Buffer): void => {
-      const str = data.toString('utf-8');
-      const { totalLines: tl, messageAreaHeight: mah } = scrollParamsRef.current;
-
-      // Parse SGR mouse sequences: \x1b[<button;col;rowM or \x1b[<button;col;rowm
-      const sgrMatch = str.match(/\x1b\[<(\d+);\d+;\d+[Mm]/);
-      if (sgrMatch) {
-        const button = parseInt(sgrMatch[1]!, 10);
-        if (button === 64) {
-          setScrollState((s) => scrollUp(s, MOUSE_SCROLL_LINES, tl, mah));
-        } else if (button === 65) {
-          setScrollState((s) => scrollDown(s, MOUSE_SCROLL_LINES, tl, mah));
-        }
-        return;
-      }
-      // Parse legacy X10/normal mouse sequences: \x1b[M + 3 bytes
-      const legacyMatch = str.match(/\x1b\[M(.)/);
-      if (legacyMatch) {
-        const cb = legacyMatch[1]!.charCodeAt(0) - 32;
-        if (cb === 64) {
-          setScrollState((s) => scrollUp(s, MOUSE_SCROLL_LINES, tl, mah));
-        } else if (cb === 65) {
-          setScrollState((s) => scrollDown(s, MOUSE_SCROLL_LINES, tl, mah));
-        }
-      }
-    };
-
-    // Enable SGR mouse mode (one global exit handler)
-    if (!mouseModeEnabled) {
-      mouseModeEnabled = true;
-      process.stdout.write('\x1b[?1000h');
-      process.stdout.write('\x1b[?1006h');
-      process.on('exit', disableMouseMode);
-    }
-
-    stdin.on('data', handleMouseData);
-
-    return () => {
-      stdin.off('data', handleMouseData);
-      disableMouseMode();
-      process.off('exit', disableMouseMode);
-    };
-  }, [stdin]); // Only re-run when stdin changes
 
   const searchResults = overlayState.activeOverlay === 'search'
     ? computeSearchResults(messages, overlayState.searchQuery)

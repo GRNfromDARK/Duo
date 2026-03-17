@@ -240,11 +240,11 @@ export function GodSelector({
       <Text bold>{label}</Text>
       <Text dimColor>  Use arrow keys to navigate, Enter to select</Text>
       <Text dimColor color="yellow">
-        {'  Supported God adapters: Claude Code and Codex. God runs statelessly with tools disabled.'}
+        {'  Supported God adapters: Claude Code, Codex, and Gemini. God runs statelessly with tools disabled.'}
       </Text>
       {!canReuseReviewer && reviewer && (
         <Text dimColor color="yellow">
-          {`  Reviewer '${reviewer}' cannot act as God. Choose Claude Code or Codex.`}
+          {`  Reviewer '${reviewer}' cannot act as God. Choose Claude Code, Codex, or Gemini.`}
         </Text>
       )}
       {items.length === 0 && (

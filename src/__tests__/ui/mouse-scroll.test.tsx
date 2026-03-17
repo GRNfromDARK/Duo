@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import React from 'react';
 import { render } from 'ink-testing-library';
 import { MainLayout } from '../../ui/components/MainLayout.js';
@@ -230,48 +230,91 @@ describe('Mouse scroll — MainLayout scrollbar rendering', () => {
     // (scrollbar only renders when totalLines > visibleSlots)
   });
 
-  it('renders without crash when receiving mouse escape sequences via stdin', () => {
-    const { lastFrame, stdin } = render(
-      <MainLayout
-        messages={makeMessages(50)}
-        statusText="Duo"
-        columns={80}
-        rows={24}
-      />
-    );
-    // These won't actually trigger scrolling (ink-testing-library processes stdin
-    // through Ink's input pipeline, not raw data events), but must not crash
-    stdin.write('\x1b[<64;10;5M'); // SGR wheel up
-    stdin.write('\x1b[<65;10;5M'); // SGR wheel down
-    stdin.write('\x1b[M`\x21\x21'); // Legacy wheel up
-    stdin.write('\x1b[Ma\x21\x21'); // Legacy wheel down
-    stdin.write('\x1b[<0;10;5M');   // Regular click (should be ignored)
-    const output = lastFrame()!;
-    expect(output).toContain('Message');
+});
+
+// ── Terminal mode ownership verification ──
+
+describe('Mouse scroll — terminal mode ownership', () => {
+  it('MainLayout does not write terminal mouse mode escapes on mount', () => {
+    const writes: string[] = [];
+    const origWrite = process.stdout.write;
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      if (typeof chunk === 'string') writes.push(chunk);
+      return true;
+    }) as typeof process.stdout.write;
+
+    try {
+      const { unmount } = render(
+        <MainLayout
+          messages={makeMessages(3)}
+          statusText="Duo"
+          columns={80}
+          rows={24}
+        />
+      );
+
+      unmount();
+
+      expect(writes.some((w) => w.includes('\x1b[?1000'))).toBe(false);
+      expect(writes.some((w) => w.includes('\x1b[?1006'))).toBe(false);
+      expect(writes.some((w) => w.includes('\x1b[?1007'))).toBe(false);
+    } finally {
+      process.stdout.write = origWrite;
+    }
+  });
+});
+
+// ── enterAlternateScreen unit tests ──
+
+describe('enterAlternateScreen()', () => {
+  // Use the exported function with an injectable fake stdout
+  let enterAlternateScreen: typeof import('../../ui/alternate-screen.js').enterAlternateScreen;
+
+  beforeAll(async () => {
+    const mod = await import('../../ui/alternate-screen.js');
+    enterAlternateScreen = mod.enterAlternateScreen;
   });
 
-  it('mouse escape sequences do NOT leak into the input area', () => {
-    const { lastFrame, stdin } = render(
-      <MainLayout
-        messages={makeMessages(5)}
-        statusText="Duo"
-        columns={80}
-        rows={24}
-      />
-    );
-    // Send multiple mouse scroll escape sequences
-    stdin.write('\x1b[<64;10;5M');  // SGR wheel up
-    stdin.write('\x1b[<65;10;5M');  // SGR wheel down
-    stdin.write('\x1b[<64;20;10M'); // SGR wheel up at different position
-    stdin.write('\x1b[<0;10;5M');   // Mouse click
+  it('writes alternate screen and alternate scroll enable escapes on enter', () => {
+    const writes: string[] = [];
+    const fakeStdout = { write: (s: string) => { writes.push(s); } };
 
-    const output = lastFrame()!;
-    // The input area should still show the placeholder (empty input)
-    // If escape sequences leaked, we'd see garbage text instead of the placeholder
-    expect(output).toContain('Type a message...');
-    // Should NOT contain any raw escape sequence fragments
-    expect(output).not.toContain('[<64');
-    expect(output).not.toContain('[<65');
-    expect(output).not.toContain('[<0');
+    const cleanup = enterAlternateScreen(fakeStdout);
+    expect(writes).toEqual(['\x1b[?1049h', '\x1b[?1007h']);
+
+    cleanup(); // prevent leaking signal handlers
+  });
+
+  it('cleanup disables mouse modes before leaving alternate screen', () => {
+    const writes: string[] = [];
+    const fakeStdout = { write: (s: string) => { writes.push(s); } };
+
+    const cleanup = enterAlternateScreen(fakeStdout);
+    writes.length = 0;
+
+    cleanup();
+    expect(writes).toEqual([
+      '\x1b[?1007l',
+      '\x1b[?1000l',
+      '\x1b[?1006l',
+      '\x1b[?1049l',
+    ]);
+  });
+
+  it('cleanup is idempotent — only writes each leave sequence once', () => {
+    const writes: string[] = [];
+    const fakeStdout = { write: (s: string) => { writes.push(s); } };
+
+    const cleanup = enterAlternateScreen(fakeStdout);
+    writes.length = 0;
+
+    cleanup();
+    cleanup();
+    cleanup();
+
+    expect(writes.filter((w) => w === '\x1b[?1007l')).toHaveLength(1);
+    expect(writes.filter((w) => w === '\x1b[?1000l')).toHaveLength(1);
+    expect(writes.filter((w) => w === '\x1b[?1006l')).toHaveLength(1);
+    expect(writes.filter((w) => w === '\x1b[?1049l')).toHaveLength(1);
   });
 });
