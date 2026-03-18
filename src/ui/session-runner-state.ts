@@ -1,6 +1,6 @@
 import type { WorkflowContext } from '../engine/workflow-machine.js';
 import type { ConvergenceLogEntry } from '../god/god-convergence.js';
-import type { RoundRecord } from '../session/context-manager.js';
+import type { RoundRecord } from '../types/session.js';
 import type { LoadedSession, SessionState } from '../session/session-manager.js';
 import type { OutputChunk } from '../types/adapter.js';
 import type { GodTaskAnalysis } from '../types/god-schemas.js';

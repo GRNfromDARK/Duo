@@ -1,9 +1,12 @@
 /**
- * Tests for Card B.4: God 动态 Prompt 生成替代 ContextManager
+ * Tests for Card B.4: God dynamic prompt generation.
  * Source: FR-003 (AC-013, AC-014, AC-015), FR-003a, FR-003b, FR-003c
  *
- * Tests the integration logic: when God is available, generateCoderPrompt/generateReviewerPrompt
- * are used; when God is unavailable, v1 ContextManager is used as fallback.
+ * Tests that generateCoderPrompt/generateReviewerPrompt produce correct prompts
+ * for different task types and contexts.
+ *
+ * Note: v1 ContextManager fallback was removed in Task 6. Prompt generation
+ * now goes directly through God prompt generator with no fallback.
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
@@ -13,7 +16,6 @@ import {
 } from '../../god/god-prompt-generator.js';
 import type { PromptContext } from '../../god/god-prompt-generator.js';
 import type { ConvergenceLogEntry } from '../../god/god-convergence.js';
-import { ContextManager } from '../../session/context-manager.js';
 
 // Mock audit log to avoid filesystem writes
 vi.mock('../../god/god-audit.js', () => ({
@@ -27,132 +29,45 @@ vi.mock('../../god/god-audit.js', () => ({
 import { appendAuditLog } from '../../god/god-audit.js';
 const mockAppendAuditLog = vi.mocked(appendAuditLog);
 
-// ── Helpers ──
-
-function makeContextManager() {
-  return new ContextManager({ contextWindowSize: 200000 });
-}
-
-/**
- * Simulates the prompt selection logic from App.tsx CODING useEffect.
- * This mirrors the code path in B.4 implementation.
- * godAvailable replaces the old DegradationManager.isGodAvailable() check.
- */
-function selectCoderPrompt(opts: {
-  godAvailable: boolean;
-  contextManager: ContextManager;
-  taskAnalysis: { taskType: string } | null;
-  config: { task: string };
-  ctx: { round: number; maxRounds: number; lastReviewerOutput?: string | null };
-  lastUnresolvedIssues: string[];
-  convergenceLog: ConvergenceLogEntry[];
-  sessionDir: string;
-  auditSeq: number;
-  rounds: Array<{ index: number; coderOutput: string; reviewerOutput: string; timestamp: number }>;
-}): string {
-  // God prompt path: available + taskAnalysis exists
-  if (opts.godAvailable && opts.taskAnalysis) {
-    return generateCoderPrompt({
-      taskType: opts.taskAnalysis.taskType as PromptContext['taskType'],
-      round: opts.ctx.round,
-      maxRounds: opts.ctx.maxRounds,
-      taskGoal: opts.config.task,
-      lastReviewerOutput: opts.ctx.lastReviewerOutput ?? undefined,
-      unresolvedIssues: opts.lastUnresolvedIssues,
-      convergenceLog: opts.convergenceLog,
-    }, {
-      sessionDir: opts.sessionDir,
-      seq: opts.auditSeq,
-    });
-  }
-
-  // Fallback to v1 ContextManager
-  return opts.contextManager.buildCoderPrompt(
-    opts.config.task,
-    opts.rounds,
-    {
-      ...(opts.ctx.lastReviewerOutput ? { reviewerFeedback: opts.ctx.lastReviewerOutput } : {}),
-    },
-  );
-}
-
-/**
- * Simulates the prompt selection logic from App.tsx REVIEWING useEffect.
- */
-function selectReviewerPrompt(opts: {
-  godAvailable: boolean;
-  contextManager: ContextManager;
-  taskAnalysis: { taskType: string } | null;
-  config: { task: string };
-  ctx: { round: number; maxRounds: number; lastCoderOutput?: string | null };
-  rounds: Array<{ index: number; coderOutput: string; reviewerOutput: string; timestamp: number }>;
-  lastReviewerOutput?: string;
-}): string {
-  if (opts.godAvailable && opts.taskAnalysis) {
-    return generateReviewerPrompt({
-      taskType: opts.taskAnalysis.taskType,
-      round: opts.ctx.round,
-      maxRounds: opts.ctx.maxRounds,
-      taskGoal: opts.config.task,
-      lastCoderOutput: opts.ctx.lastCoderOutput ?? undefined,
-    });
-  }
-
-  return opts.contextManager.buildReviewerPrompt(
-    opts.config.task,
-    opts.rounds,
-    opts.ctx.lastCoderOutput ?? '',
-    {
-      roundNumber: opts.ctx.round + 1,
-      ...(opts.lastReviewerOutput ? { previousReviewerOutput: opts.lastReviewerOutput } : {}),
-    },
-  );
-}
-
 // ══════════════════════════════════════════════════════════════════
-// AC-1: God 动态生成 Coder prompt
+// AC-1: God dynamically generates Coder prompt
 // ══════════════════════════════════════════════════════════════════
 
 describe('AC-1: God dynamically generates Coder prompt', () => {
-  let cm: ContextManager;
-
   beforeEach(() => {
-    cm = makeContextManager();
     mockAppendAuditLog.mockClear();
   });
 
-  test('uses generateCoderPrompt when God is available and taskAnalysis exists', () => {
-    const prompt = selectCoderPrompt({
-      godAvailable: true,
-      contextManager: cm,
-      taskAnalysis: { taskType: 'code' },
-      config: { task: 'Implement login' },
-      ctx: { round: 1, maxRounds: 5 },
-      lastUnresolvedIssues: [],
+  test('generates Coder prompt with task goal and round info', () => {
+    const prompt = generateCoderPrompt({
+      taskType: 'code',
+      round: 1,
+      maxRounds: 5,
+      taskGoal: 'Implement login',
+      unresolvedIssues: [],
       convergenceLog: [],
+    }, {
       sessionDir: '/tmp/test',
-      auditSeq: 1,
-      rounds: [],
+      seq: 1,
     });
 
-    // God prompt includes task goal and strategy instructions
     expect(prompt).toContain('Implement login');
     expect(prompt).toContain('## Instructions');
     expect(prompt).toContain('Round 1 of 5');
   });
 
   test('includes unresolvedIssues as required fixes in Coder prompt (FR-003b)', () => {
-    const prompt = selectCoderPrompt({
-      godAvailable: true,
-      contextManager: cm,
-      taskAnalysis: { taskType: 'code' },
-      config: { task: 'Implement login' },
-      ctx: { round: 2, maxRounds: 5, lastReviewerOutput: 'Missing validation' },
-      lastUnresolvedIssues: ['Add input validation', 'Fix SQL injection'],
+    const prompt = generateCoderPrompt({
+      taskType: 'code',
+      round: 2,
+      maxRounds: 5,
+      taskGoal: 'Implement login',
+      lastReviewerOutput: 'Missing validation',
+      unresolvedIssues: ['Add input validation', 'Fix SQL injection'],
       convergenceLog: [],
+    }, {
       sessionDir: '/tmp/test',
-      auditSeq: 2,
-      rounds: [],
+      seq: 2,
     });
 
     expect(prompt).toContain('## Required Fixes (MUST address each item)');
@@ -161,17 +76,16 @@ describe('AC-1: God dynamically generates Coder prompt', () => {
   });
 
   test('writes audit log entry for Coder prompt (AC-015)', () => {
-    selectCoderPrompt({
-      godAvailable: true,
-      contextManager: cm,
-      taskAnalysis: { taskType: 'code' },
-      config: { task: 'Implement login' },
-      ctx: { round: 1, maxRounds: 5 },
-      lastUnresolvedIssues: [],
+    generateCoderPrompt({
+      taskType: 'code',
+      round: 1,
+      maxRounds: 5,
+      taskGoal: 'Implement login',
+      unresolvedIssues: [],
       convergenceLog: [],
+    }, {
       sessionDir: '/tmp/test-session',
-      auditSeq: 42,
-      rounds: [],
+      seq: 42,
     });
 
     expect(mockAppendAuditLog).toHaveBeenCalledWith(
@@ -186,24 +100,17 @@ describe('AC-1: God dynamically generates Coder prompt', () => {
 });
 
 // ══════════════════════════════════════════════════════════════════
-// AC-2: God 动态生成 Reviewer prompt
+// AC-2: God dynamically generates Reviewer prompt
 // ══════════════════════════════════════════════════════════════════
 
 describe('AC-2: God dynamically generates Reviewer prompt', () => {
-  let cm: ContextManager;
-
-  beforeEach(() => {
-    cm = makeContextManager();
-  });
-
-  test('uses generateReviewerPrompt when God is available and taskAnalysis exists', () => {
-    const prompt = selectReviewerPrompt({
-      godAvailable: true,
-      contextManager: cm,
-      taskAnalysis: { taskType: 'code' },
-      config: { task: 'Implement login' },
-      ctx: { round: 1, maxRounds: 5, lastCoderOutput: 'Added login endpoint' },
-      rounds: [],
+  test('generates Reviewer prompt with task goal and coder output', () => {
+    const prompt = generateReviewerPrompt({
+      taskType: 'code',
+      round: 1,
+      maxRounds: 5,
+      taskGoal: 'Implement login',
+      lastCoderOutput: 'Added login endpoint',
     });
 
     expect(prompt).toContain('Implement login');
@@ -214,28 +121,21 @@ describe('AC-2: God dynamically generates Reviewer prompt', () => {
 });
 
 // ══════════════════════════════════════════════════════════════════
-// AC-3: explore 型 prompt 不含执行动词 (AC-013)
+// AC-3: explore prompt has no execution verbs (AC-013)
 // ══════════════════════════════════════════════════════════════════
 
 describe('AC-3: explore prompt has no execution verbs (AC-013)', () => {
-  let cm: ContextManager;
-
-  beforeEach(() => {
-    cm = makeContextManager();
-  });
-
   test('explore Coder prompt does not contain implement/create/write code', () => {
-    const prompt = selectCoderPrompt({
-      godAvailable: true,
-      contextManager: cm,
-      taskAnalysis: { taskType: 'explore' },
-      config: { task: 'Understand the auth flow' },
-      ctx: { round: 1, maxRounds: 3 },
-      lastUnresolvedIssues: [],
+    const prompt = generateCoderPrompt({
+      taskType: 'explore',
+      round: 1,
+      maxRounds: 3,
+      taskGoal: 'Understand the auth flow',
+      unresolvedIssues: [],
       convergenceLog: [],
+    }, {
       sessionDir: '/tmp/test',
-      auditSeq: 1,
-      rounds: [],
+      seq: 1,
     });
 
     const lower = prompt.toLowerCase();
@@ -248,29 +148,23 @@ describe('AC-3: explore prompt has no execution verbs (AC-013)', () => {
 });
 
 // ══════════════════════════════════════════════════════════════════
-// AC-4: Reviewer unresolvedIssues 作为 Coder prompt 必做清单
+// AC-4: unresolvedIssues as Coder must-do list
 // ══════════════════════════════════════════════════════════════════
 
 describe('AC-4: unresolvedIssues as Coder must-do list', () => {
-  let cm: ContextManager;
-
-  beforeEach(() => {
-    cm = makeContextManager();
-  });
-
   test('unresolvedIssues appear as numbered required fixes', () => {
     const issues = ['Fix null pointer in auth.ts:42', 'Add rate limiting', 'Handle timeout errors'];
-    const prompt = selectCoderPrompt({
-      godAvailable: true,
-      contextManager: cm,
-      taskAnalysis: { taskType: 'code' },
-      config: { task: 'Fix auth bugs' },
-      ctx: { round: 3, maxRounds: 5, lastReviewerOutput: 'Still failing' },
-      lastUnresolvedIssues: issues,
+    const prompt = generateCoderPrompt({
+      taskType: 'code',
+      round: 3,
+      maxRounds: 5,
+      taskGoal: 'Fix auth bugs',
+      lastReviewerOutput: 'Still failing',
+      unresolvedIssues: issues,
       convergenceLog: [],
+    }, {
       sessionDir: '/tmp/test',
-      auditSeq: 3,
-      rounds: [],
+      seq: 3,
     });
 
     expect(prompt).toContain('## Required Fixes (MUST address each item)');
@@ -280,17 +174,16 @@ describe('AC-4: unresolvedIssues as Coder must-do list', () => {
   });
 
   test('empty unresolvedIssues does not add required fixes section', () => {
-    const prompt = selectCoderPrompt({
-      godAvailable: true,
-      contextManager: cm,
-      taskAnalysis: { taskType: 'code' },
-      config: { task: 'Build feature' },
-      ctx: { round: 1, maxRounds: 5 },
-      lastUnresolvedIssues: [],
+    const prompt = generateCoderPrompt({
+      taskType: 'code',
+      round: 1,
+      maxRounds: 5,
+      taskGoal: 'Build feature',
+      unresolvedIssues: [],
       convergenceLog: [],
+    }, {
       sessionDir: '/tmp/test',
-      auditSeq: 1,
-      rounds: [],
+      seq: 1,
     });
 
     expect(prompt).not.toContain('## Required Fixes');
@@ -298,7 +191,7 @@ describe('AC-4: unresolvedIssues as Coder must-do list', () => {
 });
 
 // ══════════════════════════════════════════════════════════════════
-// AC-5: prompt 摘要写入 audit log
+// AC-5: prompt summary written to audit log
 // ══════════════════════════════════════════════════════════════════
 
 describe('AC-5: prompt summary written to audit log', () => {
@@ -307,21 +200,17 @@ describe('AC-5: prompt summary written to audit log', () => {
   });
 
   test('audit log entry contains full prompt summary without truncation', () => {
-    const cm = makeContextManager();
-
-    // Create a long task goal to verify no truncation
     const longGoal = 'A'.repeat(1000);
-    selectCoderPrompt({
-      godAvailable: true,
-      contextManager: cm,
-      taskAnalysis: { taskType: 'code' },
-      config: { task: longGoal },
-      ctx: { round: 1, maxRounds: 5 },
-      lastUnresolvedIssues: [],
+    generateCoderPrompt({
+      taskType: 'code',
+      round: 1,
+      maxRounds: 5,
+      taskGoal: longGoal,
+      unresolvedIssues: [],
       convergenceLog: [],
+    }, {
       sessionDir: '/tmp/test',
-      auditSeq: 10,
-      rounds: [],
+      seq: 10,
     });
 
     expect(mockAppendAuditLog).toHaveBeenCalledTimes(1);
@@ -331,96 +220,17 @@ describe('AC-5: prompt summary written to audit log', () => {
 });
 
 // ══════════════════════════════════════════════════════════════════
-// AC-6: God 失败时降级到 v1 ContextManager
-// ══════════════════════════════════════════════════════════════════
-
-describe('AC-6: Fallback to v1 ContextManager when God unavailable', () => {
-  test('uses ContextManager.buildCoderPrompt when God is unavailable', () => {
-    const cm = makeContextManager();
-
-    const prompt = selectCoderPrompt({
-      godAvailable: false,
-      contextManager: cm,
-      taskAnalysis: { taskType: 'code' },
-      config: { task: 'Implement feature' },
-      ctx: { round: 1, maxRounds: 5 },
-      lastUnresolvedIssues: [],
-      convergenceLog: [],
-      sessionDir: '/tmp/test',
-      auditSeq: 1,
-      rounds: [],
-    });
-
-    // v1 ContextManager prompt has different format
-    expect(prompt).toContain('You are a Coder');
-    expect(prompt).toContain('Implement feature');
-  });
-
-  test('uses ContextManager.buildCoderPrompt when taskAnalysis is null', () => {
-    const cm = makeContextManager();
-
-    const prompt = selectCoderPrompt({
-      godAvailable: true,
-      contextManager: cm,
-      taskAnalysis: null,
-      config: { task: 'Implement feature' },
-      ctx: { round: 1, maxRounds: 5 },
-      lastUnresolvedIssues: [],
-      convergenceLog: [],
-      sessionDir: '/tmp/test',
-      auditSeq: 1,
-      rounds: [],
-    });
-
-    expect(prompt).toContain('You are a Coder');
-  });
-
-  test('uses ContextManager.buildReviewerPrompt when God is unavailable', () => {
-    const cm = makeContextManager();
-
-    const prompt = selectReviewerPrompt({
-      godAvailable: false,
-      contextManager: cm,
-      taskAnalysis: { taskType: 'code' },
-      config: { task: 'Implement feature' },
-      ctx: { round: 1, maxRounds: 5, lastCoderOutput: 'some code' },
-      rounds: [],
-    });
-
-    expect(prompt).toContain('You are a Reviewer');
-  });
-
-  test('uses ContextManager.buildReviewerPrompt when taskAnalysis is null', () => {
-    const cm = makeContextManager();
-
-    const prompt = selectReviewerPrompt({
-      godAvailable: true,
-      contextManager: cm,
-      taskAnalysis: null,
-      config: { task: 'Implement feature' },
-      ctx: { round: 1, maxRounds: 5, lastCoderOutput: 'some code' },
-      rounds: [],
-    });
-
-    expect(prompt).toContain('You are a Reviewer');
-  });
-});
-
-// ══════════════════════════════════════════════════════════════════
 // Convergence log trend included in God prompt
 // ══════════════════════════════════════════════════════════════════
 
 describe('Convergence log trend in Coder prompt', () => {
   test('includes convergence trend when log entries exist', () => {
-    const cm = makeContextManager();
-
-    const prompt = selectCoderPrompt({
-      godAvailable: true,
-      contextManager: cm,
-      taskAnalysis: { taskType: 'code' },
-      config: { task: 'Fix bugs' },
-      ctx: { round: 3, maxRounds: 5 },
-      lastUnresolvedIssues: ['Fix memory leak'],
+    const prompt = generateCoderPrompt({
+      taskType: 'code',
+      round: 3,
+      maxRounds: 5,
+      taskGoal: 'Fix bugs',
+      unresolvedIssues: ['Fix memory leak'],
       convergenceLog: [
         {
           round: 1,
@@ -441,9 +251,9 @@ describe('Convergence log trend in Coder prompt', () => {
           summary: 'round 2',
         },
       ],
+    }, {
       sessionDir: '/tmp/test',
-      auditSeq: 3,
-      rounds: [],
+      seq: 3,
     });
 
     expect(prompt).toContain('## Convergence Trend');

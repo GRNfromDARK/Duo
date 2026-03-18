@@ -23,7 +23,6 @@ import {
 } from '../../types/god-schemas.js';
 import { workflowMachine } from '../../engine/workflow-machine.js';
 import type { ConvergenceLogEntry } from '../../god/god-convergence.js';
-import { ContextManager } from '../../session/context-manager.js';
 import { parseMarkdown } from '../../ui/markdown-parser.js';
 import { OutputStreamManager } from '../../adapters/output-stream-manager.js';
 import { ProcessTimeoutError } from '../../adapters/process-manager.js';
@@ -779,38 +778,6 @@ describe('Round4 BUG-1: hasNoImprovement excludes all-zero counts', () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
-// Round 4 BUG-2 (P1): enforceTokenBudget uses CHARS_PER_TOKEN
-// ══════════════════════════════════════════════════════════════
-
-describe('Round4 BUG-2: enforceTokenBudget multiplies by CHARS_PER_TOKEN', () => {
-  test('test_bug_r4_2_token_budget_allows_correct_char_count', () => {
-    // contextWindowSize = 1000 tokens → 1000 * 4 * 0.8 = 3200 chars allowed
-    const cm = new ContextManager({ contextWindowSize: 1000 });
-    const longOutput = 'x'.repeat(2500);
-    const prompt = cm.buildCoderPrompt('Task', [
-      { index: 1, coderOutput: longOutput, reviewerOutput: '', timestamp: Date.now() },
-    ]);
-
-    // Before fix: maxChars = 1000 * 0.8 = 800 → prompt truncated to 800
-    // After fix: maxChars = 1000 * 4 * 0.8 = 3200 → prompt NOT truncated
-    expect(prompt.length).toBeGreaterThan(800);
-    expect(prompt).not.toContain('...');
-  });
-
-  test('test_regression_r4_2_still_truncates_when_over_real_budget', () => {
-    // contextWindowSize = 100 tokens → 100 * 4 * 0.8 = 320 chars
-    const cm = new ContextManager({ contextWindowSize: 100 });
-    const longOutput = 'x'.repeat(500);
-    const prompt = cm.buildCoderPrompt('Task', [
-      { index: 1, coderOutput: longOutput, reviewerOutput: longOutput, timestamp: Date.now() },
-    ]);
-
-    // Should still be truncated since content exceeds 320 chars
-    expect(prompt.length).toBeLessThanOrEqual(320);
   });
 });
 

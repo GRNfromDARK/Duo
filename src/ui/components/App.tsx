@@ -14,8 +14,7 @@ import type { WorkflowContext } from '../../engine/workflow-machine.js';
 import { createAdapter } from '../../adapters/factory.js';
 import { createGodAdapter } from '../../god/god-adapter-factory.js';
 import { OutputStreamManager } from '../../adapters/output-stream-manager.js';
-import { ContextManager } from '../../session/context-manager.js';
-import type { RoundRecord } from '../../session/context-manager.js';
+import type { RoundRecord } from '../../types/session.js';
 import { SessionManager } from '../../session/session-manager.js';
 import type { LoadedSession } from '../../session/session-manager.js';
 import { MainLayout } from './MainLayout.js';
@@ -293,12 +292,6 @@ function SessionRunner({
   const coderAdapterRef = useRef<CLIAdapter>(createAdapter(config.coder));
   const reviewerAdapterRef = useRef<CLIAdapter>(createAdapter(config.reviewer));
   const godAdapterRef = useRef<GodAdapter>(createGodAdapter(config.god));
-  const contextManagerRef = useRef(
-    new ContextManager({
-      contextWindowSize: 200000,
-      promptsDir: path.join(config.projectDir, '.duo', 'prompts'),
-    }),
-  );
   const sessionManagerRef = useRef(
     new SessionManager(path.join(config.projectDir, '.duo', 'sessions')),
   );
@@ -866,18 +859,19 @@ function SessionRunner({
 
     // Record round summary after reviewer output (preserves old EVALUATING behavior)
     if (source === 'reviewer') {
+      const summaryText = output.length <= 800 ? output : output.slice(0, 797) + '...';
       roundsRef.current.push({
         index: ctx.round + 1,
         coderOutput: ctx.lastCoderOutput ?? '',
         reviewerOutput: output,
-        summary: contextManagerRef.current.generateSummary(output),
+        summary: summaryText,
         timestamp: Date.now(),
       });
 
       const summaryMsg = createRoundSummaryMessage(
         ctx.round + 1,
         ctx.round + 2,
-        contextManagerRef.current.generateSummary(output).slice(0, 100),
+        summaryText.slice(0, 100),
       );
       setMessages((prev) => [...prev, summaryMsg]);
 

@@ -41,3 +41,11 @@ export interface StartResult {
   validation: ValidationResult;
   detectedCLIs: string[];
 }
+
+export interface RoundRecord {
+  index: number;
+  coderOutput: string;
+  reviewerOutput: string;
+  summary?: string;
+  timestamp: number;
+}
