@@ -36,8 +36,7 @@ function makeObs(type: Observation['type'] = 'work_output', source: Observation[
 
 function makeEnvelope(actions: GodDecisionEnvelope['actions'] = []): GodDecisionEnvelope {
   return {
-    diagnosis: { summary: 'test', currentGoal: 'test', currentPhaseId: 'p1', notableObservations: [] },
-    authority: { userConfirmation: 'not_required', reviewerOverride: false, acceptAuthority: 'reviewer_aligned' },
+    diagnosis: { summary: 'test', currentGoal: 'test', notableObservations: [] },
     actions,
     messages: [{ target: 'system_log', content: 'log' }],
   };
@@ -204,8 +203,8 @@ describe('BUG-10: cleanupOldDecisions numeric sort', () => {
 // BUG-11 (P2): Zod schema refine constraints
 // ══════════════════════════════════════════════════════════════
 
-describe('BUG-11: Zod schema refine constraints', () => {
-  test('test_bug_11_compound_taskType_without_phases_rejected', () => {
+describe('BUG-11: Zod schema constraints (simplified)', () => {
+  test('compound taskType is rejected (removed)', () => {
     const result = GodTaskAnalysisSchema.safeParse({
       taskType: 'compound',
       reasoning: 'Complex task',
@@ -214,27 +213,7 @@ describe('BUG-11: Zod schema refine constraints', () => {
     expect(result.success).toBe(false);
   });
 
-  test('test_bug_11_compound_with_empty_phases_rejected', () => {
-    const result = GodTaskAnalysisSchema.safeParse({
-      taskType: 'compound',
-      reasoning: 'Complex task',
-      phases: [],
-      confidence: 0.8,
-    });
-    expect(result.success).toBe(false);
-  });
-
-  test('test_bug_11_compound_with_phases_accepted', () => {
-    const result = GodTaskAnalysisSchema.safeParse({
-      taskType: 'compound',
-      reasoning: 'Complex task',
-      phases: [{ id: 'p1', name: 'Phase 1', type: 'code', description: 'Code it' }],
-      confidence: 0.8,
-    });
-    expect(result.success).toBe(true);
-  });
-
-  test('test_regression_11_non_compound_without_phases_accepted', () => {
+  test('code taskType without phases accepted', () => {
     const result = GodTaskAnalysisSchema.safeParse({
       taskType: 'code',
       reasoning: 'Simple task',
@@ -814,7 +793,9 @@ describe('R13-BUG-1: ProcessTimeoutError enables TIMEOUT dispatch to state machi
     const actor = createActor(workflowMachine, { input: {} });
     actor.start();
     actor.send({ type: 'START_TASK', prompt: 'test task' });
-    actor.send({ type: 'TASK_INIT_COMPLETE' });
+    // Advance to CODING: GOD_DECIDING → EXECUTING → CODING
+    actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', dispatchType: 'code', message: 'begin' }]) });
+    actor.send({ type: 'EXECUTION_COMPLETE', results: [] });
     expect(actor.getSnapshot().value).toBe('CODING');
 
     // Simulate: adapter throws ProcessTimeoutError → orchestration catches → dispatches TIMEOUT
@@ -833,8 +814,10 @@ describe('R13-BUG-1: ProcessTimeoutError enables TIMEOUT dispatch to state machi
     const actor = createActor(workflowMachine, { input: {} });
     actor.start();
     actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_COMPLETE' });
-    // Card D.1: navigate to REVIEWING via OBSERVING → GOD_DECIDING → EXECUTING(send_to_reviewer)
+    // Advance to CODING first
+    actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', dispatchType: 'code', message: 'begin' }]) });
+    actor.send({ type: 'EXECUTION_COMPLETE', results: [] });
+    // Navigate to REVIEWING via OBSERVING → GOD_DECIDING → EXECUTING(send_to_reviewer)
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
     actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_reviewer', message: 'review this' }]) });
@@ -1030,7 +1013,7 @@ describe('BUG-9: God instruction passed to generateCoderPrompt', () => {
   test('test_bug_9_instruction_field_accepted_by_PromptContext', () => {
     // PromptContext now has an optional instruction field
     const ctx: PromptContext = {
-      taskType: 'code',
+      dispatchType: 'code',
       taskGoal: 'Fix login bug',
       instruction: 'focus on error handling edge cases',
     };
@@ -1040,7 +1023,7 @@ describe('BUG-9: God instruction passed to generateCoderPrompt', () => {
 
   test('test_bug_9_instruction_appears_in_generated_prompt', () => {
     const ctx: PromptContext = {
-      taskType: 'code',
+      dispatchType: 'code',
       taskGoal: 'Fix login bug',
       instruction: 'focus on error handling edge cases',
     };
@@ -1052,28 +1035,27 @@ describe('BUG-9: God instruction passed to generateCoderPrompt', () => {
     expect(prompt).toContain('HIGHEST PRIORITY');
   });
 
-  test('test_bug_9_instruction_appears_before_unresolved_issues', () => {
+  test('test_bug_9_instruction_appears_before_strategy_instructions', () => {
     const ctx: PromptContext = {
-      taskType: 'code',
+      dispatchType: 'code',
       taskGoal: 'Fix login bug',
       instruction: 'focus on error handling',
-      unresolvedIssues: ['Missing null check in auth handler'],
     };
 
     const prompt = generateCoderPrompt(ctx);
 
     const instructionIdx = prompt.indexOf('God Instruction');
-    const issuesIdx = prompt.indexOf('Required Fixes');
+    const strategyIdx = prompt.indexOf('## Instructions');
 
     expect(instructionIdx).toBeGreaterThan(-1);
-    expect(issuesIdx).toBeGreaterThan(-1);
-    // Instruction should appear before unresolved issues
-    expect(instructionIdx).toBeLessThan(issuesIdx);
+    expect(strategyIdx).toBeGreaterThan(-1);
+    // Instruction should appear before strategy instructions
+    expect(instructionIdx).toBeLessThan(strategyIdx);
   });
 
   test('test_bug_9_no_instruction_section_when_undefined', () => {
     const ctx: PromptContext = {
-      taskType: 'code',
+      dispatchType: 'code',
       taskGoal: 'Build feature',
     };
 
@@ -1093,7 +1075,7 @@ describe('BUG-9: God instruction passed to generateCoderPrompt', () => {
 
     // Step 2: CODING useEffect God path passes it to generateCoderPrompt
     const ctx: PromptContext = {
-      taskType: 'code',
+      dispatchType: 'code',
       taskGoal: 'Fix login bug',
       instruction: pendingInstruction ?? undefined,
     };
@@ -1187,7 +1169,7 @@ describe('BUG-11: generateCoderPrompt receives instruction from local variable, 
 
     // God prompt path should use interruptInstruction (local variable), NOT clearedRef
     const prompt = generateCoderPrompt({
-      taskType: 'code',
+      dispatchType: 'code',
       taskGoal: 'Fix login bug',
       instruction: interruptInstruction, // correct: local variable
     });
@@ -1197,7 +1179,7 @@ describe('BUG-11: generateCoderPrompt receives instruction from local variable, 
 
     // Verify that using the cleared ref would lose the instruction
     const brokenPrompt = generateCoderPrompt({
-      taskType: 'code',
+      dispatchType: 'code',
       taskGoal: 'Fix login bug',
       instruction: clearedRef ?? undefined, // broken: cleared ref
     });
@@ -1209,7 +1191,7 @@ describe('BUG-11: generateCoderPrompt receives instruction from local variable, 
   test('test_bug_11_instruction_undefined_when_no_pending', () => {
     // When there's no pending instruction, both paths should produce the same result
     const prompt = generateCoderPrompt({
-      taskType: 'code',
+      dispatchType: 'code',
       taskGoal: 'Initial task',
       instruction: undefined,
     });
@@ -1238,17 +1220,7 @@ describe('BUG-7/8: GOD_DECIDING integrates message dispatcher + NL invariant che
     expect(appSource).toMatch(/dispatchMessages\(envelope\.messages/);
   });
 
-  test('test_bug_7_app_tsx_imports_checkNLInvariantViolations', async () => {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const appSource = fs.readFileSync(
-      path.resolve(__dirname, '../../ui/components/App.tsx'),
-      'utf-8',
-    );
-    // Verify checkNLInvariantViolations is imported and called
-    expect(appSource).toContain('checkNLInvariantViolations');
-    expect(appSource).toMatch(/checkNLInvariantViolations\(/);
-  });
+  // test_bug_7_app_tsx_imports_checkNLInvariantViolations removed (checkNLInvariantViolations deleted)
 
   test('test_bug_7_app_tsx_imports_logEnvelopeDecision', async () => {
     const fs = await import('node:fs');
@@ -1297,22 +1269,7 @@ describe('BUG-7/8: GOD_DECIDING integrates message dispatcher + NL invariant che
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  test('test_bug_8_checkNLInvariantViolations_detects_accept_without_action', async () => {
-    // Functional: NL messages mention "accepted task" but no accept_task action → violation
-    const { checkNLInvariantViolations } = await import('../../god/message-dispatcher.js');
-    const messages: import('../../types/god-envelope.js').EnvelopeMessage[] = [
-      { target: 'user', content: 'I have accepted the task result' },
-    ];
-    const actions: any[] = []; // No accept_task action
-
-    const violations = checkNLInvariantViolations(messages, actions, {
-      phaseId: 'p1',
-    });
-
-    expect(violations.length).toBeGreaterThan(0);
-    expect(violations[0].type).toBe('runtime_invariant_violation');
-    expect(violations[0].summary).toContain('accept');
-  });
+  // test_bug_8_checkNLInvariantViolations_detects_accept_without_action removed (checkNLInvariantViolations deleted)
 
   test('test_bug_8_logEnvelopeDecision_records_full_audit', async () => {
     // Functional: logEnvelopeDecision writes structured audit with all envelope fields
@@ -1320,7 +1277,7 @@ describe('BUG-7/8: GOD_DECIDING integrates message dispatcher + NL invariant che
 
     const tmpDir = mkdtempSync(join(tmpdir(), 'bug8-'));
     const logger = new Logger(tmpDir);
-    const envelope = makeEnvelope([{ type: 'send_to_coder', message: 'continue coding' }]);
+    const envelope = makeEnvelope([{ type: 'send_to_coder', dispatchType: 'code', message: 'continue coding' }]);
     const obs = [makeObs('work_output', 'coder')];
 
     logEnvelopeDecision(logger, {
@@ -1335,7 +1292,6 @@ describe('BUG-7/8: GOD_DECIDING integrates message dispatcher + NL invariant che
     expect(entries[0].decision).toBeDefined();
     const decision = entries[0].decision as any;
     expect(decision.diagnosis).toBeDefined();
-    expect(decision.authority).toBeDefined();
     expect(decision.actions).toBeDefined();
     expect(decision.messages).toBeDefined();
 
@@ -1343,118 +1299,4 @@ describe('BUG-7/8: GOD_DECIDING integrates message dispatcher + NL invariant che
   });
 });
 
-// ══════════════════════════════════════════════════════════════
-// BUG-9 (P2): CODING/REVIEWING catch blocks must route observations via INCIDENT_DETECTED
-// ══════════════════════════════════════════════════════════════
-
-describe('BUG-9: error observations captured and routed via INCIDENT_DETECTED', () => {
-  test('test_bug_9_app_tsx_uses_INCIDENT_DETECTED_for_coder_errors', async () => {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const appSource = fs.readFileSync(
-      path.resolve(__dirname, '../../ui/components/App.tsx'),
-      'utf-8',
-    );
-
-    // The CODING catch block should use INCIDENT_DETECTED, not PROCESS_ERROR
-    // Find the coder error catch block pattern
-    const codingCatchPattern = /Coder error:.*\n.*send\(\{[^}]*type:\s*'INCIDENT_DETECTED'/s;
-    expect(appSource).toMatch(codingCatchPattern);
-
-    // Verify there's no PROCESS_ERROR in coder catch blocks with observation creation
-    // (The old buggy pattern was: createTimeoutObservation(...); send({ type: 'PROCESS_ERROR' }))
-    const buggyCoderPattern = /createTimeoutObservation\(ctx\.round.*adapter: config\.coder[^)]*\);\s*\n[^}]*send\(\{[^}]*'PROCESS_ERROR'/s;
-    expect(appSource).not.toMatch(buggyCoderPattern);
-  });
-
-  test('test_bug_9_app_tsx_uses_INCIDENT_DETECTED_for_reviewer_errors', async () => {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const appSource = fs.readFileSync(
-      path.resolve(__dirname, '../../ui/components/App.tsx'),
-      'utf-8',
-    );
-
-    // The REVIEWING catch block should use INCIDENT_DETECTED, not PROCESS_ERROR
-    const reviewingCatchPattern = /Reviewer error:.*\n.*send\(\{[^}]*type:\s*'INCIDENT_DETECTED'/s;
-    expect(appSource).toMatch(reviewingCatchPattern);
-
-    // Verify there's no PROCESS_ERROR in reviewer catch blocks with observation creation
-    const buggyReviewerPattern = /createTimeoutObservation\(ctx\.round.*adapter: config\.reviewer[^)]*\);\s*\n[^}]*send\(\{[^}]*'PROCESS_ERROR'/s;
-    expect(appSource).not.toMatch(buggyReviewerPattern);
-  });
-
-  test('test_bug_9_observation_return_value_is_captured_in_variable', async () => {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const appSource = fs.readFileSync(
-      path.resolve(__dirname, '../../ui/components/App.tsx'),
-      'utf-8',
-    );
-
-    // Verify observation return value is captured (const observation = ...)
-    // For both coder and reviewer catch blocks
-    const capturePattern = /const observation = err instanceof ProcessTimeoutError/g;
-    const matches = appSource.match(capturePattern);
-    // Should appear twice: once for CODING, once for REVIEWING
-    expect(matches).not.toBeNull();
-    expect(matches!.length).toBe(2);
-  });
-
-  test('test_bug_9_createTimeoutObservation_returns_valid_observation_for_pipeline', async () => {
-    // Functional: verify the observation is a proper object suitable for INCIDENT_DETECTED
-    const { createTimeoutObservation } = await import('../../god/observation-integration.js');
-    const { ObservationSchema } = await import('../../types/observation.js');
-
-    const obs = createTimeoutObservation({ adapter: 'claude-code' });
-
-    // Must be a valid Observation
-    expect(() => ObservationSchema.parse(obs)).not.toThrow();
-    expect(obs.type).toBe('tool_failure');
-    expect(obs.source).toBe('runtime');
-    expect(obs.severity).toBe('error');
-  });
-
-  test('test_bug_9_createProcessErrorObservation_returns_valid_observation_for_pipeline', async () => {
-    // Functional: verify the observation is a proper object suitable for INCIDENT_DETECTED
-    const { createProcessErrorObservation } = await import('../../god/observation-integration.js');
-    const { ObservationSchema } = await import('../../types/observation.js');
-
-    const obs = createProcessErrorObservation('Process exited with code 1', {
-      adapter: 'codex',
-    });
-
-    // Must be a valid Observation
-    expect(() => ObservationSchema.parse(obs)).not.toThrow();
-    expect(obs.type).toBe('tool_failure');
-    expect(obs.source).toBe('runtime');
-    expect(obs.severity).toBe('error');
-    expect(obs.summary).toBe('Process exited with code 1');
-  });
-
-  test('test_bug_9_workflow_machine_accepts_INCIDENT_DETECTED_in_CODING_state', () => {
-    // Verify the workflow machine can handle INCIDENT_DETECTED from CODING state
-    const actor = createActor(workflowMachine, { input: {} });
-    actor.start();
-
-    // Move to CODING state
-    const coderObs = makeObs('work_output', 'coder');
-    actor.send({ type: 'START_TASK', prompt: 'test' });
-
-    const snapshot = actor.getSnapshot();
-    // Should be in CODING
-    if (snapshot.value === 'CODING') {
-      // Send INCIDENT_DETECTED (the fixed path)
-      actor.send({
-        type: 'INCIDENT_DETECTED',
-        observation: makeObs('tool_failure', 'runtime'),
-      });
-
-      const afterIncident = actor.getSnapshot();
-      // Should transition to OBSERVING, not stay stuck
-      expect(afterIncident.value).toBe('OBSERVING');
-    }
-
-    actor.stop();
-  });
-});
+// BUG-9 INCIDENT_DETECTED tests removed (INCIDENT_DETECTED event removed in simplification)

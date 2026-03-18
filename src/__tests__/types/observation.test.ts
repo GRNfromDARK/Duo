@@ -14,21 +14,14 @@ describe('ObservationType', () => {
   const allTypes = [
     'work_output',
     'review_output',
-    'quota_exhausted',
-    'auth_failed',
-    'adapter_unavailable',
-    'empty_output',
-    'meta_output',
-    'tool_failure',
-    'human_interrupt',
     'human_message',
-    'clarification_answer',
+    'human_interrupt',
+    'runtime_error',
     'phase_progress_signal',
-    'runtime_invariant_violation',
   ] as const;
 
-  it('should define exactly 13 observation types', () => {
-    expect(OBSERVATION_TYPES).toHaveLength(13);
+  it('should define exactly 6 observation types', () => {
+    expect(OBSERVATION_TYPES).toHaveLength(6);
   });
 
   it.each(allTypes)('should accept valid type: %s', (type) => {
@@ -37,6 +30,17 @@ describe('ObservationType', () => {
 
   it('should reject invalid type', () => {
     expect(() => ObservationTypeSchema.parse('invalid_type')).toThrow();
+  });
+
+  it('should reject removed observation types', () => {
+    const removedTypes = [
+      'quota_exhausted', 'auth_failed', 'adapter_unavailable',
+      'empty_output', 'meta_output', 'tool_failure',
+      'clarification_answer', 'runtime_invariant_violation',
+    ];
+    for (const type of removedTypes) {
+      expect(() => ObservationTypeSchema.parse(type)).toThrow();
+    }
   });
 });
 
@@ -49,13 +53,10 @@ describe('ObservationSchema', () => {
     timestamp: '2026-03-13T10:00:00.000Z',
   };
 
-  // AC-1: Zod schema can validate all 13 observation types
-  it('AC-1: should validate all 13 observation types', () => {
+  it('AC-1: should validate all 6 observation types', () => {
     const types = [
-      'work_output', 'review_output', 'quota_exhausted', 'auth_failed',
-      'adapter_unavailable', 'empty_output', 'meta_output', 'tool_failure',
-      'human_interrupt', 'human_message', 'clarification_answer',
-      'phase_progress_signal', 'runtime_invariant_violation',
+      'work_output', 'review_output', 'human_message',
+      'human_interrupt', 'runtime_error', 'phase_progress_signal',
     ] as const;
 
     for (const type of types) {
@@ -84,19 +85,11 @@ describe('ObservationSchema', () => {
     const obs: Observation = {
       ...validObservation,
       rawRef: '/path/to/output.log',
-      phaseId: 'phase-1',
       adapter: 'claude-code',
     };
     const parsed = ObservationSchema.parse(obs);
     expect(parsed.rawRef).toBe('/path/to/output.log');
-    expect(parsed.phaseId).toBe('phase-1');
     expect(parsed.adapter).toBe('claude-code');
-  });
-
-  it('should accept null phaseId', () => {
-    const obs = { ...validObservation, phaseId: null };
-    const parsed = ObservationSchema.parse(obs);
-    expect(parsed.phaseId).toBeNull();
   });
 
   it('should reject missing required fields', () => {
@@ -111,8 +104,6 @@ describe('ObservationSchema', () => {
   it('should reject invalid severity', () => {
     expect(() => ObservationSchema.parse({ ...validObservation, severity: 'critical' })).toThrow();
   });
-
-  // Round validation tests removed (round removal).
 });
 
 describe('isWorkObservation', () => {
@@ -124,31 +115,6 @@ describe('isWorkObservation', () => {
     timestamp: '2026-03-13T10:00:00.000Z',
   });
 
-  // AC-3: empty_output is NOT classified as work observation
-  it('AC-3: empty_output should NOT be classified as work observation', () => {
-    expect(isWorkObservation(makeObs('empty_output'))).toBe(false);
-  });
-
-  // AC-4: isWorkObservation returns false for non-work types
-  it('AC-4: should return false for non-work types', () => {
-    const nonWorkTypes: Observation['type'][] = [
-      'quota_exhausted',
-      'auth_failed',
-      'adapter_unavailable',
-      'empty_output',
-      'meta_output',
-      'tool_failure',
-      'human_interrupt',
-      'human_message',
-      'clarification_answer',
-      'phase_progress_signal',
-      'runtime_invariant_violation',
-    ];
-    for (const type of nonWorkTypes) {
-      expect(isWorkObservation(makeObs(type))).toBe(false);
-    }
-  });
-
   it('should return true for work_output', () => {
     expect(isWorkObservation(makeObs('work_output'))).toBe(true);
   });
@@ -156,26 +122,36 @@ describe('isWorkObservation', () => {
   it('should return true for review_output', () => {
     expect(isWorkObservation(makeObs('review_output'))).toBe(true);
   });
+
+  it('should return false for non-work types', () => {
+    const nonWorkTypes: Observation['type'][] = [
+      'human_message',
+      'human_interrupt',
+      'runtime_error',
+      'phase_progress_signal',
+    ];
+    for (const type of nonWorkTypes) {
+      expect(isWorkObservation(makeObs(type))).toBe(false);
+    }
+  });
 });
 
-// AC-2: quota_exhausted severity defaults to error
-describe('AC-2: quota_exhausted default severity', () => {
-  it('should default severity to error when omitted', () => {
+describe('severity defaults', () => {
+  it('should default severity to info when omitted', () => {
     const obs = ObservationSchema.parse({
       source: 'runtime',
-      type: 'quota_exhausted',
-      summary: 'You are out of extra usage',
+      type: 'runtime_error',
+      summary: 'Something went wrong',
       timestamp: '2026-03-13T10:00:00.000Z',
     });
-    expect(obs.severity).toBe('error');
-    expect(obs.type).toBe('quota_exhausted');
+    expect(obs.severity).toBe('info');
   });
 
   it('should allow explicit severity to override default', () => {
     const obs = ObservationSchema.parse({
       source: 'runtime',
-      type: 'quota_exhausted',
-      summary: 'You are out of extra usage',
+      type: 'runtime_error',
+      summary: 'Something went wrong',
       severity: 'fatal',
       timestamp: '2026-03-13T10:00:00.000Z',
     });

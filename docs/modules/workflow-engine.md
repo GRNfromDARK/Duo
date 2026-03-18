@@ -453,37 +453,29 @@ EXECUTING ─────────────────────> CLARI
 ```ts
 {
   source: 'coder' | 'reviewer' | 'god' | 'human' | 'runtime';
-  type: ObservationType;     // 见下表 13 种类型
+  type: ObservationType;     // 见下表 6 种类型
   summary: string;           // 人类可读的摘要
   rawRef?: string;           // 原始引用数据
-  severity: 'info' | 'warning' | 'error' | 'fatal';  // 默认 'error'
+  severity: 'info' | 'warning' | 'error' | 'fatal';  // 默认 'info'
   timestamp: string;         // ISO 时间戳
-  phaseId?: string | null;   // 所属 phase
   adapter?: string;          // 产生此 observation 的 adapter
 }
 ```
 
-#### 13 种 Observation 类型
+#### 6 种 Observation 类型
 
 | 类型 | 分类 | 说明 |
 |------|------|------|
 | `work_output` | 工作输出 | coder 产出的代码/工作结果 |
 | `review_output` | 工作输出 | reviewer 产出的审查结果 |
-| `quota_exhausted` | 运行时异常 | API 配额用尽 |
-| `auth_failed` | 运行时异常 | 认证失败 |
-| `adapter_unavailable` | 运行时异常 | adapter 不可用 |
-| `empty_output` | 运行时异常 | LLM 返回空输出 |
-| `meta_output` | 元数据 | LLM 返回的元信息 |
-| `tool_failure` | 运行时异常 | 工具调用失败 |
-| `human_interrupt` | 人类交互 | Ctrl+C 中断 |
 | `human_message` | 人类交互 | 用户在 LLM 运行时键入的文本中断 |
-| `clarification_answer` | 人类交互 | 用户对 God 提问的回答 |
+| `human_interrupt` | 人类交互 | Ctrl+C 中断 |
+| `runtime_error` | 运行时异常 | 运行时错误（统一替代早期多种异常子类型） |
 | `phase_progress_signal` | 进度信号 | phase 进度变更 |
-| `runtime_invariant_violation` | 运行时异常 | 运行时不变量违反 |
 
 **类型守卫**：`isWorkObservation(obs)` — 仅 `work_output` 和 `review_output` 返回 true。
 
-### 2.2 GodAction 类型（11 种）
+### 2.2 GodAction 类型（5 种）
 
 **定义文件**：`src/types/god-actions.ts`
 
@@ -491,19 +483,13 @@ EXECUTING ─────────────────────> CLARI
 
 | Action | 参数 | 路由效果 | 说明 |
 |--------|------|----------|------|
-| `send_to_coder` | `message: string` | → CODING | 向 coder 发送指令 |
+| `send_to_coder` | `dispatchType: DispatchType`，`message: string` | → CODING | 向 coder 发送指令 |
 | `send_to_reviewer` | `message: string` | → REVIEWING | 向 reviewer 发送指令 |
-| `accept_task` | `rationale: 'reviewer_aligned' \| 'god_override' \| 'forced_stop'`，`summary: string` | → DONE | 接受任务结果，必须携带理由 |
+| `accept_task` | `summary: string` | → DONE | 接受任务结果 |
 | `request_user_input` | `question: string` | → CLARIFYING | 向用户提问 |
-| `retry_role` | `role: 'coder' \| 'reviewer'`，`hint?: string` | → CODING 或 REVIEWING | 让指定角色重试 |
-| `resume_after_interrupt` | `resumeStrategy: 'continue' \| 'redirect' \| 'stop'` | → CODING/REVIEWING/GOD_DECIDING/DONE | 中断/澄清后恢复工作 |
-| `stop_role` | `role: 'coder' \| 'reviewer'`，`reason: string` | → GOD_DECIDING（非路由） | 停止指定角色 |
-| `switch_adapter` | `role: 'coder' \| 'reviewer' \| 'god'`，`adapter: string`，`reason: string` | → GOD_DECIDING（非路由） | 切换 adapter |
-| `set_phase` | `phaseId: string`，`summary?: string` | → GOD_DECIDING（非路由） | 设置当前 phase |
 | `wait` | `reason: string`，`estimatedSeconds?: number` | → GOD_DECIDING（非路由） | 等待 |
-| `emit_summary` | `content: string` | → GOD_DECIDING（非路由） | 输出摘要信息 |
 
-> **路由 vs 非路由**：状态机的 `resolvePostExecutionTarget()` 仅识别前 4 种 action（`accept_task`、`request_user_input`、`send_to_coder`、`send_to_reviewer`）作为路由 action。其余 action 执行后回到 GOD_DECIDING 重新评估。`detectRoutingConflicts()` 也仅检测这 4 种路由 action 的冲突。
+> **路由 vs 非路由**：状态机的 `resolvePostExecutionTarget()` 仅识别 4 种路由 action（`accept_task`、`request_user_input`、`send_to_coder`、`send_to_reviewer`）。`wait` 执行后回到 GOD_DECIDING 重新评估。`detectRoutingConflicts()` 也仅检测这 4 种路由 action 的冲突。
 
 ### 2.3 GodDecisionEnvelope 结构
 
@@ -514,19 +500,14 @@ EXECUTING ─────────────────────> CLARI
   diagnosis: {
     summary: string;                // 当前态势摘要
     currentGoal: string;            // 当前目标
-    currentPhaseId: string;         // 当前 phase ID
     notableObservations: string[];  // 值得注意的 observation 列表
-  };
-  authority: {
-    userConfirmation: 'human' | 'god_override' | 'not_required';
-    reviewerOverride: boolean;
-    acceptAuthority: 'reviewer_aligned' | 'god_override' | 'forced_stop';
   };
   actions: GodAction[];             // 有序 action 列表
   messages: EnvelopeMessage[];      // 目标消息列表
-  autonomousResolutions?: AutonomousResolution[];  // God 自主代理决策记录
 }
 ```
+
+> **简化说明**：相比早期版本，envelope 已移除 `authority`、`autonomousResolutions` 和 `diagnosis.currentPhaseId` 字段。不再有 schema-level 的 authority 语义约束（superRefine）。
 
 #### EnvelopeMessage
 
@@ -536,28 +517,6 @@ EXECUTING ─────────────────────> CLARI
   content: string;
 }
 ```
-
-#### AutonomousResolution
-
-```ts
-{
-  question: string;    // God 代理决策时面对的问题
-  choice: string;      // 初始选择
-  reflection: string;  // 反思过程
-  finalChoice: string; // 最终选择
-}
-```
-
-#### Authority 语义约束（schema-level validation via superRefine）
-
-| 条件 | 要求 | 违反时的错误路径 |
-|------|------|-----------------|
-| `reviewerOverride = true` | messages 中必须包含 `target: 'system_log'` 条目 | `authority.reviewerOverride` |
-| `acceptAuthority = 'god_override'` | messages 中必须包含 `target: 'system_log'` 条目 | `authority.acceptAuthority` |
-| `userConfirmation = 'god_override'` | messages 中必须包含 `target: 'system_log'` 条目 | `authority.userConfirmation` |
-| `acceptAuthority = 'forced_stop'` | messages 中必须包含 `target: 'user'` 条目 | `authority.acceptAuthority` |
-
-这些约束确保 God 在行使 override 权力时必须留下可审计的日志记录，在强制停止时必须向用户提供说明。
 
 ---
 
@@ -619,6 +578,4 @@ interface StartResult {
 |------|------|------|
 | Bug 5 | CODE_COMPLETE / REVIEW_COMPLETE actions | 清除 `currentObservations` 为空数组，确保 OBSERVING 分类新鲜输出而非处理过期数据 |
 | BUG-12 | `detectRoutingConflicts()` | 检测 envelope 中多个冲突路由 action，防止歧义状态转换 |
-| BUG-18 | Envelope schema superRefine | `userConfirmation = 'god_override'` 时强制要求 `system_log` 消息 |
 | BUG-22 | EXECUTING default transition | 当 execution 产生空 results 时保留现有 `currentObservations`，避免 observation 丢失导致的死循环 |
-| BUG-24 | `autonomousResolutions` 字段 | God 代理决策的结构化记录（question → choice → reflection → finalChoice） |

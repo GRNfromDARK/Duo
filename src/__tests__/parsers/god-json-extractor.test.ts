@@ -70,9 +70,8 @@ describe('extractGodJson', () => {
 describe('extractGodJson — code fences and escapes inside JSON strings', () => {
   it('extracts JSON when message field contains Markdown fenced code block', () => {
     const envelope = {
-      diagnosis: { summary: 'Fix needed', currentGoal: 'test', currentPhaseId: 'p1', notableObservations: [] },
-      authority: { userConfirmation: 'not_required', reviewerOverride: false, acceptAuthority: 'reviewer_aligned' },
-      actions: [{ type: 'send_to_coder', message: '请修改：\n```ts\nconsole.log(1)\n```\n完成后运行测试' }],
+      diagnosis: { summary: 'Fix needed', currentGoal: 'test', notableObservations: [] },
+      actions: [{ type: 'send_to_coder', dispatchType: 'code', message: '请修改：\n```ts\nconsole.log(1)\n```\n完成后运行测试' }],
       messages: [],
     };
     const output = `Here is my decision:\n\`\`\`json\n${JSON.stringify(envelope, null, 2)}\n\`\`\`\nEnd.`;
@@ -87,9 +86,8 @@ describe('extractGodJson — code fences and escapes inside JSON strings', () =>
 
   it('extracts JSON when string fields contain ANSI escape sequences', () => {
     const envelope = {
-      diagnosis: { summary: 'Escape test', currentGoal: 'test', currentPhaseId: 'p1', notableObservations: ['Found \\x1b[?1049h in code'] },
-      authority: { userConfirmation: 'not_required', reviewerOverride: false, acceptAuthority: 'reviewer_aligned' },
-      actions: [{ type: 'send_to_coder', message: 'Fix \\x1b[?1049h and \\x1b[?1007h handling' }],
+      diagnosis: { summary: 'Escape test', currentGoal: 'test', notableObservations: ['Found \\x1b[?1049h in code'] },
+      actions: [{ type: 'send_to_coder', dispatchType: 'code', message: 'Fix \\x1b[?1049h and \\x1b[?1007h handling' }],
       messages: [],
     };
     const output = `\`\`\`json\n${JSON.stringify(envelope, null, 2)}\n\`\`\``;
@@ -103,9 +101,8 @@ describe('extractGodJson — code fences and escapes inside JSON strings', () =>
 
   it('extracts JSON when surrounded by prose and JSON has nested triple backticks', () => {
     const envelope = {
-      diagnosis: { summary: 'Multi-fence test', currentGoal: 'g', currentPhaseId: 'p', notableObservations: [] },
-      authority: { userConfirmation: 'not_required', reviewerOverride: false, acceptAuthority: 'reviewer_aligned' },
-      actions: [{ type: 'send_to_coder', message: 'Step 1:\n```bash\necho hello\n```\nStep 2:\n```ts\nconst x = 1;\n```\nDone.' }],
+      diagnosis: { summary: 'Multi-fence test', currentGoal: 'g', notableObservations: [] },
+      actions: [{ type: 'send_to_coder', dispatchType: 'code', message: 'Step 1:\n```bash\necho hello\n```\nStep 2:\n```ts\nconst x = 1;\n```\nDone.' }],
       messages: [{ target: 'system_log', content: 'Routing to coder' }],
     };
     const output = `I will now output my decision.\n\n\`\`\`json\n${JSON.stringify(envelope, null, 2)}\n\`\`\`\n\nThat is my decision.`;
@@ -128,14 +125,13 @@ describe('Zod schemas', () => {
     expect(result.success).toBe(true);
   });
 
-  it('GodTaskAnalysisSchema validates compound with phases', () => {
+  it('GodTaskAnalysisSchema rejects compound (removed task type)', () => {
     const compound = {
       ...validTaskAnalysis,
       taskType: 'compound',
-      phases: [{ id: 'p1', name: 'Phase 1', type: 'code', description: 'Implement' }],
     };
     const result = GodTaskAnalysisSchema.safeParse(compound);
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
   });
 
   it('GodTaskAnalysisSchema rejects invalid taskType', () => {

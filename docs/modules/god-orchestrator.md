@@ -51,7 +51,6 @@ God LLM 是 Duo 系统中的编排层。在 Coder/Reviewer 双方协作模式之
 │                         Act                                     │
 │  envelope.actions  → HandExecutor → Observation[]              │
 │  envelope.messages → MessageDispatcher → pending / UI / log    │
-│  NL invariant 检查 → runtime_invariant_violation（如有不一致） │
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -446,18 +445,6 @@ interface DispatchResult {
 
 `dispatchMessages()` 是纯函数，返回新值由调用方应用。
 
-**NL/Action 不变量检查**：
-
-```typescript
-function checkNLInvariantViolations(
-  messages: EnvelopeMessage[],
-  actions: GodAction[],
-  context: { phaseId: string }
-): Observation[]
-```
-
-检测 NL 消息中的状态变更关键词是否有对应的结构化 action（phase 切换、accept、adapter switch）。使用 regex + keyword pattern，< 1ms 延迟，支持中英文。
-
 ---
 
 ## 6. 观察系统
@@ -630,7 +617,7 @@ Observation[] → GodDecisionService.makeDecision() → GodDecisionEnvelope
                             |                                                    |
                 envelope.actions → HandExecutor → Observation[]    envelope.messages → MessageDispatcher
                                       |                                         |
-                            (直接执行，无 rule engine)                (NL invariant 检查)
+                            (直接执行，无 rule engine)                (纯函数，无状态变更)
                                       |                                         |
                           phase_progress_signal /                  pendingCoder/ReviewerMessage
                           runtime_error                            displayToUser / auditLog
