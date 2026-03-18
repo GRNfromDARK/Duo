@@ -59,7 +59,7 @@ process.argv
   │     │     │         └── 验证通过 → config = result.config
   │     │     └── NO  → config = undefined（交互式模式）
   │     │
-  │     └── render(App, { initialConfig: config, detected })
+  │     └── runInkApp({ initialConfig: config, detected })
   │           └── waitUntilExit()
   │
   ├── resume
@@ -82,8 +82,24 @@ process.argv
         ├── [参数完整?]
         │     ├── YES → createSessionConfig → 验证 → config
         │     └── NO  → config = undefined（交互式模式）
-        └── render(App, { initialConfig: config, detected })
+        └── runInkApp({ initialConfig: config, detected })
 ```
+
+### `runInkApp` — TUI 渲染辅助函数
+
+`cli.ts` 中的内部辅助函数，封装了 Ink 渲染的完整生命周期：
+
+1. 调用 `createTerminalInput(process.stdin)` 创建自定义终端输入（支持鼠标事件）
+2. 调用 `enterAlternateScreen(process.stdout)` 进入备用屏幕缓冲区（TUI 退出后恢复原终端内容）
+3. 调用 `render(React.createElement(App, props), { exitOnCtrlC: false, stdin })` 渲染 App 组件
+4. `waitUntilExit()` 等待 App 退出
+5. `finally` 块中执行 `cleanupInput()` 和 `cleanupScreen()` 清理资源
+
+```ts
+async function runInkApp(props: Record<string, unknown>): Promise<void>
+```
+
+`exitOnCtrlC: false` 表示 Ctrl+C 不直接退出进程，由 `App` 组件自行处理退出逻辑。
 
 ### `duo start` 详解
 
@@ -150,7 +166,7 @@ duo resume <id>
   │     ├── reviewerModel ← session metadata
   │     └── godModel      ← session metadata
   │
-  └── render(App, { initialConfig, detected, resumeSession })
+  └── runInkApp({ initialConfig, detected, resumeSession })
         └── waitUntilExit()
 ```
 
@@ -177,23 +193,6 @@ Resume 流程的关键特点：
 - 使用示例
 
 可通过 `duo help`、`duo --help` 或 `duo -h` 触发。
-
-### 渲染入口
-
-使用 [Ink](https://github.com/vadimdemedes/ink) 框架的 `render()` 函数将 React 组件 `App` 渲染为终端 TUI：
-
-```ts
-render(
-  React.createElement(App, {
-    initialConfig,     // SessionConfig | undefined
-    detected,          // 检测到的已安装 CLI 数组
-    resumeSession?,    // 仅 resume 模式传入（LoadedSession）
-  }),
-  { exitOnCtrlC: false },
-);
-```
-
-`exitOnCtrlC: false` 表示 Ctrl+C 不直接退出进程，由 `App` 组件自行处理退出逻辑。
 
 ---
 
@@ -253,7 +252,7 @@ render(
 4. 有会话时格式化输出：
 
 ```
-<id前8位>  <项目名>  "<task>"  Round <n>  [<status>]  <更新时间>
+<id前8位>  <项目名>  "<task>"  [<status>]  <更新时间>
 ```
 
 #### `handleResume(sessionId, sessionsDir, log): HandleResumeResult`
@@ -266,7 +265,7 @@ render(
    - 捕获其他错误 → 提示会话未找到
 3. 调用 `mgr.validateSessionRestore(sessionId)` 验证可恢复性
 4. 验证失败 → 输出错误，返回 `{ success: false }`
-5. 验证通过 → 输出恢复信息（task、coder/reviewer、round、status、directory），返回 `{ success: true, session: loaded }`
+5. 验证通过 → 输出恢复信息（task、coder/reviewer、status、directory），返回 `{ success: true, session: loaded }`
 
 #### `handleLog(sessionId, options, sessionsDir, log): void`
 
@@ -274,7 +273,7 @@ render(
 
 展示 God audit log，包含：
 
-1. **日志条目**：逐条输出序号、时间、Round、decision type、输入/输出摘要、延迟、引用文件路径
+1. **日志条目**：逐条输出序号、时间、decision type、输入/输出摘要、延迟、引用文件路径
 2. **按 type 过滤**：通过 `options.type` 筛选特定 decision type
 3. **统计信息**：
    - 总条目数
@@ -293,6 +292,8 @@ cli.ts
   ├── adapters/detect.ts (detectInstalledCLIs)
   ├── god/god-adapter-config.ts (sanitizeGodAdapterForResume)
   ├── ui/components/App.ts (App 组件)
+  ├── ui/alternate-screen.ts (enterAlternateScreen)
+  ├── ui/mouse-input.ts (createTerminalInput)
   └── types/session.ts (SessionConfig)
 
 cli-commands.ts

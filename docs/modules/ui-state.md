@@ -12,10 +12,10 @@ Duo 的 UI 状态层遵循 **纯函数提取** 原则：
 
 这一设计与 `InputArea.processInput`、`DirectoryPicker.processPickerInput` 等组件级纯函数保持一致，形成统一的 "state -> pure fn -> new state" 模式。
 
-整个 UI 状态层共 **23 个模块**，分为三组：
-- **Core UI 状态**（10 个）— 通用 UI 逻辑：滚动、显示模式、快捷键、Overlay、Markdown 解析、流式聚合、消息行计算
-- **God LLM UI 状态**（9 个）— God 决策层的 UI 状态：escape window、决策 banner、fallback、消息样式、overlay 控制面板、阶段切换、重分类、恢复摘要、任务分析
-- **Runtime/Lifecycle 状态**（4 个）— 运行时生命周期管理：任务完成流、全局 Ctrl+C 处理、God routing 反馈、安全退出
+整个 UI 状态层共 **19 个模块**，分为三组：
+- **Core UI 状态**（10 个）— 通用 UI 逻辑：Alternate Screen、滚动、显示模式、快捷键、Overlay、Markdown 解析、鼠标输入、流式聚合、消息行计算
+- **God LLM UI 状态**（6 个）— God 决策层的 UI 状态：retry 包装、消息样式、阶段切换、重分类、任务分析
+- **Runtime/Lifecycle 状态**（3 个）— 运行时生命周期管理：任务完成流、全局 Ctrl+C 处理、安全退出
 
 ---
 
@@ -25,42 +25,62 @@ Duo 的 UI 状态层遵循 **纯函数提取** 原则：
 
 | # | 文件 | 职责 | FR 来源 |
 |---|------|------|---------|
-| 1 | `scroll-state.ts` | Smart Scroll Lock | FR-016 |
-| 2 | `round-summary.ts` | 轮次摘要分隔符 | FR-020 |
+| 1 | `alternate-screen.ts` | Alternate Screen Buffer 管理 | — |
+| 2 | `scroll-state.ts` | Smart Scroll Lock | FR-016 |
 | 3 | `display-mode.ts` | Minimal/Verbose 切换 | FR-021 |
 | 4 | `directory-picker-state.ts` | 目录选择器逻辑 | FR-019 |
 | 5 | `keybindings.ts` | 快捷键映射 | FR-022 |
 | 6 | `overlay-state.ts` | Overlay 生命周期 | FR-022 |
 | 7 | `markdown-parser.ts` | Markdown 解析 | FR-023 |
-| 8 | `git-diff-stats.ts` | Git diff 统计 | FR-026 |
-| 9 | `session-runner-state.ts` | 流式聚合与路由决策 | 多 FR |
-| 10 | `message-lines.ts` | 消息行计算与渲染 | — |
+| 8 | `mouse-input.ts` | 鼠标输入过滤与 wheel 转换 | — |
+| 9 | `git-diff-stats.ts` | Git diff 统计 | FR-026 |
+| 10 | `session-runner-state.ts` | 流式聚合与路由决策 | 多 FR |
 
-### God LLM UI 状态（9 个）
+### God LLM UI 状态（6 个）
 
 | # | 文件 | 职责 | FR 来源 |
 |---|------|------|---------|
-| 11 | `god-decision-banner.ts` | God 自动决策 banner 状态 | FR-008 |
-| 12 | `god-fallback.ts` | God 调用 retry + degradation 包装 | FR-G01, FR-G04 |
-| 13 | `god-message-style.ts` | God 消息视觉样式 | FR-014 |
-| 14 | `phase-transition-banner.ts` | 阶段切换 banner 状态 | FR-010 |
-| 15 | `reclassify-overlay.ts` | 运行时任务重分类 overlay 状态 | FR-002a |
-| 16 | `task-analysis-card.ts` | 任务分析卡片状态 | FR-001a |
+| 11 | `god-fallback.ts` | God 调用 retry + backoff 包装 | FR-G01 |
+| 12 | `god-message-style.ts` | God 消息视觉样式 | FR-014 |
+| 13 | `phase-transition-banner.ts` | 阶段切换 banner 状态 | FR-010 |
+| 14 | `reclassify-overlay.ts` | 运行时任务重分类 overlay 状态 | FR-002a |
+| 15 | `task-analysis-card.ts` | 任务分析卡片状态 | FR-001a |
+| 16 | `message-lines.ts` | 消息行计算与渲染 | — |
 
-### Runtime/Lifecycle 状态（4 个）
+### Runtime/Lifecycle 状态（3 个）
 
 | # | 文件 | 职责 | 说明 |
 |---|------|------|------|
-| 20 | `completion-flow.ts` | 任务完成后续流 | 构建追加任务的 prompt |
-| 21 | `global-ctrl-c.ts` | 全局 Ctrl+C 双击检测 | 区分 interrupt 与 safe_exit |
-| 22 | `god-routing-feedback.ts` | God post-code routing 反馈消息 | 构建 God routing 系统消息 |
-| 23 | `safe-shutdown.ts` | 安全退出流程 | 协调 adapter 终止与进程退出 |
+| 17 | `completion-flow.ts` | 任务完成后续流 | 构建追加任务的 prompt |
+| 18 | `global-ctrl-c.ts` | 全局 Ctrl+C 双击检测 | 区分 interrupt 与 safe_exit |
+| 19 | `safe-shutdown.ts` | 安全退出流程 | 协调 adapter 终止与进程退出 |
 
 ---
 
 ## Core UI 状态
 
-### 1. scroll-state.ts — Smart Scroll Lock
+### 1. alternate-screen.ts — Alternate Screen Buffer 管理
+
+进入终端 alternate screen buffer，为 TUI 提供干净的全屏画布。同时启用 SGR 鼠标报告模式（`\x1b[?1000h` + `\x1b[?1006h`），并在退出时清理所有终端状态。
+
+#### 核心函数
+
+| 函数 | 输入 | 输出 | 关键逻辑 |
+|------|------|------|----------|
+| `enterAlternateScreen(stdout?)` | 可选的 `stdout` 写入目标（默认 `process.stdout`） | `() => void`（cleanup 函数） | 1. 写入 `\x1b[?1049h` 进入 alternate screen；2. 写入 `\x1b[?1000h` + `\x1b[?1006h` 启用 SGR 鼠标跟踪；3. 注册 SIGINT/SIGTERM/SIGHUP signal handler 和 `exit` 事件处理；4. 返回 cleanup 函数（幂等，通过 `cleaned` flag 防止重复执行） |
+
+#### Signal 处理模式
+
+使用标准 Unix re-raise 模式确保正确的退出状态码：
+1. 执行 cleanup（离开 alternate screen + 禁用鼠标跟踪）
+2. 移除自定义 handler 以恢复默认行为
+3. 使用 `process.kill(process.pid, signal)` 重新发送 signal
+
+cleanup 时依次禁用：legacy mouse wheel mode (`\x1b[?1007l`)、基础鼠标跟踪 (`\x1b[?1000l`)、SGR 扩展 (`\x1b[?1006l`)、alternate screen (`\x1b[?1049l`)。额外禁用 `\x1b[?1007l` 作为 last-resort recovery，防止先前 session 或 crashed build 残留的模式。
+
+---
+
+### 2. scroll-state.ts — Smart Scroll Lock
 
 **来源**: FR-016
 
@@ -95,34 +115,6 @@ interface ScrollView {
 **初始状态**: `INITIAL_SCROLL_STATE` — `autoFollow: true, scrollOffset: 0, lockedAtCount: -1`
 
 **与 MainLayout 的集成**: MainLayout 通过 `useState` 持有 `ScrollState`，在 `handleAction` 中调用 `scrollUp`/`scrollDown`/`jumpToEnd` 更新状态；`computeScrollView` 在每次渲染时计算可见窗口，驱动消息切片和 ScrollIndicator 的显示。
-
----
-
-### 2. round-summary.ts — 轮次摘要分隔线
-
-**来源**: FR-020 (AC-068, AC-069)
-
-在轮次之间插入格式化的分隔线，形如：
-
-```
-═══ Round 1→2 · Summary: <摘要文本> ═══
-```
-
-#### 核心函数
-
-| 函数 | 输入 | 输出 | 关键逻辑 |
-|------|------|------|----------|
-| `formatRoundSummary(fromRound, toRound, summary)` | 起始轮次、目标轮次、摘要文本 | `string` | 总行长度上限 `100` 字符；超长摘要自动截断并添加 `...` |
-| `createRoundSummaryMessage(fromRound, toRound, summary)` | 同上 | `Message` | 生成带 `metadata.isRoundSummary: true` 的系统消息，id 格式 `round-summary-{from}-{to}-{uuid8}` |
-
-#### 常量
-
-- `MAX_LINE_LENGTH = 100`
-- `PREFIX_TEMPLATE = '═══ Round '`
-- `SUFFIX = ' ═══'`
-- `SUMMARY_SEPARATOR = ' · Summary: '`
-
-**截断逻辑细节**: `overhead = roundPart.length + SUMMARY_SEPARATOR.length + SUFFIX.length + 3`（3 为 `...` 的长度），可用字符数 `available = MAX_LINE_LENGTH - overhead`，摘要文本被 `slice(0, available)` 截断。
 
 ---
 
@@ -213,7 +205,7 @@ type PickerAction =
 #### 核心类型
 
 ```ts
-type OverlayType = 'help' | 'context' | 'timeline' | 'search' | 'god';
+type OverlayType = 'help' | 'context' | 'timeline' | 'search';
 
 type KeyAction =
   | { type: 'scroll_up'; amount: number }
@@ -273,6 +265,7 @@ interface KeyContext {
 | `Ctrl+R` | 重分类任务类型 |
 | `Ctrl+L` | 清屏（保留历史） |
 | `j/k` 或 `↑/↓` 或 wheel | 滚动消息 |
+| `Shift+drag` | 选中/复制文本 |
 | `G` | 跳至最新消息 |
 | `Enter` | 展开/折叠代码块 |
 | `Tab` | 路径自动补全 |
@@ -286,12 +279,12 @@ interface KeyContext {
 
 **来源**: FR-022 (AC-072, AC-073, AC-074)
 
-管理五种 Overlay 的打开/关闭状态和搜索查询。
+管理四种 Overlay 的打开/关闭状态和搜索查询。
 
 #### 核心类型
 
 ```ts
-type OverlayType = 'help' | 'context' | 'timeline' | 'search' | 'god';
+type OverlayType = 'help' | 'context' | 'timeline' | 'search';
 
 interface OverlayState {
   activeOverlay: OverlayType | null;
@@ -353,7 +346,47 @@ interface OverlayState {
 
 ---
 
-### 8. git-diff-stats.ts — Git 变更统计
+### 8. mouse-input.ts — 鼠标输入过滤与 Wheel 转换
+
+拦截终端 SGR 鼠标跟踪序列，将滚轮事件转换为箭头键序列（供 Ink 的 `useInput` 消费），丢弃非滚轮鼠标事件（点击、移动等）。通过 Node.js `Transform` stream 实现 stdin 代理。
+
+#### 核心类型
+
+```ts
+interface MouseInputFilterResult {
+  output: string;    // 过滤后的输出（滚轮转为箭头键，其余保留）
+  pending: string;   // 未完成的 SGR 序列（等待更多数据）
+}
+
+interface TerminalInputHandle {
+  stdin: NodeJS.ReadStream;  // 代理后的 stdin（可直接传给 Ink）
+  cleanup: () => void;       // 清理函数（解除 pipe + 结束 stream）
+}
+```
+
+#### 核心函数
+
+| 函数 | 输入 | 输出 | 关键逻辑 |
+|------|------|------|----------|
+| `filterMouseTrackingInput(chunk, pending?, wheelLines?)` | 输入文本块 + 待处理缓冲 + 每次滚轮行数 | `MouseInputFilterResult` | 扫描 `\x1b[<` 前缀的 SGR 鼠标序列；滚轮上（buttonCode bit6=1, bit0-1=00）-> 生成 `wheelLines` 个 `\x1b[A`（上箭头）；滚轮下（bit0-1=01）-> 生成 `\x1b[B`（下箭头）；非滚轮鼠标事件静默丢弃；畸形序列丢弃；不完整序列暂存到 `pending` |
+| `createTerminalInput(source?)` | 可选的源 `ReadStream`（默认 `process.stdin`） | `TerminalInputHandle` | 创建 `MouseCaptureInputStream`（Transform stream），pipe 源 stdin 通过过滤器，返回代理 stdin + cleanup 函数 |
+
+#### 内部类 `MouseCaptureInputStream`
+
+继承 `Transform`，在 `_transform` 中调用 `filterMouseTrackingInput` 过滤每个 chunk。`dispose()` 方法幂等地解除 pipe 并结束 stream。
+
+#### 代理 stdin 的属性复制
+
+`attachReadStreamMethods` 将源 stdin 的 `isTTY`、`setRawMode`、`ref`、`unref`、`pause`、`resume` 等方法绑定到代理对象上，确保 Ink 框架能正常检测终端能力。
+
+#### 常量
+
+- `DEFAULT_WHEEL_LINES = 3` — 每次滚轮事件转换为 3 个箭头键
+- `SGR_MOUSE_PATTERN = /^\x1b\[<(\d+);(\d+);(\d+)([mM])/` — SGR 鼠标序列正则
+
+---
+
+### 9. git-diff-stats.ts — Git 变更统计
 
 **来源**: FR-026 (AC-082)
 
@@ -377,22 +410,22 @@ interface GitDiffStats {
 
 ---
 
-### 9. session-runner-state.ts — 流式聚合与路由决策
+### 10. session-runner-state.ts — 流式聚合与用户决策
 
 **来源**: 多个 FR，是 App 组件中 SessionRunner 的核心状态逻辑提取。
 
-这是最复杂的状态模块，包含四大职责：
+这是最复杂的状态模块，包含三大职责：
 
 1. **流式聚合** — 将 adapter 输出的 `OutputChunk` 流逐步聚合为最终文本
-2. **路由决策** — 在 Coder/Reviewer 完成后决定下一步转向
-3. **用户决策解析** — 将用户输入映射为工作流 action
-4. **会话恢复** — 从持久化的 `LoadedSession` 重建运行时状态
+2. **用户决策解析** — 将用户输入映射为工作流 action
+3. **会话恢复** — 从持久化的 `LoadedSession` 重建运行时状态
 
 #### 流式聚合
 
 ```ts
 interface StreamAggregation {
   fullText: string;          // 完整历史文本（含 tool use 记录）
+  llmText: string;           // 纯 LLM 文本输出（仅 text + code chunk，不含工具标记和状态元数据）
   displayText: string;       // UI 显示文本（含工具摘要头）
   displayBodyText: string;   // 纯正文部分（不含工具摘要头）
   errorMessages: string[];   // 累积的错误消息
@@ -403,15 +436,15 @@ interface StreamAggregation {
 }
 
 type StreamOutcome =
-  | { kind: 'success'; fullText: string; displayText: string }
-  | { kind: 'error'; fullText: string; displayText: string; errorMessage: string }
-  | { kind: 'no_output'; fullText: string; displayText: string };
+  | { kind: 'success'; fullText: string; llmText: string; displayText: string }
+  | { kind: 'error'; fullText: string; llmText: string; displayText: string; errorMessage: string }
+  | { kind: 'no_output'; fullText: string; llmText: string; displayText: string };
 ```
 
 | 函数 | 说明 |
 |------|------|
 | `createStreamAggregation()` | 创建初始聚合状态，所有字段为空/零 |
-| `applyOutputChunk(state, chunk)` | 处理一个 chunk：text/code 追加到 fullText 和 displayBodyText；tool_use 格式化为摘要行；tool_result 记录行数或错误；error 追加到 errorMessages（`metadata.fatal !== false` 时） |
+| `applyOutputChunk(state, chunk)` | 处理一个 chunk：text/code 追加到 fullText、llmText 和 displayBodyText；tool_use 格式化为摘要行；tool_result 记录行数或错误；error 追加到 errorMessages（`metadata.fatal !== false` 时）；status chunk 仅追加到 fullText（信息性，防止 stderr-only 运行产生 `no_output`） |
 | `finalizeStreamAggregation(state)` | 根据 errorMessages 和文本内容决定 outcome 类型：有 error -> `'error'`；全空 -> `'no_output'`；否则 `'success'` |
 
 **工具格式化特殊逻辑** (`formatToolUse`):
@@ -424,27 +457,6 @@ type StreamOutcome =
 
 **内容拼接逻辑** (`appendContent`): 两段内容之间的拼接规则——若前文以 `:::` 结尾而后文不以 `\n` 开头，插入 `\n`；否则若前文不以 `\n` 结尾且后文不以 `\n` 开头，插入 `\n`；其余直接拼接。
 
-#### 路由决策
-
-```ts
-interface ChoiceRoute {
-  source: 'coder' | 'reviewer';
-  target: 'coder' | 'reviewer';
-  prompt: string;
-}
-
-interface RouteDecision {
-  event: 'ROUTE_TO_REVIEW' | 'ROUTE_TO_EVALUATE' | 'ROUTE_TO_CODER';
-  choiceRoute?: ChoiceRoute;
-  clearChoiceRoute?: boolean;
-}
-```
-
-| 函数 | 输入 | 输出 | 关键逻辑 |
-|------|------|------|----------|
-| `decidePostCodeRoute(output, taskContext, detector, activeChoiceRoute)` | Coder 输出 + 任务上下文 + ChoiceDetector + 当前活跃路由 | `RouteDecision` | 若有来自 reviewer->coder 的 choiceRoute 则清除并转 review；否则用 detector 检测 choice，若检测到则创建 coder->reviewer 路由并转 review；默认转 review |
-| `decidePostReviewRoute(output, taskContext, detector, activeChoiceRoute)` | Reviewer 输出 + 同上 | `RouteDecision` | 对称逻辑：若有来自 coder->reviewer 的路由则清除并转 coder；检测到 choice 则创建 reviewer->coder 路由并转 coder；默认转 evaluate |
-
 #### 用户决策
 
 ```ts
@@ -455,7 +467,7 @@ type UserDecision =
 
 | 函数 | 输入 | 输出 | 关键逻辑 |
 |------|------|------|----------|
-| `resolveUserDecision(stateValue, text, lastInterruptedRole)` | 状态机状态值 + 用户输入文本 + 上次中断角色 | `UserDecision \| null` | `WAITING_USER`/`MANUAL_FALLBACK` 状态：`a`/`accept` -> accept，`c`/`continue` -> continue，其他非空文本 -> continue + pendingInstruction；`INTERRUPTED` 状态：有文本 -> resume（resumeAs 取 lastInterruptedRole，fallback 到 `'coder'`）；其余返回 null |
+| `resolveUserDecision(stateValue, text, lastInterruptedRole)` | 状态机状态值 + 用户输入文本 + 上次中断角色 | `UserDecision \| null` | `WAITING_USER`/`PAUSED` 状态：`a`/`accept` -> accept，`c`/`continue` -> continue，其他非空文本 -> continue + pendingInstruction；`INTERRUPTED` 状态：有文本 -> resume（resumeAs 取 lastInterruptedRole，fallback 到 `'coder'`）；其余返回 null |
 
 #### 会话恢复
 
@@ -464,15 +476,12 @@ interface RestoredSessionRuntime {
   workflowInput: Partial<WorkflowContext>;
   restoreEvent: RestoreEventType;
   messages: Message[];
-  rounds: RoundRecord[];
   reviewerOutputs: string[];
   tokenCount: number;
   coderSessionId?: string;
   reviewerSessionId?: string;
   godSessionId?: string;
   godTaskAnalysis?: GodTaskAnalysis;
-  godConvergenceLog?: ConvergenceLogEntry[];
-  degradationState?: DegradationState;
   currentPhaseId?: string | null;
 }
 
@@ -480,12 +489,13 @@ type RestoreEventType =
   | 'RESTORED_TO_CODING'
   | 'RESTORED_TO_REVIEWING'
   | 'RESTORED_TO_WAITING'
-  | 'RESTORED_TO_INTERRUPTED';
+  | 'RESTORED_TO_INTERRUPTED'
+  | 'RESTORED_TO_CLARIFYING';
 ```
 
 | 函数 | 输入 | 输出 | 关键逻辑 |
 |------|------|------|----------|
-| `buildRestoredSessionRuntime(loaded, config)` | `LoadedSession` + `SessionConfig` | `RestoredSessionRuntime` | 按时间排序历史记录，通过 `toMessage` 转换为 Message（id 格式 `restored-{round}-{role}-{timestamp}`），通过 `buildRounds` 按 round 分组构建 RoundRecord，估算 token（`CHARS_PER_TOKEN = 4`），提取 CLI session ID 用于 adapter resume，恢复 God 相关状态，支持 BUG-16 fix（CLARIFYING 状态恢复 `frozenActiveProcess` 和 `clarificationRound`） |
+| `buildRestoredSessionRuntime(loaded, config)` | `LoadedSession` + `SessionConfig` | `RestoredSessionRuntime` | 按时间排序历史记录，通过 `toMessage` 转换为 Message（id 格式 `restored-{role}-{timestamp}`），估算 token（`CHARS_PER_TOKEN = 4`），提取 CLI session ID 用于 adapter resume，恢复 God 相关状态，支持 BUG-16 fix（CLARIFYING 状态恢复 `frozenActiveProcess` 和 `clarificationRound`） |
 
 **状态恢复映射** (`mapRestoreEvent`):
 
@@ -494,12 +504,207 @@ type RestoreEventType =
 | `created`, `coding` | `RESTORED_TO_CODING` |
 | `reviewing`, `routing_post_code` | `RESTORED_TO_REVIEWING` |
 | `interrupted` | `RESTORED_TO_INTERRUPTED` |
-| `clarifying` | `RESTORED_TO_INTERRUPTED`（BUG-16 fix） |
+| `clarifying` | `RESTORED_TO_CLARIFYING` |
 | `god_deciding`, `manual_fallback`, `routing_post_review`, `evaluating`, `waiting_user`, `error`, `done`, 其他 | `RESTORED_TO_WAITING` |
 
 ---
 
-### 10. message-lines.ts — 消息行计算与渲染
+## God LLM UI 状态
+
+### 11. god-fallback.ts — God 调用 Retry + Backoff 包装
+
+简洁的 God 调用重试包装器，提供 Watchdog 驱动的 retry + exponential backoff 机制。核心原则：最多重试 3 次（由 Watchdog 控制），然后暂停。无 fallback 模式，无 degradation。
+
+#### 核心类型
+
+```ts
+interface RetryResult<T> {
+  result: T;
+  retryCount: number;
+}
+
+interface PausedResult {
+  paused: true;
+  retryCount: number;
+}
+```
+
+#### 核心函数
+
+| 函数 | 输入 | 输出 | 关键逻辑 |
+|------|------|------|----------|
+| `withRetry<T>(fn, watchdog)` | 异步操作函数 + `WatchdogService` | `Promise<RetryResult<T> \| PausedResult>` | 循环调用 `fn()`：成功 -> `watchdog.handleSuccess()` -> 返回 `{ result, retryCount }`；失败 -> 检查 `watchdog.shouldRetry()`，若否则返回 `{ paused: true, retryCount }`；若是则 `retryCount++`，等待 `watchdog.getBackoffMs()` 后重试 |
+| `isPaused<T>(r)` | `RetryResult<T> \| PausedResult` | `boolean` (type guard) | 检查 `'paused' in r && r.paused === true` |
+
+#### 设计要点
+
+- 无 fallback / degradation 逻辑，重试耗尽后简单暂停
+- 依赖注入式设计，通过 `WatchdogService` 接口控制重试策略和 backoff 时间
+- exponential backoff 由 `watchdog.getBackoffMs()` 提供
+
+---
+
+### 12. god-message-style.ts — God 消息视觉样式
+
+**来源**: FR-014 (AC-041)
+
+God 消息使用 `╔═╗` 双边框 + Cyan/Magenta 颜色，与 Coder/Reviewer 的单边框视觉区分。仅在关键决策点显示，避免视觉噪音。
+
+#### 核心类型
+
+```ts
+interface GodMessageStyle {
+  borderChar: string;     // ║ 侧边框
+  topBorder: string;      // ╔═...═╗
+  bottomBorder: string;   // ╚═...═╝
+  borderColor: string;    // cyan
+  textColor: string;      // magenta
+}
+
+type GodMessageType =
+  | 'task_analysis'       // 任务分析
+  | 'phase_transition'    // 阶段切换
+  | 'auto_decision'       // 代理决策
+  | 'anomaly_detection'   // 异常检测
+  | 'clarification';      // God 澄清提问
+```
+
+#### 核心函数
+
+| 函数 | 输入 | 输出 | 关键逻辑 |
+|------|------|------|----------|
+| `shouldShowGodMessage(type)` | `GodMessageType` | `boolean` | 五种类型均为可见（`VISIBLE_TYPES` Set 包含所有五种） |
+| `formatGodMessage(content, type)` | 内容 + 消息类型 | `string[]` | 生成 `╔═╗` / `║ content ║` / `╚═╝` 格式的行数组；内容按行 pad 到 `BOX_WIDTH(50) - 2` 宽度；header 行显示 `TYPE_LABELS` 中的标签 |
+
+#### 辅助函数
+
+- `getVisualWidth(text)` — 计算文本视觉宽度，CJK 字符计为宽度 2（检测范围与 `message-lines.ts` 相同）
+- `truncateToWidth(text, maxWidth)` — 按视觉宽度截断文本，逐字符累加宽度直到超出 maxWidth
+- `padLine(text, innerWidth)` — 先截断到 innerWidth，再用空格 pad 到 innerWidth，最后添加 `║` 边框
+
+#### 常量
+
+- `BOX_WIDTH = 50`
+- `GOD_STYLE` — 预定义的样式对象（`borderChar: '║'`, `borderColor: 'cyan'`, `textColor: 'magenta'`）
+- `TYPE_LABELS` — 各消息类型的标签映射：`'God · Task Analysis'`、`'God · Phase Transition'`、`'God · Auto Decision'`、`'God · Anomaly Detection'`、`'God · Clarification'`
+
+---
+
+### 13. phase-transition-banner.ts — 阶段切换 Banner 状态
+
+**来源**: FR-010 (AC-033, AC-034)
+
+compound 任务阶段切换时的 2 秒 escape window 状态管理。用户可确认或取消阶段切换。
+
+#### 核心类型
+
+```ts
+interface PhaseTransitionBannerState {
+  nextPhaseId: string;
+  previousPhaseSummary: string;
+  countdown: number;       // 毫秒，初始 2000
+  cancelled: boolean;
+  confirmed: boolean;
+}
+```
+
+#### 核心函数
+
+| 函数 | 输入 | 输出 | 关键逻辑 |
+|------|------|------|----------|
+| `createPhaseTransitionBannerState(nextPhaseId, previousPhaseSummary)` | 下一阶段 ID + 上一阶段摘要 | `PhaseTransitionBannerState` | `countdown: 2000, cancelled: false, confirmed: false` |
+| `handlePhaseTransitionKeyPress(state, key)` | 当前状态 + `'space'`/`'escape'` | `PhaseTransitionBannerState` | 已 cancelled/confirmed 时返回原状态；space -> confirmed; escape -> cancelled |
+| `tickPhaseTransitionCountdown(state)` | 当前状态 | `PhaseTransitionBannerState` | 已 cancelled/confirmed 或 countdown <= 0 时返回原状态；每 tick 减 `PHASE_TICK_INTERVAL_MS(100)`；减至 0 时 confirmed（自动确认） |
+
+#### 常量
+
+- `PHASE_ESCAPE_WINDOW_MS = 2000` — 2 秒等待窗口
+- `PHASE_TICK_INTERVAL_MS = 100`
+
+---
+
+### 14. reclassify-overlay.ts — 运行时任务重分类 Overlay 状态
+
+**来源**: FR-002a (AC-010, AC-011, AC-012)
+
+Ctrl+R 触发的全屏 overlay，允许用户在 session 运行中更改任务类型。
+
+#### 核心类型
+
+```ts
+interface ReclassifyOverlayState {
+  visible: boolean;
+  currentType: TaskType;
+  selectedType: TaskType;
+  availableTypes: TaskType[];  // ['explore', 'code', 'review', 'debug']，不含 compound 和 discuss
+}
+```
+
+#### 核心函数
+
+| 函数 | 输入 | 输出 | 关键逻辑 |
+|------|------|------|----------|
+| `canTriggerReclassify(workflowState)` | 状态机当前状态字符串 | `boolean` | 仅允许在 `RECLASSIFY_ALLOWED_STATES` 中的状态下触发 |
+| `createReclassifyState(currentType)` | 当前任务类型 | `ReclassifyOverlayState` | `visible: true`，`selectedType` 初始化为 currentType（若在可用列表中）或列表第一项 |
+| `handleReclassifyKey(state, key)` | 当前状态 + 按键字符串 | `{ state, action? }` | 数字 1-N -> 直接选择并 `confirm`（`visible: false`）；`arrow_down`/`arrow_up` -> 循环移动选择；`enter` -> `confirm`；`escape` -> `cancel` 并恢复 `selectedType` 为 `currentType` |
+| `writeReclassifyAudit(sessionDir, opts)` | session 目录 + `{ seq, fromType, toType }` | `void` | 将重分类事件写入 audit log，`decisionType: 'RECLASSIFY'`，`inputSummary` 和 `outputSummary` 记录类型变更 |
+
+#### 允许触发的状态
+
+```ts
+const RECLASSIFY_ALLOWED_STATES = ['CODING', 'REVIEWING', 'GOD_DECIDING', 'PAUSED'];
+```
+
+---
+
+### 15. task-analysis-card.ts — 任务分析卡片状态
+
+**来源**: FR-001a (AC-004, AC-005, AC-006, AC-007)
+
+God 任务分析结果的 intent echo 卡片状态管理。用户可在 8 秒倒计时内选择/确认任务类型，超时自动确认推荐类型。
+
+#### 核心类型
+
+```ts
+type TaskType = 'explore' | 'code' | 'discuss' | 'review' | 'debug' | 'compound';
+
+const TASK_TYPE_LIST: TaskType[] = [
+  'explore', 'code', 'discuss', 'review', 'debug', 'compound',
+];
+
+interface TaskAnalysisCardState {
+  analysis: GodTaskAnalysis;
+  selectedType: TaskType;
+  countdown: number;          // 8 秒倒计时
+  countdownPaused: boolean;   // 箭头键导航时暂停
+  confirmed: boolean;
+}
+```
+
+#### 核心函数
+
+| 函数 | 输入 | 输出 | 关键逻辑 |
+|------|------|------|----------|
+| `createTaskAnalysisCardState(analysis)` | `GodTaskAnalysis` | `TaskAnalysisCardState` | `selectedType` 初始为 `analysis.taskType`（强制转换为 TaskType），`countdown: 8`（`INITIAL_COUNTDOWN`），`countdownPaused: false`，`confirmed: false` |
+| `handleKeyPress(state, key)` | 当前状态 + 按键字符串 | `TaskAnalysisCardState` | 已 confirmed 时返回原状态；数字 1-6 -> 直接选择并 confirm；`arrow_down`/`arrow_up` -> 循环移动选择并 `countdownPaused: true`；`enter` -> confirm；`space` -> 重置 selectedType 为推荐类型并 confirm |
+| `tickCountdown(state)` | 当前状态 | `TaskAnalysisCardState` | 已 confirmed 或 paused 或 countdown <= 0 时返回原状态；每秒减 1；减至 0 时自动 confirm |
+
+#### 常量
+
+- `TASK_TYPE_LIST`: 6 种任务类型的有序列表（数字键 1-6 映射到此顺序）
+- `INITIAL_COUNTDOWN = 8` — 8 秒自动确认
+
+#### 交互逻辑
+
+- 数字键 `1-6`：直接选中对应 `TASK_TYPE_LIST` 元素并确认
+- 上下箭头：在列表中循环移动选择（使用模运算 `%`），同时暂停倒计时
+- Enter：确认当前选中
+- Space：确认 God 推荐的类型（重置 selectedType 后 confirm）
+- 倒计时到 0：自动确认当前选中类型
+
+---
+
+### 16. message-lines.ts — 消息行计算与渲染
 
 连接数据层（`Message`）和视图层（MainLayout 行级渲染）的桥梁模块。将 `Message[]` 数组转换为扁平的 `RenderedMessageLine[]` 数组，供 MainLayout 进行滚动窗口切片和逐行渲染。
 
@@ -570,300 +775,9 @@ interface RenderedMessageLine {
 
 ---
 
-## God LLM UI 状态
-
-### 11. god-decision-banner.ts — God 自动决策 Banner 状态
-
-**来源**: FR-008 (AC-025, AC-026, AC-027)
-
-God auto-decision escape window 的纯状态逻辑。AI-driven 模式下决策立即执行（`ESCAPE_WINDOW_MS = 0`）。
-
-#### 核心类型
-
-```ts
-interface GodDecisionBannerState {
-  decision: GodAutoDecision;
-  countdown: number;       // 毫秒，AI-driven 模式下为 0
-  cancelled: boolean;
-  executed: boolean;       // AI-driven 模式下创建即 true
-}
-```
-
-#### 核心函数
-
-| 函数 | 输入 | 输出 | 关键逻辑 |
-|------|------|------|----------|
-| `createGodDecisionBannerState(decision)` | `GodAutoDecision` | `GodDecisionBannerState` | `countdown: 0, executed: true` — 立即执行 |
-| `handleBannerKeyPress(state, key)` | 当前状态 + `'space'`/`'escape'` | `GodDecisionBannerState` | 已 resolved 时返回原状态；space -> executed; escape -> cancelled |
-| `tickBannerCountdown(state)` | 当前状态 | `GodDecisionBannerState` | 已 resolved 或 countdown <= 0 时返回原状态；每 tick 减 `TICK_INTERVAL_MS(100)`；减至 0 时 executed |
-| `formatDecisionSummary(decision)` | `GodAutoDecision` | `string` | `accept` -> `"God: accepting output"`；`continue_with_instruction` -> `"God: continuing - \"instruction\""` |
-
-#### 常量
-
-- `ESCAPE_WINDOW_MS = 0` — AI-driven 模式无等待
-- `TICK_INTERVAL_MS = 100`
-
----
-
-### 12. god-fallback.ts — God 调用 Retry + Degradation 包装
-
-统一的 God 调用包装器，提供 Watchdog 驱动的 retry + degradation 机制。包含异步版本（用于 God adapter 调用）和同步版本（用于 prompt 生成等本地计算）。
-
-#### 核心接口
-
-```ts
-/** 异步 retry 控制器 — 包装 WatchdogService.diagnose() */
-interface GodRetryController {
-  isGodAvailable(): boolean;
-  handleGodSuccess(): void;
-  handleGodFailure(error: { kind: string; message: string }):
-    Promise<{ retry: boolean; notification?: DegradationNotification }>;
-}
-
-/** 同步可用性守卫 — 仅检查 God 是否可用 */
-interface GodAvailabilityGuard {
-  isGodAvailable(): boolean;
-}
-```
-
-#### 结果类型
-
-```ts
-interface GodFallbackResult<T> {
-  result: T;
-  usedGod: boolean;
-  cancelled?: boolean;
-  notification?: DegradationNotification;
-}
-```
-
-#### 核心函数
-
-| 函数 | 输入 | 输出 | 关键逻辑 |
-|------|------|------|----------|
-| `withGodFallback<TGod, TFallback>(controller, godCall, fallbackCall)` | `GodRetryController` + God 异步调用 + fallback 调用 | `Promise<GodFallbackResult>` | God 不可用 -> fallback；God 成功 -> handleGodSuccess -> return；失败 -> handleGodFailure 判断是否 retry（最多 1 次）；retry 失败 -> 再次 handleGodFailure -> fallback |
-| `withGodFallbackSync<TGod, TFallback>(guard, godCall, fallbackCall)` | `GodAvailabilityGuard` + God 同步调用 + fallback 调用 | `GodFallbackResult` | 同步版本，无 retry 支持；godCall 抛异常时 fallback 并附带 notification `'fallback_activated'` |
-
-#### 调用流程（异步版本）
-
-```
-1. controller.isGodAvailable()? → No → fallback
-2. godCall() → 成功 → controller.handleGodSuccess() → return
-3. godCall() → 失败 → controller.handleGodFailure() → retry?
-4. retry → 成功 → controller.handleGodSuccess() → return (with notification)
-5. retry → 失败 → controller.handleGodFailure() → fallback (with notification)
-6. 非 retryable → 直接 fallback (with notification)
-```
-
-#### 设计要点
-
-- 异步版本的 `errorInfo.kind` 固定为 `'process_exit'`，message 从异常对象提取
-- 同步版本不进行 retry，因为 prompt 生成失败属于代码错误而非 God 故障
-- 依赖注入式设计，通过 `GodRetryController`/`GodAvailabilityGuard` 接口解耦 WatchdogService 实现细节
-
----
-
-### 13. god-message-style.ts — God 消息视觉样式
-
-**来源**: FR-014 (AC-041)
-
-God 消息使用 `╔═╗` 双边框 + Cyan/Magenta 颜色，与 Coder/Reviewer 的单边框视觉区分。仅在关键决策点显示，避免视觉噪音。
-
-#### 核心类型
-
-```ts
-interface GodMessageStyle {
-  borderChar: string;     // ║ 侧边框
-  topBorder: string;      // ╔═...═╗
-  bottomBorder: string;   // ╚═...═╝
-  borderColor: string;    // cyan
-  textColor: string;      // magenta
-}
-
-type GodMessageType =
-  | 'task_analysis'       // 任务分析
-  | 'phase_transition'    // 阶段切换
-  | 'auto_decision'       // 代理决策
-  | 'anomaly_detection'   // 异常检测
-  | 'clarification';      // God 澄清提问
-```
-
-#### 核心函数
-
-| 函数 | 输入 | 输出 | 关键逻辑 |
-|------|------|------|----------|
-| `shouldShowGodMessage(type)` | `GodMessageType` | `boolean` | 五种类型均为可见（`VISIBLE_TYPES` Set 包含所有五种） |
-| `formatGodMessage(content, type)` | 内容 + 消息类型 | `string[]` | 生成 `╔═╗` / `║ content ║` / `╚═╝` 格式的行数组；内容按行 pad 到 `BOX_WIDTH(50) - 2` 宽度；header 行显示 `TYPE_LABELS` 中的标签 |
-
-#### 辅助函数
-
-- `getVisualWidth(text)` — 计算文本视觉宽度，CJK 字符计为宽度 2（检测范围与 `message-lines.ts` 相同）
-- `truncateToWidth(text, maxWidth)` — 按视觉宽度截断文本，逐字符累加宽度直到超出 maxWidth
-- `padLine(text, innerWidth)` — 先截断到 innerWidth，再用空格 pad 到 innerWidth，最后添加 `║` 边框
-
-#### 常量
-
-- `BOX_WIDTH = 50`
-- `GOD_STYLE` — 预定义的样式对象（`borderChar: '║'`, `borderColor: 'cyan'`, `textColor: 'magenta'`）
-- `TYPE_LABELS` — 各消息类型的标签映射：`'God · Task Analysis'`、`'God · Phase Transition'`、`'God · Auto Decision'`、`'God · Anomaly Detection'`、`'God · Clarification'`
-
----
-
-### 14. phase-transition-banner.ts — 阶段切换 Banner 状态
-
-**来源**: FR-010 (AC-033, AC-034)
-
-compound 任务阶段切换时的 2 秒 escape window 状态管理。用户可确认或取消阶段切换。
-
-#### 核心类型
-
-```ts
-interface PhaseTransitionBannerState {
-  nextPhaseId: string;
-  previousPhaseSummary: string;
-  countdown: number;       // 毫秒，初始 2000
-  cancelled: boolean;
-  confirmed: boolean;
-}
-```
-
-#### 核心函数
-
-| 函数 | 输入 | 输出 | 关键逻辑 |
-|------|------|------|----------|
-| `createPhaseTransitionBannerState(nextPhaseId, previousPhaseSummary)` | 下一阶段 ID + 上一阶段摘要 | `PhaseTransitionBannerState` | `countdown: 2000, cancelled: false, confirmed: false` |
-| `handlePhaseTransitionKeyPress(state, key)` | 当前状态 + `'space'`/`'escape'` | `PhaseTransitionBannerState` | 已 cancelled/confirmed 时返回原状态；space -> confirmed; escape -> cancelled |
-| `tickPhaseTransitionCountdown(state)` | 当前状态 | `PhaseTransitionBannerState` | 已 cancelled/confirmed 或 countdown <= 0 时返回原状态；每 tick 减 `PHASE_TICK_INTERVAL_MS(100)`；减至 0 时 confirmed（自动确认） |
-
-#### 常量
-
-- `PHASE_ESCAPE_WINDOW_MS = 2000` — 2 秒等待窗口
-- `PHASE_TICK_INTERVAL_MS = 100`
-
----
-
-### 15. reclassify-overlay.ts — 运行时任务重分类 Overlay 状态
-
-**来源**: FR-002a (AC-010, AC-011, AC-012)
-
-Ctrl+R 触发的全屏 overlay，允许用户在 session 运行中更改任务类型。
-
-#### 核心类型
-
-```ts
-interface ReclassifyOverlayState {
-  visible: boolean;
-  currentType: TaskType;
-  currentRound: number;
-  selectedType: TaskType;
-  availableTypes: TaskType[];  // ['explore', 'code', 'review', 'debug']，不含 compound 和 discuss
-}
-```
-
-#### 核心函数
-
-| 函数 | 输入 | 输出 | 关键逻辑 |
-|------|------|------|----------|
-| `canTriggerReclassify(workflowState)` | 状态机当前状态字符串 | `boolean` | 仅允许在 `RECLASSIFY_ALLOWED_STATES` 中的状态下触发 |
-| `createReclassifyState(currentType, currentRound)` | 当前任务类型 + 当前轮次 | `ReclassifyOverlayState` | `visible: true`，`selectedType` 初始化为 currentType（若在可用列表中）或列表第一项 |
-| `handleReclassifyKey(state, key)` | 当前状态 + 按键字符串 | `{ state, action? }` | 数字 1-N -> 直接选择并 `confirm`（`visible: false`）；`arrow_down`/`arrow_up` -> 循环移动选择；`enter` -> `confirm`；`escape` -> `cancel` 并恢复 `selectedType` 为 `currentType` |
-| `writeReclassifyAudit(sessionDir, opts)` | session 目录 + `{ seq, round, fromType, toType }` | `void` | 将重分类事件写入 audit log，`decisionType: 'RECLASSIFY'`，`inputSummary` 和 `outputSummary` 记录类型变更 |
-
-#### 允许触发的状态
-
-```ts
-const RECLASSIFY_ALLOWED_STATES = ['CODING', 'REVIEWING', 'GOD_DECIDING', 'MANUAL_FALLBACK'];
-```
-
----
-
-### 16. resume-summary.ts — 恢复摘要构建
-
-**来源**: FR-016 (AC-044, AC-045)
-
-`duo resume` 后为用户构建 God 决策摘要，展示 session 中的关键决策事件。
-
-#### 核心类型
-
-```ts
-type ResumeSummaryEvent = {
-  type: 'task_init' | 'phase_transition' | 'auto_decision';
-  timestamp: string;
-  summary: string;
-};
-
-interface ResumeSummaryState {
-  events: ResumeSummaryEvent[];
-  visible: boolean;
-}
-```
-
-#### 核心函数
-
-| 函数 | 输入 | 输出 | 关键逻辑 |
-|------|------|------|----------|
-| `buildResumeSummary(auditLog, convergenceLog)` | `GodAuditEntry[]` + `ConvergenceLogEntry[]` | `ResumeSummaryState` | O(n) 扫描 audit log，通过 `DECISION_TYPE_MAP` 过滤 `TASK_INIT`/`PHASE_TRANSITION`/`AUTO_DECISION` 事件，按 `timestamp` 字符串排序（`localeCompare`），为每个事件调用 `buildEventSummary` 生成人类可读摘要；结果 `visible: true` |
-
-#### 事件摘要格式
-
-| 事件类型 | 摘要格式 |
-|----------|---------|
-| `task_init` | `"Task initialized: <entry.outputSummary>"` |
-| `phase_transition` | `"Phase transition: <entry.inputSummary>"` |
-| `auto_decision` | `"Auto-decision: <decision.action> — <entry.outputSummary>"`（从 entry.decision 中提取 action 字段） |
-
----
-
-### 17. task-analysis-card.ts — 任务分析卡片状态
-
-**来源**: FR-001a (AC-004, AC-005, AC-006, AC-007)
-
-God 任务分析结果的 intent echo 卡片状态管理。用户可在 8 秒倒计时内选择/确认任务类型，超时自动确认推荐类型。
-
-#### 核心类型
-
-```ts
-type TaskType = 'explore' | 'code' | 'discuss' | 'review' | 'debug' | 'compound';
-
-const TASK_TYPE_LIST: TaskType[] = [
-  'explore', 'code', 'discuss', 'review', 'debug', 'compound',
-];
-
-interface TaskAnalysisCardState {
-  analysis: GodTaskAnalysis;
-  selectedType: TaskType;
-  countdown: number;          // 8 秒倒计时
-  countdownPaused: boolean;   // 箭头键导航时暂停
-  confirmed: boolean;
-}
-```
-
-#### 核心函数
-
-| 函数 | 输入 | 输出 | 关键逻辑 |
-|------|------|------|----------|
-| `createTaskAnalysisCardState(analysis)` | `GodTaskAnalysis` | `TaskAnalysisCardState` | `selectedType` 初始为 `analysis.taskType`（强制转换为 TaskType），`countdown: 8`（`INITIAL_COUNTDOWN`），`countdownPaused: false`，`confirmed: false` |
-| `handleKeyPress(state, key)` | 当前状态 + 按键字符串 | `TaskAnalysisCardState` | 已 confirmed 时返回原状态；数字 1-6 -> 直接选择并 confirm；`arrow_down`/`arrow_up` -> 循环移动选择并 `countdownPaused: true`；`enter` -> confirm；`space` -> 重置 selectedType 为推荐类型并 confirm |
-| `tickCountdown(state)` | 当前状态 | `TaskAnalysisCardState` | 已 confirmed 或 paused 或 countdown <= 0 时返回原状态；每秒减 1；减至 0 时自动 confirm |
-
-#### 常量
-
-- `TASK_TYPE_LIST`: 6 种任务类型的有序列表（数字键 1-6 映射到此顺序）
-- `INITIAL_COUNTDOWN = 8` — 8 秒自动确认
-
-#### 交互逻辑
-
-- 数字键 `1-6`：直接选中对应 `TASK_TYPE_LIST` 元素并确认
-- 上下箭头：在列表中循环移动选择（使用模运算 `%`），同时暂停倒计时
-- Enter：确认当前选中
-- Space：确认 God 推荐的类型（重置 selectedType 后 confirm）
-- 倒计时到 0：自动确认当前选中类型
-
----
-
 ## Runtime/Lifecycle 状态
 
-### 18. completion-flow.ts — 任务完成后续流
+### 17. completion-flow.ts — 任务完成后续流
 
 任务完成后支持用户追加需求的 prompt 构建逻辑。
 
@@ -879,7 +793,7 @@ interface TaskAnalysisCardState {
 
 ---
 
-### 19. global-ctrl-c.ts — 全局 Ctrl+C 双击检测
+### 18. global-ctrl-c.ts — 全局 Ctrl+C 双击检测
 
 全局级别的 Ctrl+C 行为管理。单次 Ctrl+C 中断当前 LLM 执行；500ms 内双击 Ctrl+C 触发安全退出。
 
@@ -905,35 +819,7 @@ App 组件在根级 `useInput` 中使用此函数，配合 `lastCtrlCRef` 维护
 
 ---
 
-### 20. god-routing-feedback.ts — God Post-Code Routing 反馈消息
-
-为 God 的 post-code routing 决策生成用户可见的系统消息，告知用户 God 对 coder 输出的处置结果。
-
-#### 核心类型
-
-```ts
-interface PostCodeRoutingFeedbackInput {
-  action: GodPostCoderDecision['action'];  // 'continue_to_review' | 'retry_coder'
-  reviewerName: string;
-  coderName: string;
-}
-
-type SystemMessageDraft = Omit<Message, 'id' | 'timestamp'>;
-```
-
-#### 核心函数
-
-| 函数 | 输入 | 输出 | 关键逻辑 |
-|------|------|------|----------|
-| `buildPostCodeRoutingFeedback({ action, reviewerName, coderName })` | routing 参数 | `SystemMessageDraft` | `continue_to_review` -> `{ role: 'system', content: "God routing: coder output approved, forwarding to <reviewerName>." }`；`retry_coder` -> `{ role: 'system', content: "God routing: requested another coder pass from <coderName>." }` |
-
-#### 使用场景
-
-App 组件在 God post-code routing 完成后调用此函数，将生成的系统消息插入到消息列表中，让用户看到 God 对 coder 输出的 routing 决策。消息不含 `id` 和 `timestamp`，由调用方补充。
-
----
-
-### 21. safe-shutdown.ts — 安全退出流程
+### 19. safe-shutdown.ts — 安全退出流程
 
 协调 adapter 终止、输出中断和进程退出的安全关机流程。确保所有子进程在退出前被正确清理。
 
@@ -975,12 +861,15 @@ interface SafeShutdownOptions {
 
 ```
 Core UI 依赖:
+  alternate-screen.ts ──> (无外部依赖，纯终端 escape 序列)
+
+  mouse-input.ts ──> node:stream (Transform)
+
   message-lines.ts ──> markdown-parser.ts (parseMarkdown)
                    ──> display-mode.ts (DisplayMode 类型)
                    ──> types/ui.ts (Message, getRoleStyle, RoleName)
 
   keybindings.ts ──> ink (Key 类型)
-                 ──> (定义 OverlayType，与 overlay-state.ts 共享类型名，含 'god')
 
   overlay-state.ts ──> types/ui.ts (Message)
 
@@ -988,20 +877,14 @@ Core UI 依赖:
                              ──> ink (Key 类型)
 
   session-runner-state.ts ──> types/adapter.ts (OutputChunk)
-                           ──> decision/choice-detector.ts (ChoiceDetectionResult)
                            ──> session/session-manager.ts (LoadedSession, SessionState)
-                           ──> session/context-manager.ts (RoundRecord)
                            ──> engine/workflow-machine.ts (WorkflowContext)
                            ──> types/god-schemas.ts (GodTaskAnalysis)
-                           ──> god/god-convergence.ts (ConvergenceLogEntry)
-                           ──> types/degradation.ts (DegradationState)
                            ──> types/session.ts (SessionConfig)
                            ──> types/ui.ts (Message, RoleName)
 
 God LLM UI 依赖:
-  god-decision-banner.ts ──> types/god-schemas.ts (GodAutoDecision)
-
-  god-fallback.ts ──> types/degradation.ts (DegradationNotification)
+  god-fallback.ts ──> god/watchdog.ts (WatchdogService)
 
   god-message-style.ts ──> (无外部依赖，纯样式定义)
 
@@ -1010,18 +893,12 @@ God LLM UI 依赖:
   reclassify-overlay.ts ──> task-analysis-card.ts (TaskType)
                          ──> god/god-audit.ts (GodAuditEntry, appendAuditLog)
 
-  resume-summary.ts ──> god/god-audit.ts (GodAuditEntry)
-                    ──> god/god-convergence.ts (ConvergenceLogEntry)
-
   task-analysis-card.ts ──> types/god-schemas.ts (GodTaskAnalysis)
 
 Runtime/Lifecycle 依赖:
   completion-flow.ts ──> (无外部依赖，纯字符串拼接)
 
   global-ctrl-c.ts ──> (无外部依赖，纯时间戳计算)
-
-  god-routing-feedback.ts ──> types/ui.ts (Message)
-                           ──> types/god-schemas.ts (GodPostCoderDecision)
 
   safe-shutdown.ts ──> (无外部依赖，duck typing 接口)
 
@@ -1030,9 +907,9 @@ MainLayout 组件消费:
   overlay-state.ts, message-lines.ts
 
 App/SessionRunner 组件消费:
-  session-runner-state.ts, god-decision-banner.ts,
-  god-fallback.ts, phase-transition-banner.ts,
-  reclassify-overlay.ts, resume-summary.ts, task-analysis-card.ts,
-  completion-flow.ts, global-ctrl-c.ts, god-routing-feedback.ts,
-  safe-shutdown.ts
+  alternate-screen.ts, mouse-input.ts,
+  session-runner-state.ts, god-fallback.ts,
+  phase-transition-banner.ts, reclassify-overlay.ts,
+  task-analysis-card.ts, completion-flow.ts,
+  global-ctrl-c.ts, safe-shutdown.ts
 ```

@@ -20,7 +20,8 @@
 | 文件 | 职责 |
 |------|------|
 | `src/types/adapter.ts` | 核心类型定义：`CLIAdapter`、`ExecOptions`、`OutputChunk`、`CLIRegistryEntry` |
-| `src/adapters/registry.ts` | CLI 工具的静态注册表 + 各适配器可选模型列表 |
+| `src/adapters/registry.ts` | CLI 工具的静态注册表 + `ModelOption` 类型 + `getAdapterModels()` 入口 |
+| `src/adapters/model-discovery.ts` | 动态模型发现：从各 CLI 工具的真实数据源获取可用模型列表 |
 | `src/adapters/detect.ts` | 并行自动检测已安装的 CLI 工具，加载用户自定义配置 |
 | `src/adapters/factory.ts` | 适配器工厂，按名称创建 `CLIAdapter` 实例 |
 | `src/adapters/process-manager.ts` | 子进程生命周期管理（spawn、kill、超时、心跳） |
@@ -148,37 +149,14 @@ type ParserType = 'stream-json' | 'jsonl' | 'text';
 | `codex` | Codex | `codex` | `codex exec` | `--json` | `--yolo` | `jsonl` | `--model` |
 | `gemini` | Gemini CLI | `gemini` | `gemini -p` | `stream-json` | `--yolo` | `stream-json` | `--model` |
 
-### 动态模型发现（model-discovery.ts）
+### ModelOption 接口
 
-模型列表不再硬编码。`getAdapterModels(adapterName)` 通过 `discoverModels()` 从各 CLI 工具的真实数据源动态发现可用模型，结果在模块作用域内缓存（每个适配器最多发现一次）。所有返回列表均以 `__custom__` 哨兵结尾。
-
-**Claude Code** — 使用 CLI 验证的稳定别名（无全名模型 ID，无动态枚举命令）：
-
-| id | label |
-|----|-------|
-| `sonnet` | Sonnet (latest) |
-| `opus` | Opus (latest) |
-| `haiku` | Haiku (latest) |
-| `__custom__` | Custom model… |
-
-**Codex** — 从 `~/.codex/models_cache.json` 读取，过滤 `visibility==='list'`，按 `priority` 升序，按 `slug` 去重：
-
-| 示例 id（实际来自缓存） | 示例 label |
-|--------------------------|------------|
-| `gpt-5.4` | gpt-5.4 |
-| `gpt-5.3-codex` | gpt-5.3-codex |
-| … | … |
-| `__custom__` | Custom model… |
-
-**Gemini CLI** — 通过 `createRequire` 从已安装的 `@google/gemini-cli-core` 包读取 `VALID_GEMINI_MODELS`：
-
-| 示例 id（实际来自安装包） | 示例 label |
-|---------------------------|------------|
-| `gemini-2.5-pro` | gemini-2.5-pro |
-| `gemini-2.5-flash` | gemini-2.5-flash |
-| `gemini-3-pro-preview` | gemini-3-pro-preview |
-| … | … |
-| `__custom__` | Custom model… |
+```typescript
+interface ModelOption {
+  id: string;   // CLI 模型标识符（如 'sonnet', 'gpt-5.4'）
+  label: string; // 人类可读名称（如 'Sonnet (latest)', 'gpt-5.4'）
+}
+```
 
 ### CUSTOM_MODEL_SENTINEL
 
@@ -190,7 +168,97 @@ type ParserType = 'stream-json' | 'jsonl' | 'text';
 |------|------|
 | `getRegistryEntries()` | 返回所有 `CLIRegistryEntry` 的数组 |
 | `getRegistryEntry(name)` | 按名称查找单个条目，未找到返回 `undefined` |
-| `getAdapterModels(adapterName)` | 返回指定适配器的可选模型列表，未找到返回空数组 |
+| `getAdapterModels(adapterName)` | 委托给 `discoverModels()`，返回指定适配器的可选模型列表（详见下一节） |
+
+---
+
+## 动态模型发现 (Model Discovery)
+
+**文件**：`src/adapters/model-discovery.ts`
+
+### 设计理念
+
+模型列表不再硬编码于注册表中。`model-discovery.ts` 从各 CLI 工具的真实数据源（缓存文件、已安装的 npm 包、CLI 验证的别名）动态发现可用模型。
+
+注册表的 `getAdapterModels(adapterName)` 直接委托给本模块的 `discoverModels(adapterName)`，调用方无需感知底层发现机制。
+
+### 核心函数
+
+```typescript
+function discoverModels(adapterName: string): ModelOption[]
+```
+
+根据 `adapterName` 分发到对应的发现函数（`discoverClaudeCodeModels` / `discoverCodexModels` / `discoverGeminiModels`）。未知的适配器名称返回空数组。**所有返回列表末尾均自动追加 `__custom__` 哨兵条目。**
+
+### 缓存机制
+
+发现结果通过模块作用域的 `Map<string, ModelOption[]>` 缓存。每个适配器最多执行一次发现逻辑，后续调用直接返回缓存。提供 `_resetModelCache()` 用于测试场景清除缓存。
+
+所有发现逻辑均为**同步执行**（可从 React render path 安全调用）。
+
+### 各适配器发现策略
+
+#### Claude Code — CLI 验证的稳定别名
+
+Claude Code CLI 没有程序化的模型枚举命令。模块暴露三个 CLI 验证的稳定别名，由 Claude 服务端解析到对应模型族的最新版本：
+
+| id | label | 解析到（截至 2026-03） |
+|----|-------|------------------------|
+| `sonnet` | Sonnet (latest) | claude-sonnet-4-6 |
+| `opus` | Opus (latest) | claude-opus-4-6 |
+| `haiku` | Haiku (latest) | claude-haiku-4-5-20251001 |
+| `__custom__` | Custom model... | 用户可通过此项输入完整模型 ID |
+
+**发现函数**：`discoverClaudeCodeModels()` — 直接返回硬编码的别名数组，无外部 I/O。
+
+#### Codex — 从本地缓存文件读取
+
+Codex CLI 维护本地模型缓存文件 `~/.codex/models_cache.json`，格式为 `{ models: [...] }`。
+
+**发现函数**：`discoverCodexModels()` 的处理流程：
+
+1. 读取 `~/.codex/models_cache.json`（`fs.readFileSync`）
+2. 过滤 `visibility === 'list'` 的条目
+3. 按 `priority` 字段升序排序（`priority` 缺失时视为 999）
+4. 按 `slug` 去重（保留首次出现的条目）
+5. 以 `slug` 作为 `id`，`display_name`（fallback 到 `slug`）作为 `label`
+
+**容错**：缓存文件不存在、损坏或不可读时，静默返回空数组（由调用方追加 `__custom__`）。
+
+| 示例 id（实际来自缓存） | 示例 label |
+|--------------------------|------------|
+| `gpt-5.4` | gpt-5.4 |
+| `gpt-5.3-codex` | gpt-5.3-codex |
+| ... | ... |
+| `__custom__` | Custom model... |
+
+#### Gemini CLI — 从已安装 npm 包读取
+
+**发现函数**：`discoverGeminiModels()` 的处理流程：
+
+1. 通过 `execSync('command -v gemini')` 定位 gemini 二进制文件路径（5 秒超时）
+2. 通过 `fs.realpathSync` 解析符号链接获取真实路径
+3. 以 gemini 入口点为基础创建 `createRequire`，解析 `@google/gemini-cli-core/dist/src/config/models.js`
+4. 同步 `require` 该模块，读取 `VALID_GEMINI_MODELS`（`Set<string>`）
+5. 若模块导出 `getDisplayString()` 函数，用其生成 `label`；否则 `label` 直接使用模型 ID
+
+**容错**：Gemini CLI 未安装、包结构变更或 require 失败时，静默返回空数组。
+
+| 示例 id（实际来自安装包） | 示例 label |
+|---------------------------|------------|
+| `gemini-2.5-pro` | gemini-2.5-pro |
+| `gemini-2.5-flash` | gemini-2.5-flash |
+| `gemini-3-pro-preview` | gemini-3-pro-preview |
+| ... | ... |
+| `__custom__` | Custom model... |
+
+### 测试辅助
+
+| 函数 | 说明 |
+|------|------|
+| `_resetModelCache()` | 清除模块作用域的缓存 Map，仅用于测试 |
+
+各适配器的发现函数（`discoverCodexModels`、`discoverGeminiModels`、`discoverClaudeCodeModels`）均独立导出，可单独测试。
 
 ---
 
@@ -703,7 +771,7 @@ OutputStreamManager.start(source)         -- （可选）多消费者广播
 
 ### 添加新适配器
 
-1. **注册表**：在 `registry.ts` 的 `CLI_REGISTRY` 中添加条目，填写 `name`、`command`、`detectCommand`、`execCommand`、`outputFormat`、`yoloFlag`、`parserType`、`modelFlag`。同时在 `ADAPTER_MODELS` 中添加可选模型列表
+1. **注册表**：在 `registry.ts` 的 `CLI_REGISTRY` 中添加条目，填写 `name`、`command`、`detectCommand`、`execCommand`、`outputFormat`、`yoloFlag`、`parserType`、`modelFlag`。若需支持模型选择，在 `model-discovery.ts` 的 `discoverModels()` switch 中添加对应的发现分支
 2. **实现**：创建 `src/adapters/<name>/adapter.ts`，实现 `CLIAdapter` 接口
    - 构造函数中初始化 `ProcessManager` 和对应的 Parser（`StreamJsonParser` / `JsonlParser`）
    - `buildArgs()` 构建 CLI 参数（public 暴露以便单元测试）

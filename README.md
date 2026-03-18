@@ -38,7 +38,7 @@ Unlike single-agent coding tools, Duo ensures **every code change is reviewed be
 
 Duo enforces a **propose-before-implement** discipline:
 
-1. **Round 0**: Coder analyzes the problem and proposes a plan (no file modifications)
+1. **Proposal**: Coder analyzes the problem and proposes a plan (no file modifications)
 2. **Reviewer evaluates** the proposal — approves or requests changes
 3. **After consensus**: Coder implements with full context (Reviewer's original feedback is injected directly)
 4. **Reviewer verifies** the implementation
@@ -57,11 +57,10 @@ Mix and match any combination — e.g., Claude Code as Coder + Codex as Reviewer
 ### God LLM Intelligent Orchestration
 
 - **Task Classification**: Automatically categorizes tasks (explore / code / debug / review / discuss / compound)
-- **Dynamic Round Management**: Sets iteration limits based on task complexity
 - **Routing Decisions**: Determines next action after each worker output
-- **Convergence Judgment**: Decides when work meets acceptance criteria
-- **Watchdog AI**: Diagnoses God failures and orchestrates recovery (retry / construct fallback / escalate)
-- **Four-Level Degradation** (L1→L4): Graceful fallback when God fails
+- **Convergence Judgment**: Sole authority on when work meets acceptance criteria
+- **Watchdog Service**: Retry + exponential backoff + pause on God failures
+- **Choice Handling**: Autonomous resolution when workers present multiple options
 - **Reviewer Feedback Direct Forwarding**: Coder receives Reviewer's original analysis, not God's summary
 
 ### State Machine Architecture
@@ -78,13 +77,13 @@ IDLE → TASK_INIT → CODING → OBSERVING → GOD_DECIDING → EXECUTING
 
 ### Terminal UI
 
-Modern terminal interface built with Ink + React (24 components):
+Modern terminal interface built with Ink + React (22 components):
 - Group-chat style message stream (color-coded by role)
 - Real-time streaming LLM output
 - Smart Scroll Lock
 - Code block auto-collapse (>10 lines)
-- Overlay panels (Help, Context, Timeline, Search, God Details)
-- God decision banners and task analysis cards
+- Overlay panels (Help, Context, Timeline, Search)
+- Task analysis cards and phase transition banners
 
 ### Session Persistence
 
@@ -133,25 +132,21 @@ duo --version
 
 ## Architecture
 
-Duo uses an 8-layer architecture:
+Duo uses a 6-layer architecture:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │  Layer 1: CLI Entry          cli.ts, cli-commands.ts         │
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 2: UI Components      24 Ink+React components         │
+│  Layer 2: UI Layer           22 components + 19 state modules│
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 3: UI State           24 pure-function state modules  │
+│  Layer 3: Sovereign God      20 files — Observe→Decide→Act   │
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 4: Sovereign God      23 files — Observe→Decide→Act   │
+│  Layer 4: Workflow Engine    XState v5 state machine          │
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 5: Workflow Engine    XState v5 state machine          │
+│  Layer 5: Session Manager    Persistence, atomic writes       │
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 6: Decision Engine    Fallback rules (God L4)          │
-├──────────────────────────────────────────────────────────────┤
-│  Layer 7: Session Manager    Persistence, atomic writes       │
-├──────────────────────────────────────────────────────────────┤
-│  Layer 8: Adapter Layer      3 AI tool adapters + parsers     │
+│  Layer 6: Adapter Layer      3 AI tool adapters + parsers     │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -164,34 +159,37 @@ src/
 ├── cli.ts                     # CLI entry — command parsing, Ink rendering
 ├── cli-commands.ts            # Command handlers (start/resume/log)
 ├── types/                     # Core type definitions (9 files)
-├── adapters/                  # AI tool adapters (claude-code, codex, gemini)
+├── adapters/                  # AI tool adapters + model discovery
 ├── parsers/                   # Output parsers (stream-json/jsonl/text)
-├── session/                   # Session management & persistence
-├── decision/                  # Fallback decision engine
+├── session/                   # Session management & persistence (3 files)
 ├── engine/                    # XState v5 workflow state machine
-├── god/                       # Sovereign God Runtime (23 files)
-│   ├── god-decision-service   # Unified decision pipeline
+├── god/                       # Sovereign God Runtime (20 files)
+│   ├── god-decision-service   # Sole decision authority
 │   ├── god-prompt-generator   # Dynamic Coder/Reviewer prompts
 │   ├── observation-classifier # Output classification
 │   ├── hand-executor          # God action execution
-│   ├── watchdog               # AI-powered error recovery
-│   └── ...                    # Task init, convergence, audit
+│   ├── watchdog               # Retry + backoff + pause
+│   └── ...                    # Task init, audit, tri-party session
 └── ui/                        # Terminal UI (Ink + React)
-    ├── components/ (24)       # App, MainLayout, Overlays, etc.
-    └── *.ts (24)              # Pure-function state management
+    ├── components/ (22)       # App, MainLayout, Overlays, etc.
+    └── *.ts (19)              # Pure-function state management
 ```
 
 ## Documentation
 
 | Document | Description |
 |----------|-------------|
-| [architecture.md](docs/architecture.md) | System architecture (8 layers, data flow, state machine) |
+| [architecture.md](docs/architecture.md) | System architecture (6 layers, data flow, state machine) |
 | [god-orchestrator.md](docs/modules/god-orchestrator.md) | God LLM orchestrator details |
 | [workflow-engine.md](docs/modules/workflow-engine.md) | XState workflow state machine |
 | [adapter-layer.md](docs/modules/adapter-layer.md) | AI tool adapter layer |
 | [ui-components.md](docs/modules/ui-components.md) | UI components |
 | [session-management.md](docs/modules/session-management.md) | Session management & persistence |
 | [type-system.md](docs/modules/type-system.md) | Core type system |
+| [parsers.md](docs/modules/parsers.md) | Output parsers |
+| [cli-entry.md](docs/modules/cli-entry.md) | CLI entry & commands |
+| [decision-engine.md](docs/modules/decision-engine.md) | Decision architecture |
+| [ui-state.md](docs/modules/ui-state.md) | UI state management |
 
 ## Tech Stack
 
@@ -212,7 +210,7 @@ src/
 
 ```
 1. User:     "Fix the scroll event not propagating in dashboard"
-2. God:      Classifies as "debug", sets maxRounds=4
+2. God:      Classifies as "debug", plans iteration strategy
 3. Coder:    Analyzes code, proposes fix plan (no modifications yet)
 4. Reviewer: Evaluates plan, finds missing edge case → [CHANGES_REQUESTED]
 5. God:      Routes reviewer feedback directly to Coder

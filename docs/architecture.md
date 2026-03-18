@@ -2,13 +2,13 @@
 
 > **Duo** -- Multi AI Coding Assistant Collaboration Platform
 >
-> Duo 是一个多 AI 编码助手协作平台，通过 **Coder + Reviewer + God LLM** 三方协作模型，实现自主化的代码编写、审查与迭代收敛。God LLM 作为 Sovereign（主权）决策者，统一编排 Coder 和 Reviewer 的工作流，所有状态变更通过结构化 Action 表达，确保可审计、可恢复、可降级。
+> Duo 是一个多 AI 编码助手协作平台，通过 **Coder + Reviewer + God LLM** 三方协作模型，实现自主化的代码编写、审查与迭代收敛。God LLM 作为 Sovereign（主权）决策者，统一编排 Coder 和 Reviewer 的工作流，所有状态变更通过结构化 Action 表达，确保可审计、可恢复。
 
 ---
 
 ## 目录
 
-1. [八层架构总览](#八层架构总览)
+1. [六层架构总览](#六层架构总览)
 2. [三方协作模型](#三方协作模型)
 3. [数据流全景](#数据流全景)
 4. [XState v5 状态机详解](#xstate-v5-状态机详解)
@@ -18,9 +18,9 @@
 
 ---
 
-## 八层架构总览
+## 六层架构总览
 
-Duo 采用八层架构，自顶向下职责分明，层间严格单向依赖：
+Duo 采用六层架构，自顶向下职责分明，层间严格单向依赖：
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -28,41 +28,36 @@ Duo 采用八层架构，自顶向下职责分明，层间严格单向依赖：
 │  cli.ts, cli-commands.ts, index.ts                                  │
 │  职责: 命令解析、参数校验、渲染启动                                      │
 ├─────────────────────────────────────────────────────────────────────┤
-│  Layer 2: UI 组件层                                                 │
+│  Layer 2: UI 层                                                     │
 │  App.tsx, MainLayout.tsx, SetupWizard.tsx, StatusBar.tsx,            │
-│  StreamRenderer.tsx, GodDecisionBanner.tsx, ... (24 components)     │
-│  职责: 终端交互界面 (Ink + React)、流式输出渲染、Overlay 面板           │
+│  StreamRenderer.tsx, alternate-screen.ts, mouse-input.ts,           │
+│  ... (22 components + 20 state files)                               │
+│  职责: 终端交互界面 (Ink + React)、流式输出渲染、                       │
+│        Alternate Screen + Mouse 输入、Overlay 面板                   │
 ├─────────────────────────────────────────────────────────────────────┤
-│  Layer 3: UI 状态层                                                 │
-│  session-runner-state.ts, god-decision-banner.ts,                   │
-│  overlay-state.ts, god-decision-banner.ts, ... (21 state files)     │
-│  职责: 纯函数状态管理，为 UI 组件提供数据                                │
-├─────────────────────────────────────────────────────────────────────┤
-│  Layer 4: Sovereign God Runtime                                     │
+│  Layer 3: Sovereign God Runtime                                     │
 │  god-decision-service.ts, hand-executor.ts, rule-engine.ts,         │
-│  observation-classifier.ts, watchdog.ts, task-init.ts,              │
-│  degradation-manager.ts, message-dispatcher.ts, ... (28 files)      │
-│  职责: Observe → Decide → Act 自主决策循环                            │
+│  watchdog.ts, observation-classifier.ts, task-init.ts,              │
+│  tri-party-session.ts, message-dispatcher.ts, god-audit.ts,         │
+│  interrupt-clarifier.ts, god-prompt-generator.ts, god-call.ts,      │
+│  god-system-prompt.ts, god-adapter-factory.ts, god-fallback.ts      │
+│  职责: God LLM 自主决策运行时 (Observe → Decide → Act)                │
 ├─────────────────────────────────────────────────────────────────────┤
-│  Layer 5: 工作流引擎层                                               │
-│  workflow-machine.ts (XState v5)                                    │
-│  职责: 状态机驱动、会话恢复状态路由                                      │
+│  Layer 4: 工作流引擎层                                               │
+│  workflow-machine.ts                                                 │
+│  职责: XState v5 状态机，驱动 Observe → Decide → Act 循环              │
 ├─────────────────────────────────────────────────────────────────────┤
-│  Layer 6: 决策引擎层 (旧版 fallback)                                 │
-│  choice-detector.ts, convergence-service.ts                         │
-│  职责: God 降级到 L4 后的规则兜底决策                                   │
+│  Layer 5: 会话管理层                                                 │
+│  session-starter.ts, session-manager.ts, prompt-log.ts              │
+│  职责: 启动参数解析、会话持久化 (原子写入)、Prompt 日志                    │
 ├─────────────────────────────────────────────────────────────────────┤
-│  Layer 7: 会话管理层                                                 │
-│  session-starter.ts, session-manager.ts, context-manager.ts,        │
-│  prompt-log.ts                                                      │
-│  职责: 启动参数解析、会话持久化 (原子写入)、Prompt 上下文                   │
-├─────────────────────────────────────────────────────────────────────┤
-│  Layer 8: 适配层                                                     │
-│  adapters/ (registry + detect + factory + 12 adapters)              │
+│  Layer 6: 适配层                                                     │
+│  adapters/ (registry + detect + factory + model-discovery +          │
+│            process-manager + output-stream-manager + adapters)       │
 │  parsers/ (stream-json / jsonl / text / god-json-extractor)         │
 │  types/ (adapter / session / god-adapter / god-actions /             │
-│          god-envelope / observation)                                 │
-│  职责: AI 工具统一接口、输出解析、核心类型定义                             │
+│          god-envelope / god-schemas / observation / degradation)     │
+│  职责: AI 工具统一接口、动态 Model 发现、输出解析、核心类型定义            │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -85,38 +80,39 @@ duo log <session-id> [--type <type>]                     # 查看审计日志
 duo                                                      # 交互式模式
 ```
 
-#### Layer 2 & 3: UI 层
+#### Layer 2: UI 层
 
-基于 **Ink + React** 的 24 个终端 UI 组件，配合 24 个纯函数状态管理模块。核心组件包括 `App.tsx`（根组件，管理 XState 状态机生命周期）、`SetupWizard.tsx`（交互式设置向导）、`StreamRenderer.tsx`（实时流式渲染 LLM 输出）、`GodDecisionBanner.tsx`（God 决策横幅）等。
+基于 **Ink + React** 的终端 UI 组件（22 个），配合状态管理模块（20 个）。核心组件包括：
 
-#### Layer 4: Sovereign God Runtime
+- `App.tsx` — 根组件，管理 XState 状态机生命周期
+- `SetupWizard.tsx` — 交互式设置向导
+- `StreamRenderer.tsx` — 实时流式渲染 LLM 输出
+- `alternate-screen.ts` — Alternate screen buffer 管理（全屏 TUI 画布），含 SGR mouse reporting 启用和信号安全清理
+- `mouse-input.ts` — 鼠标输入过滤（SGR mouse tracking → wheel 事件转 arrow key），通过 Transform stream 代理 stdin
 
-**核心创新层** -- 28 个文件，实现 God LLM 作为自主决策者的完整运行时。详见下方 [God LLM 决策循环](#god-llm-决策循环) 章节。
+#### Layer 3: Sovereign God Runtime
 
-#### Layer 5: 工作流引擎层
+**核心创新层** -- 实现 God LLM 作为自主决策者的完整运行时。详见下方 [God LLM 决策循环](#god-llm-决策循环) 章节。
+
+#### Layer 4: 工作流引擎层
 
 | 文件 | 职责 |
 |------|------|
 | `src/engine/workflow-machine.ts` | XState v5 状态机。12 个状态、20+ 事件类型。详见 [XState v5 状态机详解](#xstate-v5-状态机详解) |
 
-#### Layer 6: 决策引擎层 (旧版 fallback)
-
-God 降级到 L4 后的兜底组件：`choice-detector.ts`（检测 LLM 输出中的提问/选项）、`convergence-service.ts`（基于规则的收敛判断，不依赖 God LLM）。
-
-#### Layer 7: 会话管理层
+#### Layer 5: 会话管理层
 
 | 文件 | 职责 |
 |------|------|
 | `session-starter.ts` | 解析 CLI 参数，创建 `SessionConfig`，校验 Coder/Reviewer 是否已安装 |
 | `session-manager.ts` | 会话持久化。原子写入 (write-tmp-rename) 到 `.duo/sessions/<id>/snapshot.json` |
-| `context-manager.ts` | Prompt 上下文构建 (God 降级时使用) |
 | `prompt-log.ts` | Prompt 日志记录，用于审计追溯 |
 
-#### Layer 8: 适配层
+#### Layer 6: 适配层
 
 三个子系统：
 
-- **Adapter 子系统**：统一 12 种 AI CLI 工具的执行接口（`CLIAdapter`），通过 registry + detect + factory 模式管理。每种工具定义 command / detectCommand / execCommand / outputFormat / yoloFlag / parserType。
+- **Adapter 子系统**：统一多种 AI CLI 工具的执行接口（`CLIAdapter`），通过 registry + detect + factory 模式管理。每种工具定义 command / detectCommand / execCommand / outputFormat / yoloFlag / parserType。新增 `model-discovery.ts` 支持动态 Model 发现（Codex 读取 `~/.codex/models_cache.json`、Gemini 从 `@google/gemini-cli-core` 读取 `VALID_GEMINI_MODELS`、Claude Code 使用 CLI 稳定别名）。
 - **Parser 子系统**：三种输出格式解析器（stream-json / jsonl / text）+ God JSON 提取器（`god-json-extractor.ts`，含 Zod schema 校验）。
 - **Type 子系统**：核心类型定义，被所有层共享。包括 `CLIAdapter`、`GodAdapter`、`SessionConfig`、`GodAction`、`GodDecisionEnvelope`、`Observation` 等。
 
@@ -170,20 +166,21 @@ Duo 的核心创新是 **Coder + Reviewer + God LLM** 三方协作模型：
 1. **God 是唯一决策者**：所有状态变更（路由、收敛、中止）必须通过 God 的结构化 `GodAction` 表达
 2. **Reviewer 是收敛信号源**：God 参考 Reviewer 的 verdict，但保留 override 权力（需 `system_log` 审计）
 3. **Coder 和 Reviewer 是 Worker**：在 God 管理下工作，不具备 accept authority
-4. **先方案后实现**：Coder 首轮仅分析和提出方案（不修改文件），Reviewer 评估后达成共识，Coder 才开始实现
+4. **先方案后实现**：Coder 首次仅分析和提出方案（不修改文件），Reviewer 评估后达成共识，Coder 才开始实现
 5. **Reviewer 反馈直传**：Reviewer 的原始分析直接注入 Coder 的 prompt，God 只提供路由指导而不复述 Reviewer 的分析
 6. **设计决策需要共识**：当 Coder 提出多个方案时，God 必须路由给 Reviewer 评估，不可自行选择
 7. **God 不向人类求助**：God 自主解决 Worker 提出的实现细节问题（proxy decision-making），仅在真正无法解决时才 `request_user_input`
+8. **Choice handling**：Worker 提出的多方案，按相似度分流 — 相似方案由 God 自主选择（autonomousResolutions），差异大的方案路由给 Reviewer，涉及用户偏好的才 `request_user_input`
 
 ### Propose-First Workflow
 
 ```
-Round 0: Coder 分析 + 提方案 → Reviewer 评估方案 → 达成共识
-Round N: Coder 实现（带 Reviewer 原始反馈）→ Reviewer 验证 → God 判断收敛
+Iteration 0: Coder 分析 + 提方案 → Reviewer 评估方案 → 达成共识
+Iteration N: Coder 实现（带 Reviewer 原始反馈）→ Reviewer 验证 → God 判断收敛
 ```
 
-- **首轮（无 Reviewer 反馈时）**：`code`/`debug` 类型使用 propose-only 指令，Coder 只分析不动代码
-- **后续轮（isPostReviewerRouting=true）**：Coder 拿到完整实现指令 + Reviewer 原始分析
+- **首次迭代（无 Reviewer 反馈时）**：`code`/`debug` 类型使用 propose-only 指令，Coder 只分析不动代码
+- **后续迭代（isPostReviewerRouting=true）**：Coder 拿到完整实现指令 + Reviewer 原始分析
 - **God 路由指导**：God 不复述 Reviewer 内容，而是提供策略方向（优先修哪个问题、用什么方法）
 - **explore/discuss 类型**：始终为只读模式，不受此规则影响
 
@@ -200,7 +197,7 @@ Round N: Coder 实现（带 Reviewer 原始反馈）→ Reviewer 验证 → God 
 
 ## 数据流全景
 
-### 完整会话数据流 (Observe -> Decide -> Act)
+### 完整会话数据流 (Observe → Decide → Act)
 
 ```
 用户输入任务
@@ -213,7 +210,7 @@ Round N: Coder 实现（带 Reviewer 原始反馈）→ Reviewer 验证 → God 
                                                v
                                     ┌─────────────────────┐
                                     │  TASK_INIT           │ God 分析任务意图
-                                    │  task-init.ts        │ -> taskType / phases / rounds
+                                    │  task-init.ts        │ → taskType / phases
                                     └──────────┬──────────┘
                                                │
                                                v
@@ -233,7 +230,7 @@ Round N: Coder 实现（带 Reviewer 原始反馈）→ Reviewer 验证 → God 
                                │    ┌─────────────────────┐
                                │    │  GOD_DECIDING        │ God 统一决策
                                │    │  god-decision-       │ observations + context
-                               │    │  service.ts          │ -> GodDecisionEnvelope
+                               │    │  service.ts          │ → GodDecisionEnvelope
                                │    └──────────┬──────────┘
                                │               │ GodDecisionEnvelope
                                │               │   { diagnosis, authority,
@@ -241,7 +238,7 @@ Round N: Coder 实现（带 Reviewer 原始反馈）→ Reviewer 验证 → God 
                                │               v
                                │    ┌─────────────────────┐
                                │    │  EXECUTING           │ Hand 执行器
-                               │    │  hand-executor.ts    │ GodAction[] -> 执行
+                               │    │  hand-executor.ts    │ GodAction[] → 执行
                                │    │  rule-engine.ts      │ (含规则引擎安全校验)
                                │    └──────────┬──────────┘
                                │               │ result Observation[]
@@ -255,7 +252,7 @@ Round N: Coder 实现（带 Reviewer 原始反馈）→ Reviewer 验证 → God 
                  v             v               v              v              v
           ┌──────────┐  ┌───────────┐  ┌────────────┐  ┌──────────┐  ┌────────────┐
           │  CODING   │  │ REVIEWING │  │    DONE    │  │CLARIFYING│  │GOD_DECIDING│
-          │(round++)  │  │           │  │  (final)   │  │(多轮问答) │  │ (re-enter) │
+          │           │  │           │  │  (final)   │  │(多轮问答) │  │ (re-enter) │
           └──────────┘  └───────────┘  └────────────┘  └──────────┘  └────────────┘
                                │
                                │ reviewerOutput
@@ -275,7 +272,7 @@ Observation[] + GodDecisionContext
 │  Step 1: tryGodCall()                         │
 │    ├── buildUserPrompt() / buildResumePrompt()│
 │    │     - Task Goal                          │
-│    │     - Phase & Round                      │
+│    │     - Phase (current phase + type)       │
 │    │     - Phase Plan (compound 任务)          │
 │    │     - Available Adapters                 │
 │    │     - Observations (severity 排序)        │
@@ -286,16 +283,17 @@ Observation[] + GodDecisionContext
 │    │     - System Prompt (Sovereign God)      │
 │    └── extractGodJson() + Zod 校验            │
 │                                               │
-│  Step 2: (失败时) Watchdog 诊断               │
-│    └── WatchdogService.diagnose()             │
-│          - 分析失败原因                        │
-│          - 决策: retry_fresh / retry_with_hint │
-│          -       construct_envelope / escalate │
+│  Step 2: (失败时) Watchdog retry + backoff    │
+│    └── WatchdogService.shouldRetry()          │
+│          - 连续失败计数                        │
+│          - 指数退避: 2s, 4s, 8s (上限 10s)     │
+│          - 最多 3 次重试后 pause               │
 │                                               │
-│  Step 3: 执行 Watchdog 决策 (最多 1 次重试)   │
-│    └── executeWatchdogDecision()              │
+│  Step 3: 重试失败 → fallback envelope + pause │
+│    └── buildFallbackEnvelope()                │
+│          - 含 wait action (防空结果死亡螺旋)   │
 │                                               │
-│  最大 AI 调用: God(1) + Watchdog(1) + Retry(1) = 3 │
+│  最大 AI 调用: God(1) + Retry(1) = 2          │
 └───────────────────┬───────────────────────────┘
                     │
                     v
@@ -328,7 +326,7 @@ observation       │
     │        │ set_phase:         ctx.currentPhaseId = phaseId   │
     │        │ stop_role:         adapter.kill()                 │
     │        │ retry_role:        kill + queue message           │
-    │        │ switch_adapter:    ctx.adapterConfig.set()        │
+    │        │ switch_adapter:    (not yet implemented)          │
     │        │ wait:              ctx.waitState.active = true    │
     │        │ request_user_input: ctx.clarificationState        │
     │        │ resume_after_interrupt: resumeStrategy             │
@@ -354,8 +352,8 @@ GodDecisionEnvelope.messages[]
 │  target: 'user'              │──> formatGodMessage() → displayToUser()
 │  target: 'system_log'        │──> god-audit.jsonl (append-only)
 │                              │
-│  ⚠ 不产生状态变更 (FR-016)    │
-│  ⚠ NL 不变量检查:             │
+│  不产生状态变更 (FR-016)      │
+│  NL 不变量检查:               │
 │    - 消息提及 phase 变更但无   │
 │      set_phase action → error │
 │    - 消息提及 accept 但无      │
@@ -377,7 +375,7 @@ GodDecisionEnvelope.messages[]
 │ IDLE │                                    │ TASK_INIT │
 └──┬───┘                                    └─────┬─────┘
    │                                              │
-   │ RESUME_SESSION                  TASK_INIT_COMPLETE / TASK_INIT_SKIP
+   │ RESUME_SESSION                    TASK_INIT_COMPLETE
    v                                              │
 ┌──────────┐                                      v
 │ RESUMING │                               ┌──────────┐
@@ -424,18 +422,18 @@ GodDecisionEnvelope.messages[]
                               ┌───────────────── circuit  │        │          │
                               │                  breaker  │        │          │
                               v                  tripped  │        │          │
-                       ┌─────────────────┐                │        │          │
-                       │ MANUAL_FALLBACK │ <──────────────┘        │          │
-                       └────────┬────────┘                         │          │
-                                │                                  │          │
-                         USER_CONFIRM                              │          │
-                           │        │                              │          │
-                      accept    continue                           │          │
-                           │        └──────────────────────────────│──────────┘
-                           v                                       │
-                       ┌────────┐                                  │
-                       │  DONE  │ (final)                          │
-                       └────────┘                                  │
+                       ┌────────────┐                     │        │          │
+                       │   PAUSED   │ <───────────────────┘        │          │
+                       └──────┬─────┘                              │          │
+                              │                                    │          │
+                       USER_CONFIRM                                │          │
+                         │        │                                │          │
+                    accept    continue                             │          │
+                         │        └────────────────────────────────│──────────┘
+                         v                                         │
+                     ┌────────┐                                    │
+                     │  DONE  │ (final)                            │
+                     └────────┘                                    │
                                                                    │
 ┌─────────────┐     OBSERVATIONS_READY → GOD_DECIDING              │
 │ INTERRUPTED │ (backward compat, session resume)                  │
@@ -460,14 +458,14 @@ GodDecisionEnvelope.messages[]
 | 状态 | 类型 | 说明 |
 |------|------|------|
 | `IDLE` | 初始 | 等待 `START_TASK` 或 `RESUME_SESSION` |
-| `TASK_INIT` | 过渡 | God 分析任务意图，确定 taskType / phases / maxRounds |
+| `TASK_INIT` | 过渡 | God 分析任务意图，确定 taskType / phases |
 | `CODING` | 活跃 | Coder 正在执行编码任务 |
 | `REVIEWING` | 活跃 | Reviewer 正在执行审查任务 |
 | `OBSERVING` | 过渡 | 收集并分类 Observation（Coder/Reviewer 输出或事件） |
 | `GOD_DECIDING` | 过渡 | God 分析所有 Observation，输出 GodDecisionEnvelope |
 | `EXECUTING` | 过渡 | Hand 执行器逐个执行 GodAction，产生结果 Observation |
 | `CLARIFYING` | 等待 | God 通过 `request_user_input` 向人类提问，等待回答 |
-| `MANUAL_FALLBACK` | 等待 | Circuit breaker 触发或 God 降级，需人工确认 |
+| `PAUSED` | 等待 | Circuit breaker 触发或 Watchdog retries 耗尽，需人工确认 |
 | `INTERRUPTED` | 兼容 | 旧版中断状态，保留用于 session resume backward compat |
 | `RESUMING` | 过渡 | 从持久化快照恢复会话，按 `RESTORED_TO_*` 路由到对应状态 |
 | `DONE` | 终态 | 任务完成 |
@@ -478,15 +476,15 @@ GodDecisionEnvelope.messages[]
 | 事件 | 源状态 | 目标状态 | 说明 |
 |------|--------|---------|------|
 | `START_TASK` | IDLE | TASK_INIT | 用户启动任务，设置 `taskPrompt` |
-| `TASK_INIT_COMPLETE` | TASK_INIT | CODING | God 完成意图解析，可选更新 `maxRounds` |
-| `TASK_INIT_SKIP` | TASK_INIT | CODING | God 不可用，跳过分析直接开始 |
+| `TASK_INIT_COMPLETE` | TASK_INIT | CODING | God 完成意图解析 |
 | `CODE_COMPLETE` | CODING | OBSERVING | Coder 输出完成，清空旧 observations |
 | `REVIEW_COMPLETE` | REVIEWING | OBSERVING | Reviewer 输出完成，清空旧 observations |
 | `OBSERVATIONS_READY` | OBSERVING / INTERRUPTED / CLARIFYING | GOD_DECIDING | Observation 分类完成，送 God 决策 |
 | `DECISION_READY` | GOD_DECIDING | EXECUTING | God 返回 GodDecisionEnvelope |
 | `EXECUTION_COMPLETE` | EXECUTING | (多目标) | Hand 执行完毕，按 guard 路由到目标状态 |
 | `INCIDENT_DETECTED` | CODING / REVIEWING | OBSERVING | 运行时事件（中断/异常），冻结 `activeProcess` |
-| `USER_CONFIRM` | MANUAL_FALLBACK | DONE / CODING | 用户确认 accept 或 continue |
+| `USER_CONFIRM` | PAUSED | DONE / GOD_DECIDING | 用户确认 accept 或 continue |
+| `PAUSE_REQUIRED` | GOD_DECIDING | PAUSED | Watchdog retries 耗尽需人工介入 |
 | `PROCESS_ERROR` | 多个状态 | ERROR | 进程错误 |
 | `TIMEOUT` | CODING / REVIEWING | ERROR | 进程超时 |
 | `RECOVERY` | ERROR | GOD_DECIDING | 错误恢复，重置 circuit breaker |
@@ -496,8 +494,7 @@ GodDecisionEnvelope.messages[]
 | `RESTORED_TO_WAITING` | RESUMING | GOD_DECIDING | 恢复到 GOD_DECIDING 状态 |
 | `RESTORED_TO_INTERRUPTED` | RESUMING | INTERRUPTED | 恢复到 INTERRUPTED 状态 |
 | `RESTORED_TO_CLARIFYING` | RESUMING | CLARIFYING | 恢复到 CLARIFYING 状态 |
-| `CLEAR_PENDING_PHASE` | GOD_DECIDING / MANUAL_FALLBACK | (保持) | 清除待转换阶段信息 |
-| `MANUAL_FALLBACK_REQUIRED` | GOD_DECIDING | MANUAL_FALLBACK | God 降级需人工介入 |
+| `CLEAR_PENDING_PHASE` | GOD_DECIDING | (保持) | 清除待转换阶段信息 |
 
 ### EXECUTION_COMPLETE 路由守卫
 
@@ -505,8 +502,8 @@ GodDecisionEnvelope.messages[]
 
 | Guard | 条件 | 目标 | 说明 |
 |-------|------|------|------|
-| `circuitBreakerTripped` | 目标为 CODING 且 `consecutiveRouteToCoder + 1 >= 3` | `MANUAL_FALLBACK` | 防止死循环 |
-| `executionTargetCoding` | actions 含 `send_to_coder` 或 `retry_role(coder)` | `CODING` | `round++`, `counter++` |
+| `circuitBreakerTripped` | 目标为 CODING 且 `consecutiveRouteToCoder + 1 >= 3` | `PAUSED` | 防止死循环 |
+| `executionTargetCoding` | actions 含 `send_to_coder` 或 `retry_role(coder)` | `CODING` | `counter++` |
 | `executionTargetReviewing` | actions 含 `send_to_reviewer` 或 `retry_role(reviewer)` | `REVIEWING` | 重置 counter |
 | `executionTargetDone` | actions 含 `accept_task` | `DONE` | 任务完成 |
 | `executionTargetClarifying` | actions 含 `request_user_input` | `CLARIFYING` | God 向人类提问 |
@@ -516,8 +513,6 @@ GodDecisionEnvelope.messages[]
 
 ```typescript
 interface WorkflowContext {
-  round: number;                          // 当前轮次
-  maxRounds: number;                      // 最大轮次 (默认 10，TASK_INIT 可动态调整)
   consecutiveRouteToCoder: number;        // 连续 route-to-coder 次数 (circuit breaker 计数器)
   taskPrompt: string | null;              // 任务描述
   activeProcess: 'coder' | 'reviewer' | null;  // 当前活跃进程
@@ -545,13 +540,14 @@ interface WorkflowContext {
 1. **Sovereign Authority**：God 是运行时唯一决策者，所有状态变更必须通过结构化 `GodAction` 表达
 2. **Reviewer 是收敛信号**：Reviewer 的 verdict 是重要参考，但 God 保留 override 权力（需 `system_log` 审计）
 3. **Rule Engine 不可覆盖**：block 级别规则（R-001..R-005）具有绝对优先级，God 无法 override
-4. **统一决策信封**：`GodDecisionEnvelope` 替代旧版 5 种分散 schema，所有决策走同一管道
+4. **统一决策信封**：`GodDecisionEnvelope` 统一所有决策场景 — 一个入口（`makeDecision`），一种输出格式
 5. **Proxy Decision-Making**：God 自主代理回答 Worker 的实现细节问题，避免不必要的人类交互
 6. **Decision Reflection**：高风险决策前 God 进行自检（scope / quality / plan consistency / proposal check）
+7. **Retry + Pause（不降级）**：God 失败时通过 Watchdog retry + exponential backoff 恢复，retries 耗尽后 pause 等待人工介入，不存在 "降级模式"
 
 ### Observe → Decide → Act 循环
 
-这是 God Runtime 的核心循环，替代了旧版散点路由（ROUTING_POST_CODE / ROUTING_POST_REVIEW / EVALUATING）：
+这是 God Runtime 的核心循环：
 
 ```
       ┌─────────────────────────────────────────────────────┐
@@ -611,18 +607,20 @@ interface WorkflowContext {
 
 - **输入**：`Observation[]` + `GodDecisionContext`
 - **处理**：
-  1. 构建 User Prompt（Task Goal / Phase & Round / Observations / Hand Catalog / Last Decision）
+  1. 构建 User Prompt（Task Goal / Phase / Phase Plan / Observations / Hand Catalog / Last Decision）
   2. 调用 God Adapter（system prompt 使用 CRITICAL OVERRIDE 强制 JSON-only 输出）
   3. 提取 JSON + Zod schema 校验 → `GodDecisionEnvelope`
-  4. 失败时由 Watchdog AI 诊断并决定恢复策略
+  4. 失败时 Watchdog retry with backoff，retries 耗尽则返回 fallback envelope
 - **输出**：`GodDecisionEnvelope`
 
 God 的 system prompt 包含以下指令集：
 - **Phase-following**：compound 任务必须按阶段顺序执行
 - **Reviewer handling**：尊重 Reviewer verdict，override 需审计
 - **Proposal routing**：Coder 多方案时必须路由给 Reviewer 评估
+- **Choice handling**：按方案差异度分流（相似方案自主选择 / 差异大路由 Reviewer / 用户偏好才求助人类）
 - **Proxy decision-making**：实现细节问题自主回答，设计问题路由给 Reviewer
 - **Decision reflection**：高风险决策前自检 scope / quality / plan consistency
+- **Mode specification**：当 phase type 与实际工作模式不匹配时，显式指定执行模式
 
 #### Phase 3: ACT（执行）
 
@@ -654,7 +652,7 @@ GodDecisionEnvelope
 ├── messages: EnvelopeMessage[]      消息列表
 │   └── { target: 'coder'|'reviewer'|'user'|'system_log', content }
 │
-└── autonomousResolutions?           God 代理决策记录 (BUG-24)
+└── autonomousResolutions?           God 代理决策记录
     └── { question, choice, reflection, finalChoice }[]
 ```
 
@@ -674,7 +672,7 @@ Authority 语义约束（schema 层强制执行）：
 | `send_to_reviewer` | `{ message }` | → REVIEWING |
 | `stop_role` | `{ role, reason }` | kill adapter |
 | `retry_role` | `{ role, hint? }` | kill + restart → CODING/REVIEWING |
-| `switch_adapter` | `{ role, adapter, reason }` | 更换某角色的 adapter |
+| `switch_adapter` | `{ role, adapter, reason }` | (not yet implemented) |
 | `set_phase` | `{ phaseId, summary? }` | 阶段转换，写审计日志 |
 | `accept_task` | `{ rationale, summary }` | → DONE，rationale 必须声明 |
 | `wait` | `{ reason, estimatedSeconds? }` | re-enter GOD_DECIDING |
@@ -696,93 +694,40 @@ Authority 语义约束（schema 层强制执行）：
 
 ### Watchdog 服务
 
-`src/god/watchdog.ts` -- AI 驱动的错误诊断系统，替代旧版规则降级：
+`src/god/watchdog.ts` -- 简单的 retry + backoff + pause 机制：
 
 ```
 God 决策失败
     │
     v
 ┌────────────────────────────────┐
-│  WatchdogService.diagnose()    │
+│  WatchdogService               │
 │                                │
-│  输入: 失败信息 + 原始输出 +    │
-│        observations + context  │
+│  核心原则: LLM down = pause    │
+│            不降级，不猜测       │
 │                                │
-│  输出 (4 种决策):               │
-│  ├── retry_fresh               │ 清空 God session，全新重试
-│  ├── retry_with_hint           │ 带纠正提示重试
-│  ├── construct_envelope        │ Watchdog 根据 God 意图构造 envelope
-│  └── escalate                  │ 不可恢复，使用 fallback
+│  retry + exponential backoff:  │
+│  ├── 第 1 次重试: 2s 后        │
+│  ├── 第 2 次重试: 4s 后        │
+│  └── 第 3 次重试: 8s 后        │
 │                                │
-│  安全: 连续 5 次失败 → 自动     │
-│  escalate + godDisabled        │
+│  3 次重试后:                    │
+│  └── paused = true             │
+│      → PAUSED 状态，等人工介入  │
 │                                │
-│  自身失败 → 立即 escalate      │
+│  成功后:                        │
+│  └── 重置失败计数               │
 └────────────────────────────────┘
 ```
-
-### 降级策略
-
-四级降级（`src/god/degradation-manager.ts`），保留用于与 Watchdog 的兼容：
-
-```
-L1 (正常)
- │
- │ God adapter 超时/崩溃
- v
-L2 (可重试)
- │  - 重试 1 次
- │  - 失败则使用 fallback envelope (wait action)
- │
- │ JSON 解析/Zod 校验失败
- v
-L3 (不可重试)
- │  - 带错误提示重试 1 次
- │  - 失败则使用 fallback envelope
- │
- │ 连续 3 次失败
- v
-L4 (God 禁用)
-    - 切换到旧版 decision/ 组件 (ChoiceDetector + ConvergenceService)
-    - 全程无 God 参与
-    - MANUAL_FALLBACK_REQUIRED → 人工介入
-```
-
-三层安全网：God → Watchdog/Fallback → ERROR/MANUAL_FALLBACK → `duo resume`
-
-### 收敛判断
-
-`src/god/god-convergence.ts` -- Reviewer-Authority 收敛评估：
-
-决策树：
-1. 无 Reviewer 输出 → 不能终止（AC-019b，Reviewer 是收敛唯一信号）
-2. `max_rounds` 到达 → 强制终止
-3. `loop_detected` + 3 轮无改善 → 强制终止
-4. `blockingIssueCount > 0` → 不终止
-5. 所有 `criteriaProgress` 满足 → 终止
-6. 否则 → 不终止
-
-内置一致性校验（检测 God 幻觉）：
-- `classification: approved` 但 `blockingIssueCount > 0` → 矛盾
-- `shouldTerminate: true` 但 `blockingIssueCount > 0` → 矛盾
-- `shouldTerminate: true` 但有未满足的 criteria → 矛盾
 
 ### TASK_INIT 任务分析
 
 `src/god/task-init.ts` -- God 启动时分析任务意图：
 
-- 输出 `GodTaskAnalysis`：taskType / confidence / suggestedMaxRounds / terminationCriteria / phases
+- 输出 `GodTaskAnalysis`：taskType / reasoning / confidence / phases
 - 支持 6 种 taskType：`explore` / `code` / `discuss` / `review` / `debug` / `compound`
-- 每种 taskType 有对应的轮次范围约束：
-
-| taskType | 最小轮次 | 最大轮次 |
-|----------|---------|---------|
-| explore | 2 | 5 |
-| code | 3 | 10 |
-| review | 1 | 3 |
-| debug | 2 | 6 |
-| discuss | 2 | 5 |
-| compound | (不限) | (不限) |
+- `compound` 类型必须包含 phases 数组（Zod schema 层强制）
+- 外层通过 `withRetry` + Watchdog 处理重试
 
 ### God 子系统全景
 
@@ -815,22 +760,24 @@ L4 (God 禁用)
 │  └──────────────────────────────────────────────────────────────────┘   │
 │                                                                         │
 │  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │  Quality & Safety Guards (质量与安全守卫)                          │   │
+│  │  Resilience (容错)                                                │   │
 │  │                                                                    │   │
-│  │  watchdog.ts                  AI 驱动的错误诊断与恢复              │   │
-│  │  consistency-checker.ts       检测 God 输出逻辑矛盾/幻觉           │   │
-│  │  loop-detector.ts             循环检测 (3 轮 stagnant / 语义重复)  │   │
-│  │  degradation-manager.ts       L1-L4 四级降级策略                  │   │
+│  │  watchdog.ts                  retry + backoff + pause             │   │
+│  │  god-fallback.ts (ui/)        withRetry — 简单重试包装器          │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 │                                                                         │
 │  ┌──────────────────────────────────────────────────────────────────┐   │
 │  │  Task & Session (任务与会话管理)                                   │   │
 │  │                                                                    │   │
-│  │  task-init.ts                 任务分析 (类型/阶段/轮次/终止标准)   │   │
-│  │  god-convergence.ts           收敛判断 (Reviewer-Authority)       │   │
+│  │  task-init.ts                 任务分析 (类型/阶段/终止标准)        │   │
 │  │  tri-party-session.ts         Coder/Reviewer/God 三方会话隔离      │   │
 │  │  message-dispatcher.ts        消息分发器 (NL 不变量校验)           │   │
 │  │  observation-integration.ts   中断/文本中断 → Observation 转换     │   │
+│  │  interrupt-clarifier.ts       中断意图分类 (restart/redirect/      │   │
+│  │                               continue)                            │   │
+│  │  god-prompt-generator.ts      Coder/Reviewer prompt 生成          │   │
+│  │                               (含 extractBlockingIssues + reviewer │   │
+│  │                                feedback forwarding)                │   │
 │  │  god-audit.ts                 审计日志 (append-only JSONL)         │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -846,7 +793,7 @@ God LLM 是系统中唯一的决策者。所有状态变更（路由、收敛、
 
 ### 2. Envelope 模式（统一决策信封）
 
-旧版使用多种独立 schema（GodTaskAnalysis / GodPostCoderDecision / GodPostReviewerDecision / GodConvergenceJudgment 等）。新版 `GodDecisionEnvelope` 统一所有决策场景：
+`GodDecisionEnvelope` 统一所有决策场景：
 - 一个入口（`makeDecision`），一种输出格式
 - 通过 `actions[]` 的组合表达任意决策
 - `authority` 语义约束通过 Zod `superRefine` 在 schema 层强制执行
@@ -864,20 +811,18 @@ God LLM 是系统中唯一的决策者。所有状态变更（路由、收敛、
 
 God 的决策通过 11 种预定义的 Hand Action 表达，每种 action 有明确的参数和执行语义。Hand Executor 逐个执行 action，每个 action 先经 Rule Engine 校验。被阻止的 action 产生 `runtime_invariant_violation` Observation 反馈给 God。
 
-### 5. Watchdog 模式（AI 错误诊断）
+### 5. Retry + Pause 模式（替代旧版降级）
 
-当 God 决策失败时，不是简单降级，而是由 Watchdog AI 分析失败原因并决定最优恢复策略：
-- `retry_fresh`：清空 God session，全新重试
-- `retry_with_hint`：带纠正提示重试
-- `construct_envelope`：Watchdog 根据 God 意图构造 envelope
-- `escalate`：不可恢复
-
-最大 AI 调用数限制为 3（God + Watchdog + Retry），防止失控。
+God 失败时不降级，而是通过 Watchdog 进行简单的 retry + exponential backoff：
+- 最多 3 次重试（2s → 4s → 8s），backoff 上限 10s
+- 重试耗尽 → pause，等待人工确认（continue / accept）
+- 成功后立即重置失败计数器
+- **核心原则：LLM down = system pause，不存在降级模式**
 
 ### 6. Circuit Breaker 模式
 
 连续 3 次 `route-to-coder`（`consecutiveRouteToCoder >= 3`）触发熔断：
-- 直接跳转 `MANUAL_FALLBACK`
+- 直接跳转 `PAUSED`
 - 需要人工确认（continue 重置计数器 / accept 完成任务）
 - `route-to-reviewer` 时自动重置计数器
 
@@ -913,7 +858,7 @@ interface GodAdapter {
 设计原因：
 - God 需要 `toolUsePolicy` 控制工具使用（God 是纯决策者，不应使用工具）
 - God 需要 `minimumTimeoutMs` 确保足够的推理时间
-- God 需要 `clearSession()` 在 Watchdog 建议 `retry_fresh` 时清空会话
+- God 需要 `clearSession()` 在重试时清空会话
 - God 的 `GodExecOptions` 要求 `systemPrompt` 和 `timeoutMs` 为必填
 
 ### 9. CRITICAL OVERRIDE 系统提示
@@ -929,9 +874,17 @@ Your ONLY job is to output a single JSON code block.
 Do NOT use any tools (Read, Bash, Grep, Write, Edit, Agent, etc.).
 ```
 
-### 10. Fallback Envelope 安全设计（BUG-22 修复）
+### 10. Fallback Envelope 安全设计
 
 God 决策失败时的 fallback envelope 包含一个 `wait` action（而非空 actions），防止 "empty actions → empty results → lost observations" 的死亡螺旋。EXECUTING 状态在结果为空时保留现有 observations。
+
+### 11. Dynamic Model Discovery
+
+`src/adapters/model-discovery.ts` 为各 CLI adapter 提供动态模型发现，结果在模块作用域缓存：
+- **Codex**：读取 `~/.codex/models_cache.json`，按 visibility/priority 过滤排序
+- **Gemini**：通过 `createRequire` 从安装的 `@google/gemini-cli-core` 包读取 `VALID_GEMINI_MODELS`
+- **Claude Code**：使用 CLI 稳定别名（sonnet / opus / haiku）
+- 所有列表末尾追加 `__custom__` sentinel，允许用户手动输入 model ID
 
 ---
 
@@ -964,7 +917,7 @@ God 决策失败时的 fallback envelope 包含一个 `wait` action（而非空 
 - **持久化**：原子写入（write-tmp-rename），会话快照存储在 `.duo/sessions/<id>/`
 - **审计**：God 审计日志使用 append-only JSONL 格式
 - **Prompt 日志**：所有 God 调用的 prompt 记录，用于调试和追溯
-- **CLI 适配**：支持 12 种 AI CLI 工具，通过统一 `CLIAdapter` 接口抽象
+- **CLI 适配**：支持多种 AI CLI 工具，通过统一 `CLIAdapter` 接口抽象
 - **解析器**：3 种输出格式解析器（stream-json / jsonl / text），覆盖所有主流 AI CLI 工具
 
 ### 模块依赖方向
@@ -993,16 +946,17 @@ cli.ts ──> cli-commands.ts
           │       └── god/rule-engine.ts
           │
           ├── god/task-init.ts ──> god/god-call.ts
-          ├── god/god-convergence.ts
           ├── god/tri-party-session.ts
           ├── god/message-dispatcher.ts
-          ├── god/degradation-manager.ts
-          │       └── decision/convergence-service.ts (fallback)
-          │           decision/choice-detector.ts (fallback)
+          ├── god/interrupt-clarifier.ts
+          ├── god/god-prompt-generator.ts
+          │
+          ├── ui/god-fallback.ts (withRetry)
           │
           ├── adapters/factory.ts ──> adapters/process-manager.ts
-          │                           adapters/{cli}/adapter.ts (x12)
+          │                           adapters/{cli}/adapter.ts
           ├── adapters/registry.ts
+          ├── adapters/model-discovery.ts
           │
           ├── session/session-manager.ts
           │
@@ -1014,7 +968,6 @@ cli.ts ──> cli-commands.ts
 
 - **上层 → 下层**：严格单向依赖，上层可以依赖下层，反之不行
 - **types/ 是最底层**：不依赖任何其他模块，被所有层共享
-- **god/ → decision/**：`degradation-manager.ts` 降级时依赖旧版 decision/ 组件
 - **god/ 不依赖 ui/**：God Runtime 与 UI 解耦，通过 App.tsx 集成
 - **engine/ 不依赖 god/**：状态机只定义状态和事件，不包含业务逻辑
 - **adapters/ 不依赖 god/**：Adapter 层只负责工具统一接口，不参与决策

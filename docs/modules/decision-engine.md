@@ -1,291 +1,153 @@
-# 决策引擎模块
+# 决策引擎模块（已重构）
 
-> 源文件: `src/decision/choice-detector.ts` | `src/decision/convergence-service.ts`
+> **重构说明**：原 `src/decision/` 目录（包含 `choice-detector.ts` 和 `convergence-service.ts`）已在 "God Authoritative" 重构中**完全删除**。本文档描述重构后的决策架构。
 >
-> 需求追溯: FR-005 (AC-016 ~ AC-019), FR-006 (AC-020 ~ AC-023)
+> 需求追溯: FR-005, FR-006（原始需求），FR-003, FR-004, FR-008a（重构后实现）
 
 ---
 
-## 1. 模块概览
+## 1. 架构变更概述
 
-决策引擎负责 Duo 工作流中的两个核心自动化判断：
+### 1.1 被删除的模块
 
-- **Choice Detector** — 检测 LLM 输出中的选择题/提问模式，自动路由给对方 LLM 代为决策，确保 Coder-Reviewer 迭代循环不因提问而中断。
-- **Convergence Service** — 分析 Reviewer 输出，判定收敛状态（通过 / 软通过 / 需修改），检测循环模式，决定是否终止迭代。当 God LLM 降级（degradation fallback）时，Convergence Service 作为基于规则的替代方案承担终止判定职责。
+| 原模块 | 原文件 | 删除原因 |
+|--------|--------|----------|
+| **ChoiceDetector** | `src/decision/choice-detector.ts` | God LLM 直接处理 Worker 输出中的选择题/提问，通过 proxy decision-making 自主决策或路由给 Reviewer 评估，不再需要独立的正则检测层 |
+| **ConvergenceService** | `src/decision/convergence-service.ts` | God LLM 是收敛判定的唯一权威。基于规则的收敛检测（marker 匹配、issue 计数、循环检测）被移除，God 通过 `accept_task` action 直接决定任务终止 |
+
+### 1.2 重构动机
+
+原架构中，决策逻辑分散在两层：
+
+1. **规则层**（ChoiceDetector + ConvergenceService）—— 基于正则和 heuristic 的同步判定
+2. **God 层**（God LLM）—— 基于 LLM 的智能判定，ConvergenceService 作为 God 降级时的 fallback
+
+重构后，God LLM 成为**唯一的决策权威**（Sovereign God 模式）。所有工作流决策——包括选择题路由、收敛判定、阶段推进——都由 God 统一处理。这消除了规则层与 God 层之间的判定冲突和优先级歧义。
 
 ---
 
-## 2. Choice Detector (`choice-detector.ts`)
+## 2. 当前决策架构
 
-### 2.1 设计策略：两层防线
+重构后的决策由两个组件承担，职责分明：
 
-采用预防 + 兜底的双层策略：
+```
+Observations (Coder/Reviewer/Runtime/Human 产出)
+    │
+    v
+GodDecisionService.makeDecision()
+    │
+    ├── God LLM 分析 observations + context
+    │       │
+    │       v
+    │   GodDecisionEnvelope (结构化决策)
+    │       │
+    │       ├── actions: Hand[] (send_to_coder, accept_task, set_phase, ...)
+    │       ├── authority: 权限声明
+    │       ├── diagnosis: 形势分析
+    │       └── autonomousResolutions: proxy 决策记录
+    │
+    └── Fallback: God 调用失败时返回 wait action（BUG-22 修复）
 
-1. **系统 prompt 层（预防）**：在 Coder/Reviewer 的 prompt 模板中注入"不要提问，自主决策"的明确指令（中英双语），从源头避免 LLM 输出选择题。
-2. **Regex 检测层（兜底）**：当 LLM 仍然输出选择题格式的内容时，`ChoiceDetector` 通过正则表达式拦截并自动将问题转发给对方 LLM 决策。
+    ──────────────────────────────────────────────────
 
-### 2.2 检测逻辑
+ActionContext (file_write / command_exec / config_modify)
+    │
+    v
+RuleEngine.evaluateRules()  ← 唯一的同步规则引擎
+    │
+    ├── block-level 规则命中 → 绝对阻止（God 不可覆盖）
+    └── warn-level 规则命中 → 警告记录
+```
 
-`detect(text)` 返回 `ChoiceDetectionResult`，**必须同时满足两个条件才触发**：
+### 2.1 GodDecisionService（`src/god/god-decision-service.ts`）
 
-1. 存在**问题行** — 以 `?` / `？` 结尾，或包含选择引导词
-2. 存在**选项列表** — 至少匹配到 2 个选项
+God Decision Service 是所有工作流决策的**统一入口点**，取代了原先分散在 5 个调用点的 God 调用（`routePostCoder` / `routePostReviewer` / `evaluateConvergence` / `makeAutoDecision` / `classifyTask`）。
+
+**核心方法**：`makeDecision(observations, context, isResuming)` → `GodDecisionEnvelope`
+
+**决策流程**：
+
+1. 构建 prompt（含 observations、context、Hand catalog、phase plan）
+2. 调用 God adapter 获取 LLM 输出
+3. 通过 `extractGodJson` + Zod schema 校验提取结构化 envelope
+4. 成功 → 返回 envelope，通知 Watchdog 成功
+5. 失败 → Watchdog 判断是否重试（backoff 策略）
+6. 重试仍失败 → 返回 fallback envelope（包含 `wait` action，防止空 action 导致的死循环）
+
+**God 承担的原 ChoiceDetector 职责**：
+
+God system prompt 中包含 `CHOICE_HANDLING_INSTRUCTIONS` 和 `PROXY_DECISION_INSTRUCTIONS`，指导 God 处理 Worker 输出中的选择题：
+- 实现细节类问题 → God 自主决策，记录到 `autonomousResolutions`
+- 设计方案类选择（多方案对比） → 路由给 Reviewer 评估（`send_to_reviewer`）
+- 用户偏好类问题 → `request_user_input`（仅限真正需要人类输入的场景）
+
+**God 承担的原 ConvergenceService 职责**：
+
+God 通过 `accept_task` action 直接判定任务收敛，携带 `rationale` 字段说明终止原因：
+- `reviewer_aligned` — Reviewer 已通过，God 认同
+- `god_override` — God 覆盖 Reviewer 判定
+- `forced_stop` — 强制终止
+
+God system prompt 中的 `REVIEWER_HANDLING_INSTRUCTIONS` 和 `DECISION_REFLECTION_INSTRUCTIONS` 确保 God 在做出收敛判定时：
+- 必须参考 Reviewer verdict（`[APPROVED]` / `[CHANGES_REQUESTED]`）
+- 在高风险决策前执行 self-check（scope、quality、plan consistency）
+- 不得在 Reviewer 未参与时使用 `reviewer_aligned` rationale
+
+### 2.2 Rule Engine（`src/god/rule-engine.ts`）
+
+Rule Engine 是系统中**唯一保留的同步规则引擎**，但它不参与工作流决策（选择题路由、收敛判定），而是作为**安全沙箱**，对 Coder 的具体操作（文件写入、命令执行、配置修改）进行安全校验。
+
+**关键设计**：block-level 规则具有绝对优先级，God 不可覆盖（NFR-009）。
+
+#### 规则清单
+
+| 规则 ID | Level | 描述 | 触发条件 |
+|---------|-------|------|----------|
+| R-001 | `block` | 文件写入超出 `~/Documents` 范围 | `file_write` / `config_modify` 路径不在 `~/Documents` 下 |
+| R-002 | `block` | 访问系统关键目录 | 路径或命令引用 `/etc`、`/usr`、`/bin`、`/System`、`/Library`（含 symlink 解析） |
+| R-003 | `block` | 可疑的网络外发 | 命令匹配 `curl` + 数据上传模式 |
+| R-004 | `warn` | God 批准与规则引擎冲突 | `godApproved = true` 但存在 block-level 命中 |
+| R-005 | `warn` | Coder 修改 `.duo/` 配置 | 路径包含 `/.duo/` |
+
+#### 路径解析安全
+
+`resolvePath()` 函数处理 symlink 绕过攻击：
+- 优先使用 `realpathSync` 解析完整路径
+- 路径不存在时，逐级向上查找最深的存在祖先目录，解析其 realpath 后拼接剩余路径
+- macOS 特殊处理：`/etc` → `/private/etc` 等系统目录 symlink 在初始化时预解析
+
+#### 评估接口
 
 ```typescript
-interface ChoiceDetectionResult {
-  detected: boolean;
-  choices: string[];    // 提取到的选项文本列表
-  question?: string;    // 问题行文本
-}
+function evaluateRules(action: ActionContext): RuleEngineResult
 ```
 
-#### 预处理：代码块过滤
-
-检测前先过滤 `` ``` `` 包围的代码块内容，防止代码中的注释、字符串或测试用例触发误检测。仅对非代码块中的非空行进行模式匹配。
-
-#### 问题行识别
-
-两类正则协同工作，扫描所有有效行，记录**最后一个**匹配的问题行及其行号：
-
-| 模式 | 正则 | 示例 |
-|------|------|------|
-| 问号结尾 | `/^.+[?？]\s*$/` | `你更倾向哪种方案？` |
-| 选择引导词 | `/\b(options?\|choose\|prefer\|which\|pick\|select\|方案\|选择\|哪[个种])\b/i` | `以下是两个方案：` |
-
-#### 支持的选项模式
-
-| 模式 | 正则 | 示例 |
-|------|------|------|
-| A/B/C 点号或括号 | `/^([A-C])[.)]\s*(.+)/` | `A. 使用 React` |
-| A/B/C 冒号 | `/^([A-C])[:：]\s*(.+)/` | `A: 使用 Redux` |
-| 数字编号 | `/^(\d)[.)]\s*(.+)/` | `1. 方案一` |
-| 中文方案 | `/^方案([一二三四五六七八九十\d]+)[：:.]?\s*(.+)/` | `方案一：使用 Redux` |
-| Option N | `/^Option\s+(\d+)[：:.]\s*(.+)/i` | `Option 1: Use hooks` |
-| Bullet 列表 | `/^[-•*]\s+(.+)/` | `- 使用 Context API` |
-
-**Bullet 列表的特殊限制**：仅在问题行之后出现、且内容长度 < 120 字符时才视为选项，避免将正常段落或代码描述误判为选择题选项。
-
-选项搜索范围：从问题行前 2 行（`Math.max(0, questionLineIdx - 2)`）到文本末尾。
-
-### 2.3 Forward Prompt 构建
-
-`buildForwardPrompt(result, taskContext)` 生成转发给对方 LLM 的决策 prompt：
-
-```
-Task: <任务上下文>
-
-A decision is needed:
-<原始问题文本>
-
-Choices:
-1. <选项1>
-2. <选项2>
-...
-
-Reply with ONLY: the choice number, then one sentence of reasoning. Do not ask questions.
-只回复：选项编号 + 一句话理由。不要提问。
-```
-
-核心设计约束：
-- 提供完整的任务上下文，让对方 LLM 有足够信息做出合理判断
-- 统一编号格式列出所有选项，消除原始格式差异
-- 严格要求对方 LLM **只返回编号 + 一句话理由**，不允许反问，确保决策链路不发散
-- 问题文本缺失时使用 `(no question text)` 作为兜底
-
-### 2.4 无状态设计
-
-`ChoiceDetector` 不维护任何对话历史或内部状态，每次 `detect()` 调用都是独立的。这使得它可以在工作流的任意节点被安全复用，降低耦合度。
+返回 `{ blocked: boolean, results: RuleResult[] }`。`blocked` 为 `true` 当且仅当存在 `level: 'block'` 且 `matched: true` 的规则。
 
 ---
 
-## 3. Convergence Service (`convergence-service.ts`)
+## 3. 原决策模块功能的去向
 
-### 3.1 分类体系
-
-`classify(output)` 将 Reviewer 输出分为三类，按优先级判定：
-
-| Classification | 触发条件 | 含义 |
-|----------------|---------|------|
-| `approved` | 输出中包含 `[APPROVED]` marker | 正式通过 |
-| `soft_approved` | 无 blocking issue + 无 `[CHANGES_REQUESTED]` + 匹配 soft approval 短语 | 语义通过（Reviewer 表达了认可但遗漏了标准 marker） |
-| `changes_requested` | 其他所有情况 | 需要继续修改（保守默认分类） |
-
-**关键设计**：只有显式的 `[APPROVED]` marker 才触发正式通过。这是保守策略——Reviewer 的客套话或模糊表述不会被误判为通过，避免提前终止迭代。
-
-### 3.2 Soft Approval 模式
-
-以下模式在同时满足"无 blocking issue"且"无 `[CHANGES_REQUESTED]` marker"的前提下触发 `soft_approved`：
-
-**英文模式**：
-- `LGTM`
-- `looks good to me`
-- `no (more) issues/problems/concerns/changes`
-- `all issues resolved/fixed/addressed`
-- `ship it`
-- `ready to merge/ship/deploy`
-- `nothing (else) to fix/change/address`
-
-**中文模式**：
-- `代码已通过`
-- `没有(更多/其他)问题/意见/修改`
-- `所有问题/issue已/都修复/解决/处理`
-- `可以合并/提交/部署`
-- `非常好`
-
-`soft_approved` 作为 `[APPROVED]` marker 的补充机制，兜底处理 Reviewer LLM 忘记输出标准 verdict marker 但已明确表达认可的情况。
-
-### 3.3 Blocking Issue 计数
-
-`countBlockingIssues(output)` 采用两级计数策略：
-
-**第一优先级：结构化输出** — 匹配 `Blocking: N` 格式行（由 Reviewer prompt template 要求产出）。匹配到后直接返回 N，不再执行 heuristic 计数。
-
-```typescript
-const explicitMatch = output.match(/^Blocking:\s*(\d+)/m);
-```
-
-**第二优先级：Heuristic fallback** — 当 Reviewer 未产出结构化计数行时，统计以下 marker 的出现次数：
-
-| 计入 blocking 的 marker | 正则 |
-|------------------------|------|
-| `**Blocking**` | `/\*\*Blocking\*\*/gi` |
-| `**Bug**` / `**Error**` / `**Missing**` / `**Issue**` / `**Problem**` | `/^\s*[-*]\s*\*\*(?:Bug\|Error\|Missing\|Issue\|Problem)\*\*/gim` |
-| 编号问题项 | `/^\s*\d+\.\s*\*\*(?:Location\|Problem\|Bug)\*\*/gim` |
-
-然后减去 `**Non-blocking**` marker 的数量，结果下限为 0。
-
-### 3.4 终止条件评估
-
-`evaluate(reviewerOutput, ctx)` 返回 `ConvergenceResult`，按优先级检查以下终止条件：
-
-| 优先级 | Reason | 条件 | shouldTerminate |
-|--------|--------|------|-----------------|
-| 1 | `approved` | 输出包含 `[APPROVED]` marker | `true` |
-| 2 | `soft_approved` | Soft approval 模式匹配 | `true` |
-| 3 | `max_rounds` | `currentRound >= maxRounds`（默认 20） | `true` |
-| 4 | `loop_detected` | Loop detection 触发 | `true` |
-| 5 | `diminishing_issues` | blocking count = 0 + trend = improving + 无 `[CHANGES_REQUESTED]` + 至少经过 2 轮 | `true` |
-| — | `null` | 以上均不满足 | `false`（继续迭代） |
-
-`maxRounds` 默认值为 20（`DEFAULT_MAX_ROUNDS`），可通过 `ConvergenceServiceOptions` 配置。
-
-### 3.5 Loop Detection（循环检测）
-
-`detectLoop(current, previousOutputs)` 通过关键词相似度检测重复反馈模式，防止 Coder 和 Reviewer 陷入无效循环：
-
-**规则一：近期匹配** — 当前输出与最近 4 轮中任意一轮的 Jaccard 相似度 >= 阈值 -> 判定为循环。
-
-**规则二：周期性模式** — 历史至少 3 轮时，扫描最近 8 轮，当前输出与其中 2 轮以上相似 -> 判定为循环。扫描窗口限制为 8 轮以避免长会话中的误报。
-
-**相似度算法**：基于关键词集合的 Jaccard similarity，阈值 `SIMILARITY_THRESHOLD = 0.45`：
-
-```
-similarity = |intersection(keywords_A, keywords_B)| / |union(keywords_A, keywords_B)|
-```
-
-#### 双语关键词提取
-
-`extractKeywords(text)` 实现中英文双语关键词提取：
-
-**英文处理**：
-- 全文小写化
-- 按非字母数字字符拆分为词
-- 过滤长度 < 3 的词
-- 过滤 stop words（the, this, that, with, from, have, been, was, were, are, for, and, but, not, please, could, would, should 等共 30+ 个）
-
-**中文处理**：
-- 提取 CJK 字符范围（`\u4e00-\u9fff`）
-- 生成 bigram（2 字符滑动窗口）用于语义匹配
-- 同时保留有意义的单字符
-- 过滤中文 stop words（的、了、在、是、我、有、和、就、不、人、都 等共 30+ 个）
-
-这种双语提取确保了中英文混合输出场景下的循环检测能力。
-
-### 3.6 Progress Trend（进展趋势）
-
-`detectProgressTrend(currentIssueCount, previousOutputs)` 对比当前和最近 3 轮的 blocking issue 数量，判断修复进展：
-
-| Trend | 条件 |
-|-------|------|
-| `improving` | 当前 issue 数 < 上轮 issue 数，或从 >0 降到 0 |
-| `stagnant` | 当前 issue 数 = 上轮 issue 数，且 >0 |
-| `unknown` | 无历史数据或不满足上述条件 |
-
-Trend 信息有两个用途：
-1. 用于 `diminishing_issues` 终止条件的判断（需要 `improving`）
-2. 供 UI 层展示迭代进展状态
-
-### 3.7 评估结果接口
-
-```typescript
-interface ConvergenceResult {
-  classification: 'approved' | 'soft_approved' | 'changes_requested';
-  shouldTerminate: boolean;
-  reason: 'approved' | 'soft_approved' | 'max_rounds'
-        | 'loop_detected' | 'diminishing_issues' | null;
-  loopDetected: boolean;
-  issueCount: number;
-  progressTrend: 'improving' | 'stagnant' | 'unknown';
-}
-```
-
-### 3.8 God 降级 Fallback 角色
-
-当 God LLM（编排层）不可用或发生降级时，Convergence Service 承担其部分职责——作为基于规则的终止判定引擎运行。此时终止判定完全依赖于上述确定性规则（marker 匹配、issue 计数、循环检测），而非 God LLM 的智能判断。这种设计确保了即使 God LLM 不可用，工作流仍能可靠地自动终止。
+| 原功能 | 原实现 | 当前实现 |
+|--------|--------|----------|
+| 选择题检测（正则） | `ChoiceDetector.detect()` | God LLM 直接从 observation 中识别 |
+| 选择题转发 prompt 构建 | `ChoiceDetector.buildForwardPrompt()` | God 通过 `send_to_coder` / `send_to_reviewer` action 路由 |
+| Reviewer 输出分类 | `ConvergenceService.classify()` | God 直接分析 Reviewer verdict |
+| Blocking issue 计数 | `ConvergenceService.countBlockingIssues()` | God 从 Reviewer 输出语义理解 issue 数量 |
+| 终止条件评估 | `ConvergenceService.evaluate()` | God 通过 `accept_task` action 决定终止 |
+| 循环检测 | `ConvergenceService.detectLoop()` | God 通过 observation 历史判断是否陷入循环 |
+| 进展趋势分析 | `ConvergenceService.detectProgressTrend()` | God 在 `diagnosis.summary` 中评估进展 |
+| God 降级 fallback | ConvergenceService 作为规则兜底 | `buildFallbackEnvelope()` 返回 `wait` action，等待重试 |
 
 ---
 
-## 4. 协作流程
-
-```
-LLM 输出文本
-    |
-    +--- ChoiceDetector.detect()
-    |       |
-    |       +- detected: false -> 继续正常流程
-    |       |
-    |       +- detected: true
-    |               |
-    |               v
-    |           buildForwardPrompt()
-    |               |
-    |               v
-    |           转发给对方 LLM 决策
-    |               |
-    |               v
-    |           用决策结果替换原始选择题
-    |               |
-    |               v
-    |           回到正常流程
-    |
-    +--- ConvergenceService.evaluate()（仅 Reviewer 输出）
-            |
-            +-- shouldTerminate: true
-            |       |
-            |       +-- reason: approved          -> 工作流正常完成
-            |       +-- reason: soft_approved     -> 工作流正常完成
-            |       +-- reason: max_rounds        -> 工作流完成（附带最大轮次警告）
-            |       +-- reason: loop_detected     -> 工作流完成（附带循环检测警告）
-            |       +-- reason: diminishing_issues -> 工作流完成（问题已消减）
-            |
-            +-- shouldTerminate: false -> 继续下一轮 Coder -> Reviewer 循环
-```
-
----
-
-## 5. 关键设计决策
+## 4. 关键设计决策
 
 | 决策 | 理由 |
 |------|------|
-| 只认 `[APPROVED]` marker 为正式通过 | 保守策略，避免 Reviewer 的客套话或模糊表述被误判为通过 |
-| Soft approval 作为补充机制 | 兜底处理 Reviewer 忘记标记但已明确表达认可的场景 |
-| Jaccard similarity + 双语 bigram | 轻量级相似度计算，无需 embedding 模型或外部依赖，原生支持中英文混合 |
-| 相似度阈值 0.45 | 平衡灵敏度与误报率——低于此值的输出通常包含足够多的新信息 |
-| Bullet 列表长度限制 120 字符 | 避免将正常的代码描述段落误判为选择题选项 |
-| 代码块过滤 | 防止代码注释中的问号或列表格式触发误检测 |
-| 默认 maxRounds = 20 | 防止无限迭代，可通过配置覆盖 |
-| Diminishing issues 至少 2 轮 | 避免首轮就因 issue = 0 而误终止 |
-| 双层 issue 计数（结构化优先 + heuristic fallback） | 结构化 `Blocking: N` 最可靠；heuristic 兜底处理非标准格式 |
-| ChoiceDetector 无状态 | 不维护任何历史或内部状态，可在工作流任意节点安全复用 |
-| Loop detection 扫描窗口限 8 轮 | 避免长会话中早期不相关输出导致误判 |
-| 规则引擎作为 God 降级 fallback | 确保 God LLM 不可用时工作流仍能基于确定性规则自动终止 |
+| 删除 ChoiceDetector | God LLM 能更准确地理解问题语义和上下文，正则检测在中英文混合场景下存在误判；God 的 proxy decision-making 同时解决了"检测"和"决策"两个问题 |
+| 删除 ConvergenceService | 基于规则的收敛判定无法处理复杂的任务完成度评估；God 作为唯一权威消除了规则判定与 God 判定之间的冲突 |
+| 保留 Rule Engine 作为安全沙箱 | 安全规则（防止文件越权写入、系统目录访问）是不可协商的硬约束，不应依赖 LLM 判断 |
+| Rule Engine block-level 不可被 God 覆盖 | NFR-009 要求：安全边界由确定性规则保障，LLM 的不确定性不应影响安全决策 |
+| God 失败时返回 wait action（非空 action） | BUG-22 修复：空 actions 导致空结果 → 丢失 observations → 死循环。wait action 确保执行循环产生新 observation |
+| Watchdog backoff 重试 | God adapter 可能因网络、rate limit 等暂时失败，自动重试避免不必要的 fallback |

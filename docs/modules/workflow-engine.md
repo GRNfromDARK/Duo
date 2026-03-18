@@ -1,6 +1,6 @@
 # 工作流引擎 (Workflow Engine)
 
-> 源码：`src/engine/workflow-machine.ts`
+> 源码：`src/engine/workflow-machine.ts`（engine 目录下的唯一文件）
 >
 > 类型定义：`src/types/session.ts`、`src/types/god-actions.ts`、`src/types/god-envelope.ts`、`src/types/observation.ts`
 >
@@ -17,6 +17,8 @@
 WorkflowMachine 是 Duo 的核心调度器，基于 **XState v5** 实现。它驱动 **Observe → Decide → Act** 循环，保证在任意时刻**只有一个 LLM 进程在运行**（串行执行原则）。状态机支持序列化/反序列化，用于 session 恢复。
 
 Machine ID 为 `workflow`，初始状态为 `IDLE`。
+
+> **架构简化说明**：`src/engine/` 目录现在仅包含 `workflow-machine.ts` 一个文件。原有的 `interrupt-handler.ts` 已删除，中断处理逻辑已内联到 `App.tsx`，通过 observation pipeline 统一走 `INCIDENT_DETECTED → OBSERVING` 路径。
 
 #### 拓扑概览
 
@@ -37,14 +39,12 @@ REVIEWING → OBSERVING → GOD_DECIDING → EXECUTING → ...
 
 ### 1.2 WorkflowContext 结构
 
-状态机的 context 包含 18 个字段，定义于 `WorkflowContext` interface。所有字段均可通过 `input` 参数在创建 machine 时注入初始值，未提供的字段取默认值。
+状态机的 context 包含 15 个字段，定义于 `WorkflowContext` interface。所有字段均可通过 `input` 参数在创建 machine 时注入初始值，未提供的字段取默认值。
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `round` | `number` | `0` | 当前迭代轮次 |
-| `maxRounds` | `number` | `10` | 最大允许轮次（可由 `TASK_INIT_COMPLETE` 覆盖） |
 | `consecutiveRouteToCoder` | `number` | `0` | 连续路由回 coder 的次数，用于 circuit breaker 检测 |
-| `taskPrompt` | `string \| null` | `null` | 当前任务 prompt（Phase 切换时自动注入 `[Phase: xxx]` 前缀） |
+| `taskPrompt` | `string \| null` | `null` | 当前任务 prompt |
 | `activeProcess` | `'coder' \| 'reviewer' \| null` | `null` | 当前活跃的 LLM 进程角色 |
 | `lastError` | `string \| null` | `null` | 最后一次错误信息 |
 | `lastCoderOutput` | `string \| null` | `null` | coder 最近一次输出 |
@@ -61,7 +61,7 @@ REVIEWING → OBSERVING → GOD_DECIDING → EXECUTING → ...
 
 ---
 
-### 1.3 状态定义（共 13 个）
+### 1.3 状态定义（共 12 个）
 
 | 状态 | 类型 | 说明 |
 |------|------|------|
@@ -73,7 +73,7 @@ REVIEWING → OBSERVING → GOD_DECIDING → EXECUTING → ...
 | `GOD_DECIDING` | 决策 | Card D.1：调用统一 God 决策服务，等待 GodDecisionEnvelope |
 | `EXECUTING` | 执行 | Card D.1：Hand executor 运行 GodActions，产出 result observations |
 | `CLARIFYING` | 澄清 | Card E.2：God 调解的多轮人机澄清循环。由 `request_user_input` action 进入，人类回答后经 observation pipeline 回到 GOD_DECIDING，God 可继续追问或发出 `resume_after_interrupt` 恢复工作 |
-| `MANUAL_FALLBACK` | 降级 | God LLM 无法自动决策时的手动降级模式，等待 `USER_CONFIRM` |
+| `PAUSED` | 暂停 | God LLM 无法自动决策或 circuit breaker 触发时的暂停模式，等待 `USER_CONFIRM` |
 | `INTERRUPTED` | 中断（兼容） | 保留用于向后兼容（session 恢复 via `RESTORED_TO_INTERRUPTED`）。Card E.1 之后新的中断走 `INCIDENT_DETECTED → OBSERVING` 路径 |
 | `RESUMING` | 恢复 | 从持久化 session 恢复到目标状态的中转站 |
 | `DONE` | **final** | 工作流正常结束（XState final state，不接受任何事件） |
@@ -81,15 +81,16 @@ REVIEWING → OBSERVING → GOD_DECIDING → EXECUTING → ...
 
 ---
 
-### 1.4 事件定义（共 22 个）
+### 1.4 事件定义（共 21 个）
 
 #### 1.4.1 任务生命周期事件
 
 | 事件 | 携带数据 | 说明 |
 |------|----------|------|
 | `START_TASK` | `prompt: string` | 启动新任务，`taskPrompt` 写入 context |
-| `TASK_INIT_COMPLETE` | `maxRounds?: number` | God LLM intent 解析完成，可选覆盖 maxRounds |
-| `TASK_INIT_SKIP` | -- | 跳过 intent 解析，直接进入 CODING |
+| `TASK_INIT_COMPLETE` | -- | God LLM intent 解析完成 |
+
+> **v2 变更**：`TASK_INIT_SKIP` 已移除（God 在 v2 架构中始终必需）。`TASK_INIT_COMPLETE` 不再携带 `maxRounds` 参数。
 
 #### 1.4.2 LLM 进程完成事件
 
@@ -104,13 +105,13 @@ REVIEWING → OBSERVING → GOD_DECIDING → EXECUTING → ...
 |------|----------|------|
 | `USER_INTERRUPT` | -- | 用户中断信号（类型保留，但 Card E.1 后中断走 observation pipeline） |
 | `USER_INPUT` | `input: string; resumeAs: 'coder' \| 'reviewer' \| 'decision'` | 中断后用户提供新指令（类型保留，但 Card E.1 后走 observation pipeline） |
-| `USER_CONFIRM` | `action: 'continue' \| 'accept'` | 用户在 MANUAL_FALLBACK 做出选择 |
+| `USER_CONFIRM` | `action: 'continue' \| 'accept'` | 用户在 PAUSED 做出选择 |
 
 #### 1.4.4 错误与超时事件
 
 | 事件 | 携带数据 | 说明 |
 |------|----------|------|
-| `PROCESS_ERROR` | `error: string` | LLM 进程错误，可从 CODING / REVIEWING / OBSERVING / GOD_DECIDING / EXECUTING / RESUMING 触发 |
+| `PROCESS_ERROR` | `error: string` | LLM 进程错误，可从 CODING / REVIEWING / OBSERVING / GOD_DECIDING / EXECUTING / RESUMING / TASK_INIT 触发 |
 | `TIMEOUT` | -- | LLM 进程超时（仅在 CODING / REVIEWING 状态处理） |
 
 #### 1.4.5 Observe-Decide-Act 循环事件（Card D.1）
@@ -122,7 +123,13 @@ REVIEWING → OBSERVING → GOD_DECIDING → EXECUTING → ...
 | `EXECUTION_COMPLETE` | `results: Observation[]` | Hand executor 执行完毕，携带结果 observations，按 guard 条件路由到下一状态 |
 | `INCIDENT_DETECTED` | `observation: Observation` | 运行时检测到 incident（中断、异常等），冻结 `activeProcess` 后进入 OBSERVING |
 
-#### 1.4.6 Session 恢复事件
+#### 1.4.6 暂停事件
+
+| 事件 | 携带数据 | 说明 |
+|------|----------|------|
+| `PAUSE_REQUIRED` | -- | God LLM 无法自动决策，从 GOD_DECIDING 进入 PAUSED |
+
+#### 1.4.7 Session 恢复事件
 
 | 事件 | 携带数据 | 说明 |
 |------|----------|------|
@@ -133,12 +140,11 @@ REVIEWING → OBSERVING → GOD_DECIDING → EXECUTING → ...
 | `RESTORED_TO_INTERRUPTED` | -- | session 恢复至 INTERRUPTED |
 | `RESTORED_TO_CLARIFYING` | -- | Card E.2：session 恢复至 CLARIFYING |
 
-#### 1.4.7 辅助事件
+#### 1.4.8 辅助事件
 
 | 事件 | 携带数据 | 说明 |
 |------|----------|------|
-| `CLEAR_PENDING_PHASE` | -- | 清除待切换的 phase 信息（GOD_DECIDING / MANUAL_FALLBACK 中均可处理） |
-| `MANUAL_FALLBACK_REQUIRED` | -- | God LLM 无法自动决策，从 GOD_DECIDING 降级至 MANUAL_FALLBACK |
+| `CLEAR_PENDING_PHASE` | -- | 清除待切换的 phase 信息（GOD_DECIDING 中可处理） |
 | `RECOVERY` | -- | 从 ERROR 恢复至 GOD_DECIDING，同时重置 `consecutiveRouteToCoder` |
 
 ---
@@ -153,8 +159,7 @@ REVIEWING → OBSERVING → GOD_DECIDING → EXECUTING → ...
    |  IDLE  |--------->| TASK_INIT |                  | RESUMING  |
    +--------+          +-----+-----+                  +-----+-----+
                              |                              |
-                   TASK_INIT_COMPLETE               RESTORED_TO_*
-                   TASK_INIT_SKIP                         |
+                   TASK_INIT_COMPLETE                RESTORED_TO_*
                              |         +------------------+---------+---------+---------+
                              v         v                  v         v         v         v
                        +---------+  CODING          REVIEWING  GOD_DECIDING INTER-  CLARI-
@@ -175,19 +180,19 @@ REVIEWING → OBSERVING → GOD_DECIDING → EXECUTING → ...
                |     +---------------+    |                |
                |     | GOD_DECIDING  |<---+-------OBSERVATIONS_READY
                |     +-------+-------+    |
-               |             |            |     MANUAL_FALLBACK_REQUIRED
+               |             |            |     PAUSE_REQUIRED
                |       DECISION_READY     |                |
                |             |            |                v
-               |             v            |     +------------------+
-               |       +-----------+      |     | MANUAL_FALLBACK  |
-               |       | EXECUTING |------+     +--------+---------+
-               |       +-----+-----+                     |
-               |             |                      USER_CONFIRM
+               |             v            |        +----------+
+               |       +-----------+      |        |  PAUSED  |
+               |       | EXECUTING |------+        +----+-----+
+               |       +-----+-----+                    |
+               |             |                     USER_CONFIRM
                |    EXECUTION_COMPLETE              |           |
                |             |                  continue      accept
                |    +--------+--------+---------+   |           |
                |    |        |        |         |   v           v
-               |    v        v        v         v  CODING      DONE
+               |    v        v        v         v  GOD_DEC.    DONE
                |  CODING  REVIEW.  DONE    CLARIFYING
                |  (route)  (route)            |
                |    |                         |
@@ -204,6 +209,7 @@ REVIEWING → OBSERVING → GOD_DECIDING → EXECUTING → ...
    │    --PROCESS_ERROR / TIMEOUT-->  ERROR           │
    │                                                 │
    │  OBSERVING / GOD_DECIDING / EXECUTING / RESUMING│
+   │  / TASK_INIT                                    │
    │    --PROCESS_ERROR-->            ERROR           │
    │                                                 │
    │  ERROR --RECOVERY-->             GOD_DECIDING   │
@@ -212,7 +218,7 @@ REVIEWING → OBSERVING → GOD_DECIDING → EXECUTING → ...
    │    (backward compat)                            │
    │                                                 │
    │  EXECUTING --circuitBreakerTripped-->            │
-   │                                  MANUAL_FALLBACK│
+   │                                  PAUSED         │
    │                                                 │
    │  EXECUTING --default (no routing action)-->      │
    │                                  GOD_DECIDING   │
@@ -263,8 +269,8 @@ REVIEWING → OBSERVING → GOD_DECIDING → EXECUTING → ...
 
 | 事件 | 目标状态 | Context 更新 |
 |------|----------|-------------|
-| `TASK_INIT_COMPLETE` | CODING | `activeProcess` = `'coder'`，`consecutiveRouteToCoder` = 0，`maxRounds` 可被 event 覆盖 |
-| `TASK_INIT_SKIP` | CODING | `activeProcess` = `'coder'`，`consecutiveRouteToCoder` = 0 |
+| `TASK_INIT_COMPLETE` | CODING | `activeProcess` = `'coder'`，`consecutiveRouteToCoder` = 0 |
+| `PROCESS_ERROR` | ERROR | `lastError` = event.error |
 
 #### CODING
 
@@ -299,7 +305,7 @@ REVIEWING → OBSERVING → GOD_DECIDING → EXECUTING → ...
 |------|----------|-------------|
 | `DECISION_READY` | EXECUTING | `lastDecision` = event.envelope |
 | `CLEAR_PENDING_PHASE` | *（自转换）* | `pendingPhaseId` = null，`pendingPhaseSummary` = null |
-| `MANUAL_FALLBACK_REQUIRED` | MANUAL_FALLBACK | -- |
+| `PAUSE_REQUIRED` | PAUSED | -- |
 | `PROCESS_ERROR` | ERROR | `lastError` = event.error |
 
 #### EXECUTING
@@ -308,8 +314,8 @@ REVIEWING → OBSERVING → GOD_DECIDING → EXECUTING → ...
 
 | Guard | 目标状态 | Context 更新 |
 |-------|----------|-------------|
-| `circuitBreakerTripped` | MANUAL_FALLBACK | `currentObservations` = event.results，`activeProcess` = null，`lastError` = circuit breaker 消息 |
-| `executionTargetCoding` | CODING | `currentObservations` = event.results，`activeProcess` = 'coder'，`round`++，`consecutiveRouteToCoder`++，清除 clarification 状态 |
+| `circuitBreakerTripped` | PAUSED | `currentObservations` = event.results，`activeProcess` = null，`lastError` = circuit breaker 消息 |
+| `executionTargetCoding` | CODING | `currentObservations` = event.results，`activeProcess` = 'coder'，`consecutiveRouteToCoder`++，清除 clarification 状态 |
 | `executionTargetReviewing` | REVIEWING | `currentObservations` = event.results，`activeProcess` = 'reviewer'，`consecutiveRouteToCoder` = 0，清除 clarification 状态 |
 | `executionTargetDone` | DONE | `currentObservations` = event.results，清除 clarification 状态 |
 | `executionTargetClarifying` | CLARIFYING | `currentObservations` = event.results，`activeProcess` = null，`clarificationRound`++ |
@@ -321,15 +327,15 @@ REVIEWING → OBSERVING → GOD_DECIDING → EXECUTING → ...
 |------|----------|-------------|
 | `PROCESS_ERROR` | ERROR | `lastError` = event.error |
 
-#### MANUAL_FALLBACK
+#### PAUSED
 
 | 事件 | Guard | 目标状态 | Context 更新 |
 |------|-------|----------|-------------|
-| `CLEAR_PENDING_PHASE` | -- | *（自转换）* | `pendingPhaseId` = null，`pendingPhaseSummary` = null |
-| `USER_CONFIRM` | `confirmContinueWithPhase` | CODING | `round`++，`activeProcess` = 'coder'，`consecutiveRouteToCoder` = 0，`taskPrompt` 注入 `[Phase: xxx]` 前缀，清除 pending phase |
-| `USER_CONFIRM` | `confirmContinue` | CODING | `round`++，`activeProcess` = 'coder'，`consecutiveRouteToCoder` = 0 |
+| `USER_CONFIRM` | `confirmContinue` | GOD_DECIDING | `consecutiveRouteToCoder` = 0 |
 | `USER_CONFIRM` | `confirmAccept` | DONE | `consecutiveRouteToCoder` = 0 |
 | `USER_CONFIRM` | *（无 guard 匹配）* | DONE | -- |
+
+> **v2 变更**：PAUSED（原 MANUAL_FALLBACK）的 `confirmContinue` 现在路由到 GOD_DECIDING 而非 CODING，让 God 重新评估决策。Phase 相关的 `confirmContinueWithPhase` guard 已移除。
 
 #### CLARIFYING（Card E.2）
 
@@ -374,7 +380,7 @@ Final state，不接受任何事件。
 |-------------|----------|----------|
 | `accept_task` | `DONE` | -- |
 | `request_user_input` | `CLARIFYING` | Card E.2：替代原来的 INTERRUPTED |
-| `send_to_coder` | `CODING` | `round++`，`consecutiveRouteToCoder++` |
+| `send_to_coder` | `CODING` | `consecutiveRouteToCoder++` |
 | `send_to_reviewer` | `REVIEWING` | `consecutiveRouteToCoder` 重置为 0 |
 | `retry_role` | `CODING` 或 `REVIEWING` | 取决于 `action.role` |
 | `resume_after_interrupt` | 取决于 `resumeStrategy` | 见下表 |
@@ -391,17 +397,16 @@ Final state，不接受任何事件。
 
 ---
 
-### 1.8 Guard 条件（共 11 个）
+### 1.8 Guard 条件（共 10 个）
 
 | Guard | 逻辑 | 使用位置 |
 |-------|------|----------|
 | `resumeAsCoder` | `event.resumeAs === 'coder'` | 类型保留（Card E.1 之前用于 INTERRUPTED 状态） |
 | `resumeAsReviewer` | `event.resumeAs === 'reviewer'` | 同上 |
 | `resumeAsDecision` | `event.resumeAs === 'decision'` | 同上 |
-| `confirmContinue` | `event.action === 'continue'` | MANUAL_FALLBACK → CODING |
-| `confirmContinueWithPhase` | `event.action === 'continue' && context.pendingPhaseId != null` | MANUAL_FALLBACK → CODING（同时更新 taskPrompt 的 Phase 前缀） |
-| `confirmAccept` | `event.action === 'accept'` | MANUAL_FALLBACK → DONE |
-| `circuitBreakerTripped` | `resolvePostExecutionTarget() === 'CODING' && consecutiveRouteToCoder + 1 >= 3` | EXECUTING → MANUAL_FALLBACK（Bug 1 fix：防止无限 coder 循环） |
+| `confirmContinue` | `event.action === 'continue'` | PAUSED → GOD_DECIDING |
+| `confirmAccept` | `event.action === 'accept'` | PAUSED → DONE |
+| `circuitBreakerTripped` | `resolvePostExecutionTarget() === 'CODING' && consecutiveRouteToCoder + 1 >= 3` | EXECUTING → PAUSED（Bug 1 fix：防止无限 coder 循环） |
 | `executionTargetCoding` | `resolvePostExecutionTarget() === 'CODING'` | EXECUTING → CODING |
 | `executionTargetReviewing` | `resolvePostExecutionTarget() === 'REVIEWING'` | EXECUTING → REVIEWING |
 | `executionTargetDone` | `resolvePostExecutionTarget() === 'DONE'` | EXECUTING → DONE |
@@ -449,7 +454,7 @@ accept_task, request_user_input, send_to_coder, send_to_reviewer, retry_role, re
 状态机内建 circuit breaker 防护（Bug 1 fix），防止 God 持续将任务路由回 coder 造成无限循环。
 
 ```
-EXECUTING ──[circuitBreakerTripped]──> MANUAL_FALLBACK
+EXECUTING ──[circuitBreakerTripped]──> PAUSED
      |                                       |
      |  (consecutiveRouteToCoder + 1 >= 3    |  lastError = "Circuit breaker:
      |   && target === CODING)               |   too many consecutive
@@ -470,7 +475,7 @@ EXECUTING ──[circuitBreakerTripped]──> MANUAL_FALLBACK
 | 路由到 REVIEWING | 重置为 0（打破 coder 循环） |
 | `USER_CONFIRM`（continue / accept） | 重置为 0 |
 | `RECOVERY` | 重置为 0 |
-| `TASK_INIT_COMPLETE` / `TASK_INIT_SKIP` | 重置为 0 |
+| `TASK_INIT_COMPLETE` | 重置为 0 |
 
 ---
 
@@ -521,7 +526,7 @@ EXECUTING ─────────────────────> CLARI
 - `activeProcess` 字段标记当前活跃角色（`'coder'` / `'reviewer'` / `null`）
 - 进入 `CODING` 或 `REVIEWING` 时设置对应角色
 - 离开活跃状态时（完成、incident、错误、超时）一律重置为 `null`
-- `OBSERVING`、`GOD_DECIDING`、`EXECUTING`、`CLARIFYING`、`MANUAL_FALLBACK` 等非活跃状态不设置 `activeProcess`，保证在决策期间没有 LLM 进程运行
+- `OBSERVING`、`GOD_DECIDING`、`EXECUTING`、`CLARIFYING`、`PAUSED` 等非活跃状态不设置 `activeProcess`，保证在决策期间没有 LLM 进程运行
 
 ---
 
@@ -531,15 +536,7 @@ EXECUTING ─────────────────────> CLARI
 
 #### 保存流程
 
-Double Ctrl+C 时内联中断处理逻辑（`App.tsx`）调用 `sessionManager.saveState()`，保存以下数据：
-
-```ts
-{
-  round: number;
-  status: 'interrupted';
-  currentRole: activeProcess ?? 'coder';
-}
-```
+Double Ctrl+C 时内联中断处理逻辑（`App.tsx`）调用 `sessionManager.saveState()`，保存当前状态数据。
 
 #### 恢复流程
 
@@ -558,7 +555,7 @@ Double Ctrl+C 时内联中断处理逻辑（`App.tsx`）调用 `sessionManager.s
 
 #### 创建时注入
 
-通过 `input` 参数可在 machine 创建时恢复完整 context，所有 18 个字段均支持注入。`setup()` 的 `types.input` 为 `Partial<WorkflowContext> | undefined`，每个字段使用 `input?.field ?? defaultValue` 模式取值。
+通过 `input` 参数可在 machine 创建时恢复完整 context，所有 15 个字段均支持注入。`setup()` 的 `types.input` 为 `Partial<WorkflowContext> | undefined`，每个字段使用 `input?.field ?? defaultValue` 模式取值。
 
 ---
 
@@ -578,7 +575,6 @@ Double Ctrl+C 时内联中断处理逻辑（`App.tsx`）调用 `sessionManager.s
   rawRef?: string;           // 原始引用数据
   severity: 'info' | 'warning' | 'error' | 'fatal';  // 默认 'error'
   timestamp: string;         // ISO 时间戳
-  round: number;             // 所属轮次（>= 0 的整数）
   phaseId?: string | null;   // 所属 phase
   adapter?: string;          // 产生此 observation 的 adapter
 }
@@ -736,16 +732,16 @@ interface StartResult {
 
 ---
 
-## 5 Bug 修复与设计决策索引
+## 4 Bug 修复与设计决策索引
 
 | 标识 | 位置 | 描述 |
 |------|------|------|
-| Bug 1 | Circuit breaker guard | 防止无限 coder 循环。`consecutiveRouteToCoder` 递增而非重置；3 次连续路由触发 MANUAL_FALLBACK |
+| Bug 1 | Circuit breaker guard | 防止无限 coder 循环。`consecutiveRouteToCoder` 递增而非重置；3 次连续路由触发 PAUSED |
 | Bug 5 | CODE_COMPLETE / REVIEW_COMPLETE actions | 清除 `currentObservations` 为空数组，确保 OBSERVING 分类新鲜输出而非处理过期数据 |
 | BUG-12 | `detectRoutingConflicts()` | 检测 envelope 中多个冲突路由 action，防止歧义状态转换 |
 | BUG-18 | Envelope schema superRefine | `userConfirmation = 'god_override'` 时强制要求 `system_log` 消息 |
 | BUG-22 | EXECUTING default transition | 当 execution 产生空 results 时保留现有 `currentObservations`，避免 observation 丢失导致的死循环 |
 | BUG-24 | `autonomousResolutions` 字段 | God 代理决策的结构化记录（question → choice → reflection → finalChoice） |
 | Card D.1 | 整体重构 | 引入 Observe → Decide → Act 循环，新增 OBSERVING / GOD_DECIDING / EXECUTING 状态 |
-| Card E.1 | 中断处理重构 | 中断不再直接发送事件给 actor，统一走 observation pipeline（中断逻辑已内联到 App.tsx） |
+| Card E.1 | 中断处理重构 | 中断不再直接发送事件给 actor，统一走 observation pipeline（中断逻辑已内联到 App.tsx，`interrupt-handler.ts` 已删除） |
 | Card E.2 | CLARIFYING 状态 | God 调解的多轮人机澄清，替代简单的 INTERRUPTED 模式 |
