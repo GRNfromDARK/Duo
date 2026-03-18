@@ -8,7 +8,7 @@ Duo 的 UI 状态层遵循 **纯函数提取** 原则：
 
 1. **所有状态计算都是纯函数** — 接受当前状态 + 事件参数，返回新状态，无副作用
 2. **组件只做胶水** — React 组件通过 `useState` 持有状态，调用纯函数计算下一个状态
-3. **可独立单测** — 每个模块均可脱离 Ink/React 运行测试，无需 DOM 或 TUI 环境
+3. **可独立单测** — 每个模块均可脱离 React 运行测试，无需 DOM 或 TUI 环境
 
 这一设计与 `InputArea.processInput`、`DirectoryPicker.processPickerInput` 等组件级纯函数保持一致，形成统一的 "state -> pure fn -> new state" 模式。
 
@@ -17,7 +17,57 @@ Duo 的 UI 状态层遵循 **纯函数提取** 原则：
 - **God LLM UI 状态**（6 个）— God 决策层的 UI 状态：retry 包装、消息样式、阶段切换、重分类、任务分析
 - **Runtime/Lifecycle 状态**（3 个）— 运行时生命周期管理：任务完成流、全局 Ctrl+C 处理、安全退出
 
-> **Bun OpenTUI 迁移说明**：`alternate-screen.ts`、`mouse-input.ts`、`scroll-state.ts` 三个模块已移除。其功能由 OpenTUI 运行时原生提供：`createCliRenderer` 内置 alternate screen 管理，OpenTUI 原生处理鼠标输入，`ScrollBox` 组件提供原生滚动（`stickyScroll` / `scrollBy` / `scrollTo`）。
+> **OpenTUI 迁移说明**：`alternate-screen.ts`、`mouse-input.ts`、`scroll-state.ts` 三个模块已删除，`ScrollIndicator.tsx` 组件也一并删除。其功能由 OpenTUI 运行时原生提供：`createCliRenderer` 内置 alternate screen 管理（`useAlternateScreen` 选项），OpenTUI 原生处理鼠标输入，`ScrollBox` 组件提供原生滚动（`stickyScroll` / `scrollBy` / `scrollTo`）。详见下方 **TUI 层** 一节。
+
+---
+
+## TUI 层
+
+> 路径：`src/tui/`
+
+在 OpenTUI 迁移中新增的 TUI 适配层，共 4 个文件，负责将 OpenTUI 原语桥接为项目内部 API：
+
+| 文件 | 职责 |
+|------|------|
+| `primitives.tsx` | Ink 兼容适配层 — 将 OpenTUI 的 `@opentui/core` 和 `@opentui/react` 封装为 Ink 风格 API（`Box`、`Text`、`ScrollBox`、`useInput`、`useApp`、`useStdout`），使现有组件代码零改动迁移 |
+| `app.tsx` | 最小化 TUI 示例组件 — smoke test 和 resume preview 使用的简单 `<box>` + `<scrollbox>` 布局 |
+| `cli.tsx` | CLI 入口 — 基于 `createCliRenderer` + `createRoot` 启动 OpenTUI 渲染循环，处理 `start` / `resume` / `--smoke-test` 命令路由 |
+| `runtime/bun-launcher.ts` | Bun 运行时定位 — 按优先级解析 Bun binary（`DUO_BUN_BINARY` 环境变量 > 项目 bundled `.local/bun/bin/bun` > 系统 `which bun`），构建 `OpenTuiLaunchSpec` |
+
+### primitives.tsx — Ink 兼容适配层
+
+核心桥接：将 OpenTUI 的 `ParsedKey` 事件转换为 Ink 风格的 `Key` 接口（含 `upArrow`/`downArrow`/`ctrl`/`shift`/`meta` 等布尔字段），使 `keybindings.ts` 等模块无需修改。
+
+| 导出 | 说明 |
+|------|------|
+| `Key` interface | Ink 兼容的键盘事件类型，扩展了 `pageDown`/`pageUp`/`home`/`end`/`capsLock`/`numLock` 等字段 |
+| `useInput(handler)` | 将 `useKeyboard` 回调转换为 `(input: string, key: Key)` 签名 |
+| `useApp()` | 返回 `{ exit }` 方法，内部调用 `renderer.destroy()` |
+| `useStdout()` | 返回 `{ stdout: process.stdout }` |
+| `Box` | 映射到 OpenTUI `<box>` 元素 |
+| `ScrollBox` | 映射到 OpenTUI `<scrollbox>` 元素，支持 `ref` 转发 |
+| `Text` | 映射到 OpenTUI `<text>`/`<span>` 元素（根据嵌套层级自动选择），将 `color`/`bold`/`dimColor`/`inverse` 等 Ink props 转换为 OpenTUI 的 `fg`/`bg`/`attributes` |
+
+### cli.tsx — CLI 入口
+
+通过 `renderNode()` 统一渲染流程：
+
+```
+createCliRenderer({ exitOnCtrlC: false, useAlternateScreen: true })
+  → createRoot(renderer)
+  → root.render(node)
+  → await renderer 'destroy' event
+```
+
+命令路由：`start` 解析 CLI 参数并创建 `SessionConfig`；`resume` 加载已有 session 并恢复；`--smoke-test` 渲染 `TuiApp` 并在 30ms 后自动退出。
+
+### runtime/bun-launcher.ts — Bun 运行时定位
+
+| 函数 | 说明 |
+|------|------|
+| `resolveBunBinary(options)` | 按优先级查找 Bun：`DUO_BUN_BINARY` 环境变量 → bundled 路径 `.local/bun/bin/bun` → 系统 `which bun` |
+| `buildOpenTuiLaunchSpec(input)` | 构建启动规格：`{ command: bunBinary, args: ['run', 'src/tui/cli.tsx', ...argv] }` |
+| `getBundledBunBinaryPath(cwd)` | 返回项目内 bundled Bun 路径 |
 
 ---
 
@@ -93,7 +143,7 @@ type DisplayMode = 'minimal' | 'verbose';
 
 **来源**: FR-019 (AC-065, AC-066, AC-067)
 
-为 Setup 阶段的目录选择器提供纯逻辑，与 `scroll-state.ts` 和 `InputArea.processInput` 保持相同的提取模式。
+为 Setup 阶段的目录选择器提供纯逻辑，与 `InputArea.processInput` 保持相同的提取模式。
 
 #### 核心类型
 
@@ -738,7 +788,7 @@ interface SafeShutdownOptions {
   adapters: KillableAdapter[];           // 需要 kill 的 adapter 列表
   outputManager?: InterruptibleOutputManager;  // 可选的输出流管理器
   beforeExit?: () => void;               // 退出前回调（如持久化状态）
-  onExit: () => void;                    // 最终退出回调（通常是 process.exit 或 ink exit）
+  onExit: () => void;                    // 最终退出回调（通常是 process.exit 或 renderer.destroy）
 }
 ```
 
@@ -760,21 +810,30 @@ interface SafeShutdownOptions {
 ## 模块间依赖关系
 
 ```
+TUI 适配层:
+  tui/primitives.tsx ──> @opentui/core (createTextAttributes, ParsedKey)
+                     ──> @opentui/react (useAppContext, useKeyboard)
+
+  tui/cli.tsx ──> @opentui/core (createCliRenderer)
+              ──> @opentui/react (createRoot)
+              ──> ui/components/App.tsx
+              ──> tui/app.tsx (TuiApp)
+              ──> session/session-starter.ts
+              ──> adapters/detect.ts
+
+  tui/runtime/bun-launcher.ts ──> node:child_process, node:fs, node:path
+
 Core UI 依赖:
-  alternate-screen.ts ──> (无外部依赖，纯终端 escape 序列)
-
-  mouse-input.ts ──> node:stream (Transform)
-
   message-lines.ts ──> markdown-parser.ts (parseMarkdown)
                    ──> display-mode.ts (DisplayMode 类型)
                    ──> types/ui.ts (Message, getRoleStyle, RoleName)
 
-  keybindings.ts ──> ink (Key 类型)
+  keybindings.ts ──> tui/primitives.ts (Key 类型)
 
   overlay-state.ts ──> types/ui.ts (Message)
 
   directory-picker-state.ts ──> node:fs, node:path
-                             ──> ink (Key 类型)
+                             ──> tui/primitives.ts (Key 类型)
 
   session-runner-state.ts ──> types/adapter.ts (OutputChunk)
                            ──> session/session-manager.ts (LoadedSession, SessionState)
@@ -803,11 +862,11 @@ Runtime/Lifecycle 依赖:
   safe-shutdown.ts ──> (无外部依赖，duck typing 接口)
 
 MainLayout 组件消费:
-  scroll-state.ts, display-mode.ts, keybindings.ts,
+  display-mode.ts, keybindings.ts,
   overlay-state.ts, message-lines.ts
+  (滚动由 OpenTUI ScrollBox 原生管理)
 
 App/SessionRunner 组件消费:
-  alternate-screen.ts, mouse-input.ts,
   session-runner-state.ts, god-fallback.ts,
   phase-transition-banner.ts, reclassify-overlay.ts,
   task-analysis-card.ts, completion-flow.ts,

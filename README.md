@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/TypeScript-5.9-blue" alt="TypeScript">
   <img src="https://img.shields.io/badge/Node.js-%E2%89%A520-green" alt="Node.js">
   <img src="https://img.shields.io/badge/XState-v5-purple" alt="XState">
-  <img src="https://img.shields.io/badge/Tests-2239-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/Tests-1215-brightgreen" alt="Tests">
   <img src="https://img.shields.io/badge/License-ISC-yellow" alt="License">
 </p>
 
@@ -56,8 +56,8 @@ Mix and match any combination — e.g., Claude Code as Coder + Codex as Reviewer
 
 ### God LLM Intelligent Orchestration
 
-- **Task Classification**: Automatically categorizes tasks (explore / code / debug / review / discuss / compound)
-- **Routing Decisions**: Determines next action after each worker output
+- **Dispatch Routing**: 4 dispatch types (explore / code / debug / discuss) drive Coder prompt strategy
+- **5 God Actions**: `send_to_coder`, `send_to_reviewer`, `accept_task`, `wait`, `request_user_input`
 - **Convergence Judgment**: Sole authority on when work meets acceptance criteria
 - **Watchdog Service**: Retry + exponential backoff + pause on God failures
 - **Choice Handling**: Autonomous resolution when workers present multiple options
@@ -65,19 +65,19 @@ Mix and match any combination — e.g., Claude Code as Coder + Codex as Reviewer
 
 ### State Machine Architecture
 
-12-state workflow powered by XState v5:
+11-state workflow powered by XState v5:
 
 ```
-IDLE → TASK_INIT → CODING → OBSERVING → GOD_DECIDING → EXECUTING
-                     ↑                                      ↓
-                     ←──── REVIEWING ←── routing ←──────────┘
-                                                    ↓
-                                              DONE / CLARIFYING
+IDLE → GOD_DECIDING → EXECUTING → CODING / REVIEWING / CLARIFYING / DONE
+            ↑                          ↓
+            ←──── OBSERVING ←──────────┘
 ```
+
+States: IDLE, CODING, REVIEWING, OBSERVING, GOD_DECIDING, EXECUTING, CLARIFYING, PAUSED, RESUMING, DONE, ERROR
 
 ### Terminal UI
 
-Modern terminal interface built with Ink + React (22 components):
+Modern terminal interface built with Ink + React (21 components):
 - Group-chat style message stream (color-coded by role)
 - Real-time streaming LLM output
 - Smart Scroll Lock
@@ -132,54 +132,61 @@ duo --version
 
 ## Architecture
 
-Duo uses a 6-layer architecture:
+Duo uses a 7-layer architecture:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  Layer 1: CLI Entry          cli.ts, cli-commands.ts         │
+│  Layer 1: TUI Entry          src/tui/ — Bun OpenTUI bootstrap │
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 2: UI Layer           22 components + 19 state modules│
+│  Layer 2: CLI Commands       cli.ts, cli-commands.ts          │
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 3: Sovereign God      20 files — Observe→Decide→Act   │
+│  Layer 3: UI Layer           21 components + 16 state modules │
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 4: Workflow Engine    XState v5 state machine          │
+│  Layer 4: Sovereign God      16 files — Observe→Decide→Act    │
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 5: Session Manager    Persistence, atomic writes       │
+│  Layer 5: Workflow Engine    XState v5 state machine (11 states)│
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 6: Adapter Layer      3 AI tool adapters + parsers     │
+│  Layer 6: Session Manager    Persistence, atomic writes       │
+├──────────────────────────────────────────────────────────────┤
+│  Layer 7: Adapter Layer      3 AI tool adapters + parsers     │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-See [docs/architecture.md](docs/architecture.md) for the full architecture document.
+See [docs/architecture.md](docs/architecture.md) for the full architecture document (may reference the previous 6-layer design).
 
 ## Project Structure
 
 ```
 src/
+├── tui/                       # Bun OpenTUI entry layer
+│   ├── cli.tsx                # OpenTUI CLI bootstrap (start/resume)
+│   ├── app.tsx                # TuiApp smoke-test component
+│   ├── primitives.tsx         # OpenTUI primitive wrappers
+│   └── runtime/               # Bun launcher
 ├── cli.ts                     # CLI entry — command parsing, Ink rendering
 ├── cli-commands.ts            # Command handlers (start/resume/log)
 ├── types/                     # Core type definitions (9 files)
 ├── adapters/                  # AI tool adapters + model discovery
 ├── parsers/                   # Output parsers (stream-json/jsonl/text)
 ├── session/                   # Session management & persistence (3 files)
-├── engine/                    # XState v5 workflow state machine
-├── god/                       # Sovereign God Runtime (20 files)
+├── engine/                    # XState v5 workflow state machine (11 states)
+├── god/                       # Sovereign God Runtime (16 files)
 │   ├── god-decision-service   # Sole decision authority
-│   ├── god-prompt-generator   # Dynamic Coder/Reviewer prompts
-│   ├── observation-classifier # Output classification
-│   ├── hand-executor          # God action execution
+│   ├── god-prompt-generator   # Dynamic Coder/Reviewer prompts (4 dispatch types)
+│   ├── observation-factory    # Observation construction
+│   ├── hand-executor          # 5 God action execution
 │   ├── watchdog               # Retry + backoff + pause
-│   └── ...                    # Task init, audit, tri-party session
+│   └── ...                    # Audit, tri-party session, rule engine
 └── ui/                        # Terminal UI (Ink + React)
-    ├── components/ (22)       # App, MainLayout, Overlays, etc.
-    └── *.ts (19)              # Pure-function state management
+    ├── components/ (21)       # App, MainLayout, Overlays, etc.
+    └── *.ts (16)              # Pure-function state management
 ```
 
 ## Documentation
 
 | Document | Description |
 |----------|-------------|
-| [architecture.md](docs/architecture.md) | System architecture (6 layers, data flow, state machine) |
+| [architecture.md](docs/architecture.md) | System architecture (7 layers, data flow, state machine) |
 | [god-orchestrator.md](docs/modules/god-orchestrator.md) | God LLM orchestrator details |
 | [workflow-engine.md](docs/modules/workflow-engine.md) | XState workflow state machine |
 | [adapter-layer.md](docs/modules/adapter-layer.md) | AI tool adapter layer |
@@ -201,7 +208,7 @@ src/
 | UI Framework | Ink 6 + React 19 |
 | Schema Validation | Zod 4 |
 | Build Tool | tsup |
-| Test Framework | Vitest 4 (2239 tests) |
+| Test Framework | Vitest 4 (1215 tests) |
 | Package Manager | npm |
 
 ## How It Works

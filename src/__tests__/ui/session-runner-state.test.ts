@@ -293,69 +293,7 @@ describe('session-runner-state', () => {
       // godConvergenceLog assertion removed (round removal).
     });
 
-    it('passes through currentPhaseId from persisted state (BUG-6 regression)', () => {
-      const loaded: LoadedSession = {
-        metadata: {
-          id: 'session-phase-1',
-          projectDir: '/tmp/project',
-          coder: 'claude-code',
-          reviewer: 'gemini',
-          god: 'codex',
-          task: 'Fix bug',
-          createdAt: 1,
-          updatedAt: 2,
-        },
-        state: {
-          status: 'waiting_user',
-          currentRole: 'coder',
-          currentPhaseId: 'phase-implementation',
-        },
-        history: [
-          { role: 'coder', content: 'code', timestamp: 10 },
-        ],
-      };
-
-      const runtime = buildRestoredSessionRuntime(loaded, {
-        projectDir: loaded.metadata.projectDir,
-        coder: loaded.metadata.coder,
-        reviewer: loaded.metadata.reviewer,
-        god: 'codex',
-        task: loaded.metadata.task,
-      });
-
-      expect(runtime.currentPhaseId).toBe('phase-implementation');
-    });
-
-    it('defaults currentPhaseId to null when not persisted (BUG-6 regression)', () => {
-      const loaded: LoadedSession = {
-        metadata: {
-          id: 'session-no-phase',
-          projectDir: '/tmp/project',
-          coder: 'claude-code',
-          reviewer: 'claude-code',
-          task: 'Task',
-          createdAt: 1,
-          updatedAt: 2,
-        },
-        state: {
-          status: 'coding',
-          currentRole: 'coder',
-        },
-        history: [],
-      };
-
-      const runtime = buildRestoredSessionRuntime(loaded, {
-        projectDir: loaded.metadata.projectDir,
-        coder: loaded.metadata.coder,
-        reviewer: loaded.metadata.reviewer,
-        god: 'claude-code',
-        task: loaded.metadata.task,
-      });
-
-      expect(runtime.currentPhaseId).toBeNull();
-    });
-
-    it('maps clarifying status to RESTORED_TO_CLARIFYING instead of INTERRUPTED', () => {
+    it('maps clarifying status to RESTORED_TO_CLARIFYING', () => {
       const loaded: LoadedSession = {
         metadata: {
           id: 'session-clarifying',

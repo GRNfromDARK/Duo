@@ -8,7 +8,7 @@
 
 ## 目录
 
-1. [六层架构总览](#六层架构总览)
+1. [五层架构总览](#五层架构总览)
 2. [三方协作模型](#三方协作模型)
 3. [数据流全景](#数据流全景)
 4. [XState v5 状态机详解](#xstate-v5-状态机详解)
@@ -18,44 +18,39 @@
 
 ---
 
-## 六层架构总览
+## 五层架构总览
 
-Duo 采用六层架构，自顶向下职责分明，层间严格单向依赖：
+Duo 采用五层架构，自顶向下职责分明，层间严格单向依赖：
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│  Layer 1: CLI 入口层                                                │
+│  Layer 1: CLI + TUI 入口层                                          │
 │  cli.ts, cli-commands.ts, index.ts                                  │
-│  职责: 命令解析、参数校验、分发到 Bun OpenTUI 运行时                     │
-├─────────────────────────────────────────────────────────────────────┤
-│  Layer 1.5: TUI Runtime 层                                          │
 │  tui/cli.tsx, tui/app.tsx, tui/primitives.tsx,                      │
 │  tui/runtime/bun-launcher.ts                                        │
-│  职责: Bun OpenTUI 渲染运行时、UI 原语适配、进程启动                     │
+│  职责: 命令解析、参数校验、Bun OpenTUI 渲染运行时、进程启动             │
 ├─────────────────────────────────────────────────────────────────────┤
 │  Layer 2: UI 层                                                     │
 │  App.tsx, MainLayout.tsx, SetupWizard.tsx, StatusBar.tsx,            │
-│  StreamRenderer.tsx, ... (22 components + 16 state files)           │
+│  StreamRenderer.tsx, ... (21 components)                            │
 │  职责: 终端交互界面 (OpenTUI + React)、流式输出渲染、                   │
 │        原生 ScrollBox 滚动、Overlay 面板                              │
 ├─────────────────────────────────────────────────────────────────────┤
-│  Layer 3: Sovereign God Runtime                                     │
-│  god-decision-service.ts, hand-executor.ts, rule-engine.ts,         │
-│  watchdog.ts, observation-classifier.ts, task-init.ts,              │
-│  tri-party-session.ts, message-dispatcher.ts, god-audit.ts,         │
-│  interrupt-clarifier.ts, god-prompt-generator.ts, god-call.ts,      │
-│  god-system-prompt.ts, god-adapter-factory.ts, god-fallback.ts      │
+│  Layer 3: Sovereign God Runtime + 工作流引擎                         │
+│  god-decision-service.ts, hand-executor.ts, observation-factory.ts, │
+│  watchdog.ts, tri-party-session.ts, message-dispatcher.ts,          │
+│  god-audit.ts, god-prompt-generator.ts, god-call.ts,                │
+│  god-adapter-factory.ts, god-adapter-config.ts,                     │
+│  god-session-persistence.ts, rule-engine.ts                         │
+│  engine/workflow-machine.ts                                          │
 │  职责: God LLM 自主决策运行时 (Observe → Decide → Act)                │
+│        XState v5 状态机驱动工作流循环                                  │
 ├─────────────────────────────────────────────────────────────────────┤
-│  Layer 4: 工作流引擎层                                               │
-│  workflow-machine.ts                                                 │
-│  职责: XState v5 状态机，驱动 Observe → Decide → Act 循环              │
-├─────────────────────────────────────────────────────────────────────┤
-│  Layer 5: 会话管理层                                                 │
+│  Layer 4: 会话管理层                                                 │
 │  session-starter.ts, session-manager.ts, prompt-log.ts              │
 │  职责: 启动参数解析、会话持久化 (原子写入)、Prompt 日志                    │
 ├─────────────────────────────────────────────────────────────────────┤
-│  Layer 6: 适配层                                                     │
+│  Layer 5: 适配层                                                     │
 │  adapters/ (registry + detect + factory + model-discovery +          │
 │            process-manager + output-stream-manager + adapters)       │
 │  parsers/ (stream-json / jsonl / text / god-json-extractor)         │
@@ -67,13 +62,17 @@ Duo 采用六层架构，自顶向下职责分明，层间严格单向依赖：
 
 ### 各层职责
 
-#### Layer 1: CLI 入口层
+#### Layer 1: CLI + TUI 入口层
 
 | 文件 | 职责 |
 |------|------|
 | `src/cli.ts` | 程序入口（Node.js 侧）。解析 `process.argv`，轻量命令（`--version` / `help` / `resume` 列表 / `log`）在 Node 中直接处理；`start` / `resume <id>` 等 TUI 命令通过 `bun-launcher.ts` 交接给 Bun OpenTUI 运行时 |
 | `src/cli-commands.ts` | 命令处理器。`handleStart` 检测工具 + 校验参数；`handleResume` 加载会话快照并校验完整性；`handleLog` 读取 God 审计日志、按类型过滤、输出延迟统计 |
 | `src/index.ts` | 版本号导出 (`VERSION = '1.0.0'`) |
+| `tui/runtime/bun-launcher.ts` | 解析 Bun 二进制路径（优先级：`DUO_BUN_BINARY` 环境变量 > 项目内 `.local/bun/bin/bun` > 系统 `which bun`），构建 OpenTUI 启动命令 |
+| `tui/cli.tsx` | Bun 侧入口，使用 `@opentui/core` 的 `createCliRenderer` 和 `@opentui/react` 的 `createRoot` 渲染 React 组件树；处理 `start` / `resume` / `--smoke-test` 命令 |
+| `tui/primitives.tsx` | UI 原语适配层，将 OpenTUI 的 `box` / `text` / `span` / `scrollbox` 元素和 `useKeyboard` / `useAppContext` hook 封装为 `Box` / `Text` / `ScrollBox` / `useInput` / `useApp` / `useStdout` 等与旧 Ink API 兼容的接口 |
+| `tui/app.tsx` | 轻量 TUI 组件，用于 smoke test 和 resume 预览 |
 
 CLI 支持的命令：
 
@@ -84,39 +83,24 @@ duo log <session-id> [--type <type>]                     # 查看审计日志
 duo                                                      # 交互式模式
 ```
 
-#### Layer 1.5: TUI Runtime 层
-
-迁移至 **Bun OpenTUI** 后新增的运行时层，位于 `src/tui/`：
-
-| 文件 | 职责 |
-|------|------|
-| `tui/runtime/bun-launcher.ts` | 解析 Bun 二进制路径（优先级：`DUO_BUN_BINARY` 环境变量 > 项目内 `.local/bun/bin/bun` > 系统 `which bun`），构建 OpenTUI 启动命令 |
-| `tui/cli.tsx` | Bun 侧入口，使用 `@opentui/core` 的 `createCliRenderer` 和 `@opentui/react` 的 `createRoot` 渲染 React 组件树；处理 `start` / `resume` / `--smoke-test` 命令 |
-| `tui/primitives.tsx` | UI 原语适配层，将 OpenTUI 的 `box` / `text` / `span` / `scrollbox` 元素和 `useKeyboard` / `useAppContext` hook 封装为 `Box` / `Text` / `ScrollBox` / `useInput` / `useApp` / `useStdout` 等与旧 Ink API 兼容的接口 |
-| `tui/app.tsx` | 轻量 TUI 组件，用于 smoke test 和 resume 预览 |
-
 #### Layer 2: UI 层
 
-基于 **OpenTUI + React** 的终端 UI 组件（22 个），配合状态管理模块（16 个）。核心组件包括：
+基于 **OpenTUI + React** 的终端 UI 组件（21 个）。核心组件包括：
 
 - `App.tsx` — 根组件，管理 XState 状态机生命周期
 - `SetupWizard.tsx` — 交互式设置向导
 - `StreamRenderer.tsx` — 实时流式渲染 LLM 输出
 - `MainLayout.tsx` — 使用 OpenTUI 原生 `ScrollBox` 组件实现滚动（`stickyScroll` / `scrollBy` / `scrollTo`），替代旧版手动 scroll-state 管理
 
-> **已移除的模块**（功能由 OpenTUI 原生提供）：`alternate-screen.ts`（OpenTUI `createCliRenderer` 内置 alternate screen 管理）、`mouse-input.ts`（OpenTUI 原生处理鼠标输入）、`scroll-state.ts`（OpenTUI `ScrollBox` 原生滚动）
+> **已移除的模块**（功能由 OpenTUI 原生提供）：`alternate-screen.ts`（OpenTUI `createCliRenderer` 内置 alternate screen 管理）、`mouse-input.ts`（OpenTUI 原生处理鼠标输入）、`scroll-state.ts`（OpenTUI `ScrollBox` 原生滚动）、`ScrollIndicator.tsx`（OpenTUI `scrollbox` 内置滚动条）
 
-#### Layer 3: Sovereign God Runtime
+#### Layer 3: Sovereign God Runtime + 工作流引擎
 
-**核心创新层** -- 实现 God LLM 作为自主决策者的完整运行时。详见下方 [God LLM 决策循环](#god-llm-决策循环) 章节。
+**核心创新层** -- 实现 God LLM 作为自主决策者的完整运行时，与 XState v5 工作流引擎合并为一层。详见下方 [God LLM 决策循环](#god-llm-决策循环) 章节。
 
-#### Layer 4: 工作流引擎层
+> **已移除的模块**：`god-system-prompt.ts`（system prompt 内联到 `god-decision-service.ts`）、`observation-classifier.ts`（正则分类移除，由 `observation-factory.ts` 替代）、`observation-integration.ts`（中断/事件转换逻辑简化移除）、`interrupt-clarifier.ts`（中断意图分类移除）、`task-init.ts`（TASK_INIT 阶段移除，God 直接从 GOD_DECIDING 开始决策）
 
-| 文件 | 职责 |
-|------|------|
-| `src/engine/workflow-machine.ts` | XState v5 状态机。12 个状态、20+ 事件类型。详见 [XState v5 状态机详解](#xstate-v5-状态机详解) |
-
-#### Layer 5: 会话管理层
+#### Layer 4: 会话管理层
 
 | 文件 | 职责 |
 |------|------|
@@ -124,7 +108,7 @@ duo                                                      # 交互式模式
 | `session-manager.ts` | 会话持久化。原子写入 (write-tmp-rename) 到 `.duo/sessions/<id>/snapshot.json` |
 | `prompt-log.ts` | Prompt 日志记录，用于审计追溯 |
 
-#### Layer 6: 适配层
+#### Layer 5: 适配层
 
 三个子系统：
 
@@ -173,32 +157,18 @@ Duo 的核心创新是 **Coder + Reviewer + God LLM** 三方协作模型：
 | 角色 | 职责 | 接口 | 权限 |
 |------|------|------|------|
 | **Coder** | 编写代码、实现功能、修复 bug | `CLIAdapter` | 无决策权，只执行 God 的指令 |
-| **Reviewer** | 审查代码、指出问题、给出建议 | `CLIAdapter` | 收敛信号提供者（verdict: APPROVED / CHANGES_REQUESTED） |
+| **Reviewer** | 审查代码、指出问题、给出建议 | `CLIAdapter` | 收敛信号提供者 |
 | **God LLM** | 编排协调、分析态势、做出决策 | `GodAdapter` | **Sovereign Authority** -- 最终决策者 |
 | **Human** | 启动任务、中断干预、回答澄清 | CLI / Ctrl+C / 文本输入 | 可中断流程，God 决定如何响应 |
 
 ### 协作规则
 
 1. **God 是唯一决策者**：所有状态变更（路由、收敛、中止）必须通过 God 的结构化 `GodAction` 表达
-2. **Reviewer 是收敛信号源**：God 参考 Reviewer 的 verdict，但保留 override 权力（需 `system_log` 审计）
+2. **Reviewer 是收敛信号源**：God 参考 Reviewer 的反馈，但保留 override 权力
 3. **Coder 和 Reviewer 是 Worker**：在 God 管理下工作，不具备 accept authority
-4. **先方案后实现**：Coder 首次仅分析和提出方案（不修改文件），Reviewer 评估后达成共识，Coder 才开始实现
+4. **God 不向人类求助**：God 自主解决 Worker 提出的实现细节问题，仅在真正无法解决时才 `request_user_input`
 5. **Reviewer 反馈直传**：Reviewer 的原始分析直接注入 Coder 的 prompt，God 只提供路由指导而不复述 Reviewer 的分析
 6. **设计决策需要共识**：当 Coder 提出多个方案时，God 必须路由给 Reviewer 评估，不可自行选择
-7. **God 不向人类求助**：God 自主解决 Worker 提出的实现细节问题（proxy decision-making），仅在真正无法解决时才 `request_user_input`
-8. **Choice handling**：Worker 提出的多方案，按相似度分流 — 相似方案由 God 自主选择（autonomousResolutions），差异大的方案路由给 Reviewer，涉及用户偏好的才 `request_user_input`
-
-### Propose-First Workflow
-
-```
-Iteration 0: Coder 分析 + 提方案 → Reviewer 评估方案 → 达成共识
-Iteration N: Coder 实现（带 Reviewer 原始反馈）→ Reviewer 验证 → God 判断收敛
-```
-
-- **首次迭代（无 Reviewer 反馈时）**：`code`/`debug` 类型使用 propose-only 指令，Coder 只分析不动代码
-- **后续迭代（isPostReviewerRouting=true）**：Coder 拿到完整实现指令 + Reviewer 原始分析
-- **God 路由指导**：God 不复述 Reviewer 内容，而是提供策略方向（优先修哪个问题、用什么方法）
-- **explore/discuss 类型**：始终为只读模式，不受此规则影响
 
 ### Tri-Party Session 隔离
 
@@ -225,21 +195,15 @@ Iteration N: Coder 实现（带 Reviewer 原始反馈）→ Reviewer 验证 → 
                                                │
                                                v
                                     ┌─────────────────────┐
-                                    │  TASK_INIT           │ God 分析任务意图
-                                    │  task-init.ts        │ → taskType / phases
-                                    └──────────┬──────────┘
-                                               │
-                                               v
-                                    ┌─────────────────────┐
                                ┌──> │  CODING              │ Coder 编码
                                │    │  CLIAdapter.execute() │
                                │    └──────────┬──────────┘
                                │               │ coderOutput
                                │               v
                                │    ┌─────────────────────┐
-                               │    │  OBSERVING           │ 收集 + 分类 Observation
-                               │    │  observation-        │ (work_output / incident /
-                               │    │  classifier.ts       │  quota_exhausted / ...)
+                               │    │  OBSERVING           │ 收集 Observation
+                               │    │  observation-        │ (observation-factory.ts
+                               │    │  factory.ts          │  创建, God 直接解读)
                                │    └──────────┬──────────┘
                                │               │ Observation[]
                                │               v
@@ -249,13 +213,12 @@ Iteration N: Coder 实现（带 Reviewer 原始反馈）→ Reviewer 验证 → 
                                │    │  service.ts          │ → GodDecisionEnvelope
                                │    └──────────┬──────────┘
                                │               │ GodDecisionEnvelope
-                               │               │   { diagnosis, authority,
+                               │               │   { diagnosis,
                                │               │     actions[], messages[] }
                                │               v
                                │    ┌─────────────────────┐
                                │    │  EXECUTING           │ Hand 执行器
                                │    │  hand-executor.ts    │ GodAction[] → 执行
-                               │    │  rule-engine.ts      │ (含规则引擎安全校验)
                                │    └──────────┬──────────┘
                                │               │ result Observation[]
                                │               v
@@ -288,15 +251,13 @@ Observation[] + GodDecisionContext
 │  Step 1: tryGodCall()                         │
 │    ├── buildUserPrompt() / buildResumePrompt()│
 │    │     - Task Goal                          │
-│    │     - Phase (current phase + type)       │
-│    │     - Phase Plan (compound 任务)          │
+│    │     - Active Role                        │
 │    │     - Available Adapters                 │
 │    │     - Observations (severity 排序)        │
-│    │     - Last Decision Summary              │
-│    │     - Hand Action Catalog (11 种动作)     │
+│    │     - Hand Action Catalog (5 种动作)      │
 │    ├── collectGodAdapterOutput()              │
 │    │     - GodAdapter.execute() (10min timeout)│
-│    │     - System Prompt (Sovereign God)      │
+│    │     - System Prompt (内联于 service)      │
 │    └── extractGodJson() + Zod 校验            │
 │                                               │
 │  Step 2: (失败时) Watchdog retry + backoff    │
@@ -305,7 +266,7 @@ Observation[] + GodDecisionContext
 │          - 指数退避: 2s, 4s, 8s (上限 10s)     │
 │          - 最多 3 次重试后 pause               │
 │                                               │
-│  Step 3: 重试失败 → fallback envelope + pause │
+│  Step 3: 重试失败 → fallback envelope         │
 │    └── buildFallbackEnvelope()                │
 │          - 含 wait action (防空结果死亡螺旋)   │
 │                                               │
@@ -322,34 +283,16 @@ Observation[] + GodDecisionContext
 GodAction[] (from GodDecisionEnvelope.actions)
     │
     v (per action, sequentially)
-┌───────────────────────────┐
-│  rule-engine.ts           │
-│  evaluateRules(action)    │
-│  R-001..R-005 安全校验     │
-└──────────┬────────────────┘
-           │
-    ┌──────┴──────┐
-    │             │
-  blocked       pass
-    │             │
-    v             v
-violation    executeSingleAction()
-observation       │
-    │        ┌────┴────────────────────────────────────────────┐
-    │        │ send_to_coder:     ctx.pendingCoderMessage = msg │
-    │        │ send_to_reviewer:  ctx.pendingReviewerMessage    │
-    │        │ accept_task:       ctx.taskCompleted = true       │
-    │        │ set_phase:         ctx.currentPhaseId = phaseId   │
-    │        │ stop_role:         adapter.kill()                 │
-    │        │ retry_role:        kill + queue message           │
-    │        │ switch_adapter:    (not yet implemented)          │
-    │        │ wait:              ctx.waitState.active = true    │
-    │        │ request_user_input: ctx.clarificationState        │
-    │        │ resume_after_interrupt: resumeStrategy             │
-    │        │ emit_summary:      audit log                      │
-    │        └────┬────────────────────────────────────────────┘
-    │             │
-    v             v
+executeSingleAction()
+    │
+    ├── send_to_coder:     ctx.pendingCoderMessage = msg
+    │                      ctx.pendingCoderDispatchType = dispatchType
+    ├── send_to_reviewer:  ctx.pendingReviewerMessage = msg
+    ├── accept_task:       ctx.taskCompleted = true + 审计日志
+    ├── wait:              ctx.waitState.active = true
+    └── request_user_input: ctx.clarificationState.active = true
+    │
+    v
   Observation[] (result observations → 回到状态机)
 ```
 
@@ -367,13 +310,6 @@ GodDecisionEnvelope.messages[]
 │  target: 'reviewer'          │──> pendingReviewerMessage (下次 REVIEWING 时发送)
 │  target: 'user'              │──> formatGodMessage() → displayToUser()
 │  target: 'system_log'        │──> god-audit.jsonl (append-only)
-│                              │
-│  不产生状态变更 (FR-016)      │
-│  NL 不变量检查:               │
-│    - 消息提及 phase 变更但无   │
-│      set_phase action → error │
-│    - 消息提及 accept 但无      │
-│      accept_task action → error│
 └──────────────────────────────┘
 ```
 
@@ -381,83 +317,68 @@ GodDecisionEnvelope.messages[]
 
 ## XState v5 状态机详解
 
-### 12 个状态
+### 10 个状态
 
 基于 XState v5 的 `workflowMachine`，定义在 `src/engine/workflow-machine.ts`：
 
 ```
                          START_TASK
-┌──────┐ ─────────────────────────────────> ┌───────────┐
-│ IDLE │                                    │ TASK_INIT │
-└──┬───┘                                    └─────┬─────┘
-   │                                              │
-   │ RESUME_SESSION                    TASK_INIT_COMPLETE
-   v                                              │
-┌──────────┐                                      v
-│ RESUMING │                               ┌──────────┐
-└──────────┘                          ┌──> │  CODING  │ <──────────────────────┐
-  RESTORED_TO_*                       │    └────┬─────┘                        │
-  → 对应状态                          │         │                              │
-                                      │    CODE_COMPLETE                       │
-                                      │         │ (clear observations)         │
-                                      │         v                              │
-                                      │    ┌───────────┐                       │
-                               ┌──────┼──> │ OBSERVING │ <──────────┐          │
-                               │      │    └─────┬─────┘            │          │
-                               │      │          │                  │          │
-                               │      │   OBSERVATIONS_READY        │          │
-                               │      │          │                  │          │
-                               │      │          v                  │          │
-                               │      │    ┌──────────────┐        │          │
-                               │      │    │ GOD_DECIDING │ <──┐   │          │
-                               │      │    └──────┬───────┘    │   │          │
-                               │      │           │            │   │          │
-                               │      │    DECISION_READY      │   │          │
-                               │      │           │            │   │          │
-                               │      │           v            │   │          │
-                               │      │    ┌───────────┐       │   │          │
-                               │      │    │ EXECUTING │ ──────┘   │          │
-                               │      │    └─────┬─────┘  (default:│          │
-                               │      │          │      re-enter)  │          │
-                               │      │   EXECUTION_COMPLETE       │          │
-                               │      │          │                 │          │
-                               │      │    ┌─────┴──────────┐     │          │
-                               │      │    │ 路由分支 (guards)│     │          │
-                               │      │    └─┬──┬──┬──┬──┬──┘     │          │
-                               │      │      │  │  │  │  │        │          │
-      ┌──────────────────── CODING ───┘      │  │  │  │  │        │          │
-      │                                      │  │  │  │  │        │          │
-      │ REVIEW_COMPLETE        REVIEWING ────┘  │  │  │  │        │          │
-      │ (clear observations)                    │  │  │  │        │          │
-      │                                   DONE ─┘  │  │  │        │          │
-      v                                            │  │  │        │          │
-┌───────────┐                           CLARIFYING─┘  │  │        │          │
-│ REVIEWING │                                         │  │        │          │
-└───────────┘                          GOD_DECIDING ──┘  │        │          │
-                                                         │        │          │
-                              ┌───────────────── circuit  │        │          │
-                              │                  breaker  │        │          │
-                              v                  tripped  │        │          │
-                       ┌────────────┐                     │        │          │
-                       │   PAUSED   │ <───────────────────┘        │          │
-                       └──────┬─────┘                              │          │
-                              │                                    │          │
-                       USER_CONFIRM                                │          │
-                         │        │                                │          │
-                    accept    continue                             │          │
-                         │        └────────────────────────────────│──────────┘
-                         v                                         │
-                     ┌────────┐                                    │
-                     │  DONE  │ (final)                            │
-                     └────────┘                                    │
-                                                                   │
-┌─────────────┐     OBSERVATIONS_READY → GOD_DECIDING              │
-│ INTERRUPTED │ (backward compat, session resume)                  │
-└─────────────┘                                                    │
-                                                                   │
-┌────────────┐      OBSERVATIONS_READY ────────────────────────────┘
-│ CLARIFYING │      (God 多轮澄清: human answers → GOD_DECIDING
-│            │       → God 再问或 resume_after_interrupt)
+┌──────┐ ─────────────────────────────────> ┌──────────────┐
+│ IDLE │                                    │ GOD_DECIDING │
+└──┬───┘                                    └──────┬───────┘
+   │                                               │
+   │ RESUME_SESSION                         DECISION_READY
+   v                                               │
+┌──────────┐                                       v
+│ RESUMING │                               ┌───────────┐
+└──────────┘                          ┌──> │ EXECUTING │ ──────┐
+  RESTORED_TO_*                       │    └─────┬─────┘       │
+  → 对应状态                          │          │     (default:│
+                                      │   EXECUTION_COMPLETE   │
+                                      │          │     re-enter)
+                               ┌──────┼──────────┼─────────────┘
+                               │      │    ┌─────┴──────────┐
+                               │      │    │ 路由分支 (guards)│
+                               │      │    └─┬──┬──┬──┬──┬──┘
+                               │      │      │  │  │  │  │
+      ┌──────────────────── CODING ───┘      │  │  │  │  │
+      │                                      │  │  │  │  │
+      │ CODE_COMPLETE         REVIEWING ─────┘  │  │  │  │
+      │ (clear observations)                    │  │  │  │
+      │                                   DONE ─┘  │  │  │
+      v                                            │  │  │
+┌───────────┐                           CLARIFYING─┘  │  │
+│ OBSERVING │                                         │  │
+└─────┬─────┘                          GOD_DECIDING ──┘  │
+      │                                                   │
+OBSERVATIONS_READY                                        │
+      │                                                   │
+      v                                                   │
+┌──────────────┐    PAUSE_REQUIRED     ┌──────────┐       │
+│ GOD_DECIDING │ ─────────────────────>│  PAUSED  │       │
+└──────────────┘                       └────┬─────┘       │
+                                            │             │
+                                     USER_CONFIRM         │
+                                       │        │        │
+                                  accept    continue ────┘
+                                       │
+                                       v
+                                   ┌────────┐
+     ┌───────────┐                 │  DONE  │ (final)
+     │ REVIEWING │                 └────────┘
+     └─────┬─────┘
+           │
+    REVIEW_COMPLETE
+    (clear observations)
+           │
+           v
+     ┌───────────┐    OBSERVATIONS_READY
+     │ OBSERVING │ ──────────────────────> GOD_DECIDING
+     └───────────┘
+
+┌────────────┐
+│ CLARIFYING │  OBSERVATIONS_READY → GOD_DECIDING
+│            │  (用户回答 → God 再问或恢复工作)
 └────────────┘
 
 ┌─────────┐
@@ -466,7 +387,7 @@ GodDecisionEnvelope.messages[]
      │
      │ RECOVERY
      v
-  GOD_DECIDING (reset consecutiveRouteToCoder)
+  GOD_DECIDING
 ```
 
 ### 状态说明
@@ -474,78 +395,68 @@ GodDecisionEnvelope.messages[]
 | 状态 | 类型 | 说明 |
 |------|------|------|
 | `IDLE` | 初始 | 等待 `START_TASK` 或 `RESUME_SESSION` |
-| `TASK_INIT` | 过渡 | God 分析任务意图，确定 taskType / phases |
 | `CODING` | 活跃 | Coder 正在执行编码任务 |
 | `REVIEWING` | 活跃 | Reviewer 正在执行审查任务 |
-| `OBSERVING` | 过渡 | 收集并分类 Observation（Coder/Reviewer 输出或事件） |
+| `OBSERVING` | 过渡 | 收集 Observation（Coder/Reviewer 输出） |
 | `GOD_DECIDING` | 过渡 | God 分析所有 Observation，输出 GodDecisionEnvelope |
 | `EXECUTING` | 过渡 | Hand 执行器逐个执行 GodAction，产生结果 Observation |
 | `CLARIFYING` | 等待 | God 通过 `request_user_input` 向人类提问，等待回答 |
-| `PAUSED` | 等待 | Circuit breaker 触发或 Watchdog retries 耗尽，需人工确认 |
-| `INTERRUPTED` | 兼容 | 旧版中断状态，保留用于 session resume backward compat |
+| `PAUSED` | 等待 | Watchdog retries 耗尽，需人工确认 |
 | `RESUMING` | 过渡 | 从持久化快照恢复会话，按 `RESTORED_TO_*` 路由到对应状态 |
 | `DONE` | 终态 | 任务完成 |
 | `ERROR` | 错误 | 进程错误/超时，可通过 `RECOVERY` 恢复到 `GOD_DECIDING` |
 
-### 20+ 事件类型
+> **已移除的状态**：`TASK_INIT`（God 不再需要预分析任务意图，直接从 GOD_DECIDING 开始）、`INTERRUPTED`（中断处理简化，不再需要独立状态）
+
+### 事件类型
 
 | 事件 | 源状态 | 目标状态 | 说明 |
 |------|--------|---------|------|
-| `START_TASK` | IDLE | TASK_INIT | 用户启动任务，设置 `taskPrompt` |
-| `TASK_INIT_COMPLETE` | TASK_INIT | CODING | God 完成意图解析 |
+| `START_TASK` | IDLE | GOD_DECIDING | 用户启动任务，设置 `taskPrompt` |
 | `CODE_COMPLETE` | CODING | OBSERVING | Coder 输出完成，清空旧 observations |
 | `REVIEW_COMPLETE` | REVIEWING | OBSERVING | Reviewer 输出完成，清空旧 observations |
-| `OBSERVATIONS_READY` | OBSERVING / INTERRUPTED / CLARIFYING | GOD_DECIDING | Observation 分类完成，送 God 决策 |
+| `OBSERVATIONS_READY` | OBSERVING / CLARIFYING | GOD_DECIDING | Observation 收集完成，送 God 决策 |
 | `DECISION_READY` | GOD_DECIDING | EXECUTING | God 返回 GodDecisionEnvelope |
 | `EXECUTION_COMPLETE` | EXECUTING | (多目标) | Hand 执行完毕，按 guard 路由到目标状态 |
-| `INCIDENT_DETECTED` | CODING / REVIEWING | OBSERVING | 运行时事件（中断/异常），冻结 `activeProcess` |
 | `USER_CONFIRM` | PAUSED | DONE / GOD_DECIDING | 用户确认 accept 或 continue |
 | `PAUSE_REQUIRED` | GOD_DECIDING | PAUSED | Watchdog retries 耗尽需人工介入 |
 | `PROCESS_ERROR` | 多个状态 | ERROR | 进程错误 |
 | `TIMEOUT` | CODING / REVIEWING | ERROR | 进程超时 |
-| `RECOVERY` | ERROR | GOD_DECIDING | 错误恢复，重置 circuit breaker |
+| `RECOVERY` | ERROR | GOD_DECIDING | 错误恢复 |
 | `RESUME_SESSION` | IDLE | RESUMING | 恢复会话 |
 | `RESTORED_TO_CODING` | RESUMING | CODING | 恢复到 CODING 状态 |
 | `RESTORED_TO_REVIEWING` | RESUMING | REVIEWING | 恢复到 REVIEWING 状态 |
 | `RESTORED_TO_WAITING` | RESUMING | GOD_DECIDING | 恢复到 GOD_DECIDING 状态 |
-| `RESTORED_TO_INTERRUPTED` | RESUMING | INTERRUPTED | 恢复到 INTERRUPTED 状态 |
 | `RESTORED_TO_CLARIFYING` | RESUMING | CLARIFYING | 恢复到 CLARIFYING 状态 |
-| `CLEAR_PENDING_PHASE` | GOD_DECIDING | (保持) | 清除待转换阶段信息 |
 
 ### EXECUTION_COMPLETE 路由守卫
 
-`EXECUTION_COMPLETE` 是状态机最复杂的事件，通过 `resolvePostExecutionTarget()` 函数和 6 个 guard 决定目标状态：
+`EXECUTION_COMPLETE` 通过 `resolvePostExecutionTarget()` 函数和 5 个 guard 决定目标状态：
 
 | Guard | 条件 | 目标 | 说明 |
 |-------|------|------|------|
-| `circuitBreakerTripped` | 目标为 CODING 且 `consecutiveRouteToCoder + 1 >= 3` | `PAUSED` | 防止死循环 |
-| `executionTargetCoding` | actions 含 `send_to_coder` 或 `retry_role(coder)` | `CODING` | `counter++` |
-| `executionTargetReviewing` | actions 含 `send_to_reviewer` 或 `retry_role(reviewer)` | `REVIEWING` | 重置 counter |
+| `executionTargetCoding` | actions 含 `send_to_coder` | `CODING` | 设置 `activeProcess = 'coder'` |
+| `executionTargetReviewing` | actions 含 `send_to_reviewer` | `REVIEWING` | 设置 `activeProcess = 'reviewer'` |
 | `executionTargetDone` | actions 含 `accept_task` | `DONE` | 任务完成 |
 | `executionTargetClarifying` | actions 含 `request_user_input` | `CLARIFYING` | God 向人类提问 |
-| (default) | 其他 (`wait` / `emit_summary` / `set_phase`) | `GOD_DECIDING` | re-enter 决策循环，保留现有 observations |
+| (default) | 其他（`wait` 等） | `GOD_DECIDING` | re-enter 决策循环，保留现有 observations |
 
 ### WorkflowContext 完整字段
 
 ```typescript
 interface WorkflowContext {
-  consecutiveRouteToCoder: number;        // 连续 route-to-coder 次数 (circuit breaker 计数器)
   taskPrompt: string | null;              // 任务描述
   activeProcess: 'coder' | 'reviewer' | null;  // 当前活跃进程
   lastError: string | null;              // 最近错误
   lastCoderOutput: string | null;        // Coder 最近输出
   lastReviewerOutput: string | null;     // Reviewer 最近输出
   sessionId: string | null;              // 会话 ID
-  pendingPhaseId: string | null;         // 待转换阶段 ID
-  pendingPhaseSummary: string | null;    // 待转换阶段摘要
   currentObservations: Observation[];    // 当前 Observation 列表
   lastDecision: GodDecisionEnvelope | null;  // 最近 God 决策
-  incidentCount: number;                 // 事件计数
-  frozenActiveProcess: 'coder' | 'reviewer' | null;  // CLARIFYING 前冻结的活跃进程
-  clarificationRound: number;            // 澄清轮次计数
-  clarificationObservations: Observation[];  // 累积的澄清 Observation (保留完整上下文)
 }
 ```
+
+> **已移除的字段**：`consecutiveRouteToCoder`（circuit breaker 计数器移除）、`pendingPhaseId` / `pendingPhaseSummary`（phase 系统移除）、`incidentCount`（事件计数移除）、`frozenActiveProcess`（冻结进程移除）、`clarificationRound` / `clarificationObservations`（澄清累积移除）
 
 ---
 
@@ -554,12 +465,9 @@ interface WorkflowContext {
 ### 设计原则
 
 1. **Sovereign Authority**：God 是运行时唯一决策者，所有状态变更必须通过结构化 `GodAction` 表达
-2. **Reviewer 是收敛信号**：Reviewer 的 verdict 是重要参考，但 God 保留 override 权力（需 `system_log` 审计）
-3. **Rule Engine 不可覆盖**：block 级别规则（R-001..R-005）具有绝对优先级，God 无法 override
-4. **统一决策信封**：`GodDecisionEnvelope` 统一所有决策场景 — 一个入口（`makeDecision`），一种输出格式
-5. **Proxy Decision-Making**：God 自主代理回答 Worker 的实现细节问题，避免不必要的人类交互
-6. **Decision Reflection**：高风险决策前 God 进行自检（scope / quality / plan consistency / proposal check）
-7. **Retry + Pause（不降级）**：God 失败时通过 Watchdog retry + exponential backoff 恢复，retries 耗尽后 pause 等待人工介入，不存在 "降级模式"
+2. **统一决策信封**：`GodDecisionEnvelope` 统一所有决策场景 — 一个入口（`makeDecision`），一种输出格式
+3. **God 直接解读**：Worker 输出不再经过正则分类预处理，God LLM 直接解读原始内容
+4. **Retry + Pause（不降级）**：God 失败时通过 Watchdog retry + exponential backoff 恢复，retries 耗尽后 pause 等待人工介入，不存在 "降级模式"
 
 ### Observe → Decide → Act 循环
 
@@ -573,11 +481,12 @@ interface WorkflowContext {
       │  ┌───────────┐    ┌──────────────┐    ┌───────────┐│
       │  │  OBSERVE  │───>│    DECIDE    │───>│    ACT    ││
       │  │           │    │              │    │           ││
-      │  │ Classify  │    │ God analyzes │    │ Execute   ││
-      │  │ worker    │    │ observations │    │ GodActions││
-      │  │ output    │    │ + context    │    │ via Hand  ││
-      │  │ into      │    │ → outputs    │    │ Executor  ││
-      │  │ Observation│    │ Envelope     │    │ → results ││
+      │  │ Factory   │    │ God analyzes │    │ Execute   ││
+      │  │ creates   │    │ observations │    │ GodActions││
+      │  │ Observation│    │ + context    │    │ via Hand  ││
+      │  │ from      │    │ → outputs    │    │ Executor  ││
+      │  │ worker    │    │ Envelope     │    │ → results ││
+      │  │ output    │    │              │    │           ││
       │  └───────────┘    └──────────────┘    └─────┬─────┘│
       │       ^                                      │      │
       │       │                                      │      │
@@ -588,34 +497,25 @@ interface WorkflowContext {
 
 #### Phase 1: OBSERVE（观测）
 
-`src/god/observation-classifier.ts` + `src/god/observation-integration.ts`
+`src/god/observation-factory.ts`
 
-- **输入**：Coder/Reviewer 的原始输出、中断事件、进程错误
-- **处理**：纯正则 + 关键词匹配（< 5ms，无 LLM 调用），分类为 13 种 Observation 类型
+- **输入**：Coder/Reviewer 的原始输出、人类消息/中断、运行时错误
+- **处理**：工厂函数直接创建 Observation（无正则分类，无 LLM 调用）
 - **输出**：`Observation[]`，按 severity 排序（fatal > error > warning > info）
-- **Non-Work Guard**：非工作 Observation（quota_exhausted / empty_output / meta_output 等）不触发 `CODE_COMPLETE` / `REVIEW_COMPLETE`，直接路由到 God 处理
+- **去重**：`deduplicateObservations()` 按 `timestamp-source-type` key 去重
 
-**13 种 Observation 类型**：
+**6 种 Observation 类型**：
 
 | 类型 | 来源 | 严重性 | 说明 |
 |------|------|--------|------|
 | `work_output` | coder | info | Coder 的工作输出 |
 | `review_output` | reviewer | info | Reviewer 的审查输出 |
-| `quota_exhausted` | runtime | error | API 配额/频率限制 |
-| `auth_failed` | runtime | error | 认证失败 |
-| `adapter_unavailable` | runtime | error | Adapter 不可用 |
-| `empty_output` | runtime | warning | LLM 输出为空 |
-| `meta_output` | coder/reviewer | warning | 非实质工作的元信息输出 |
-| `tool_failure` | runtime | error | 工具调用失败 |
-| `human_interrupt` | human | warning | 用户 Ctrl+C 中断 |
-| `human_message` | human | info | 用户文本中断（附带指令） |
-| `clarification_answer` | human | info | 用户回答 God 的澄清问题 |
+| `human_message` | human | info | 用户文本消息 |
+| `human_interrupt` | human | info | 用户中断信号 |
+| `runtime_error` | runtime | error | 运行时错误 |
 | `phase_progress_signal` | runtime | info | 阶段进度信号（Hand 执行结果） |
-| `runtime_invariant_violation` | runtime | error/fatal | 运行时不变量违反 |
 
-**IncidentTracker** 提供严重性自动升级：
-- `empty_output` 连续 2+ 次：warning → error
-- `tool_failure` 连续 3+ 次：error → fatal
+> **已移除的 Observation 类型**：`quota_exhausted`、`auth_failed`、`adapter_unavailable`、`empty_output`、`meta_output`、`tool_failure`、`clarification_answer`、`runtime_invariant_violation`（正则分类器移除后，这些细粒度类型不再需要，God 直接从原始内容中判断情况）
 
 #### Phase 2: DECIDE（决策）
 
@@ -623,27 +523,26 @@ interface WorkflowContext {
 
 - **输入**：`Observation[]` + `GodDecisionContext`
 - **处理**：
-  1. 构建 User Prompt（Task Goal / Phase / Phase Plan / Observations / Hand Catalog / Last Decision）
-  2. 调用 God Adapter（system prompt 使用 CRITICAL OVERRIDE 强制 JSON-only 输出）
+  1. 构建 User Prompt（Task Goal / Active Role / Available Adapters / Observations / Hand Catalog）
+  2. 调用 God Adapter（system prompt 内联于 `god-decision-service.ts`，直接描述 5 种 action）
   3. 提取 JSON + Zod schema 校验 → `GodDecisionEnvelope`
   4. 失败时 Watchdog retry with backoff，retries 耗尽则返回 fallback envelope
 - **输出**：`GodDecisionEnvelope`
 
-God 的 system prompt 包含以下指令集：
-- **Phase-following**：compound 任务必须按阶段顺序执行
-- **Reviewer handling**：尊重 Reviewer verdict，override 需审计
-- **Proposal routing**：Coder 多方案时必须路由给 Reviewer 评估
-- **Choice handling**：按方案差异度分流（相似方案自主选择 / 差异大路由 Reviewer / 用户偏好才求助人类）
-- **Proxy decision-making**：实现细节问题自主回答，设计问题路由给 Reviewer
-- **Decision reflection**：高风险决策前自检 scope / quality / plan consistency
-- **Mode specification**：当 phase type 与实际工作模式不匹配时，显式指定执行模式
+God 的 system prompt 核心指令：
+- 路由工作直到任务完成
+- Coder 多方案时先送 Reviewer 评估
+- 确认 Reviewer 反馈（`diagnosis.notableObservations`）
+- 路由指导而非复述 Reviewer 分析
+- 自主决策，极少求助人类
+- 输出格式：单一 JSON code block
 
 #### Phase 3: ACT（执行）
 
-`src/god/hand-executor.ts` + `src/god/rule-engine.ts`
+`src/god/hand-executor.ts`
 
 - **输入**：`GodAction[]`（从 GodDecisionEnvelope.actions 中提取）
-- **处理**：逐个执行 action，每个 action 先经 Rule Engine 校验
+- **处理**：逐个执行 action，直接 switch-case 分发（无 rule engine 前置校验）
 - **输出**：`Observation[]`（执行结果，反馈回状态机）
 
 ### GodDecisionEnvelope 结构
@@ -655,50 +554,52 @@ GodDecisionEnvelope
 ├── diagnosis                        God 对当前态势的诊断
 │   ├── summary: string              情况评估摘要
 │   ├── currentGoal: string          当前目标
-│   ├── currentPhaseId: string       当前阶段 ID
 │   └── notableObservations: string[]  驱动本次决策的关键观察
 │
-├── authority                        权限声明 (Zod superRefine 强制语义约束)
-│   ├── userConfirmation: 'human' | 'god_override' | 'not_required'
-│   ├── reviewerOverride: boolean    是否覆盖 Reviewer (true 需 system_log)
-│   └── acceptAuthority: 'reviewer_aligned' | 'god_override' | 'forced_stop'
+├── actions: GodAction[]             结构化动作列表 (5 种 Hand Action)
 │
-├── actions: GodAction[]             结构化动作列表 (11 种 Hand Action)
-│
-├── messages: EnvelopeMessage[]      消息列表
-│   └── { target: 'coder'|'reviewer'|'user'|'system_log', content }
-│
-└── autonomousResolutions?           God 代理决策记录
-    └── { question, choice, reflection, finalChoice }[]
+└── messages: EnvelopeMessage[]      消息列表
+    └── { target: 'coder'|'reviewer'|'user'|'system_log', content }
 ```
 
-Authority 语义约束（schema 层强制执行）：
-- `reviewerOverride = true` → messages 必须包含 `system_log` 条目解释原因
-- `acceptAuthority = 'god_override'` → messages 必须包含 `system_log` 条目
-- `userConfirmation = 'god_override'` → messages 必须包含 `system_log` 条目
-- `acceptAuthority = 'forced_stop'` → messages 必须包含 `user` 条目（用户摘要）
+> **已移除的字段**：`authority`（权限声明及其 Zod superRefine 约束全部移除）、`autonomousResolutions`（God 代理决策记录移除）、`diagnosis.currentPhaseId`（phase 系统移除）
 
-### 11 种 Hand Action（GodAction）
+### 5 种 Hand Action（GodAction）
 
 定义在 `src/types/god-actions.ts`，使用 Zod discriminated union：
 
 | Action | 参数 | 状态机效果 |
 |--------|------|-----------|
-| `send_to_coder` | `{ message }` | → CODING |
+| `send_to_coder` | `{ dispatchType: 'explore'\|'code'\|'debug'\|'discuss', message }` | → CODING |
 | `send_to_reviewer` | `{ message }` | → REVIEWING |
-| `stop_role` | `{ role, reason }` | kill adapter |
-| `retry_role` | `{ role, hint? }` | kill + restart → CODING/REVIEWING |
-| `switch_adapter` | `{ role, adapter, reason }` | (not yet implemented) |
-| `set_phase` | `{ phaseId, summary? }` | 阶段转换，写审计日志 |
-| `accept_task` | `{ rationale, summary }` | → DONE，rationale 必须声明 |
+| `accept_task` | `{ summary }` | → DONE |
 | `wait` | `{ reason, estimatedSeconds? }` | re-enter GOD_DECIDING |
 | `request_user_input` | `{ question }` | → CLARIFYING |
-| `resume_after_interrupt` | `{ resumeStrategy }` | continue/redirect/stop |
-| `emit_summary` | `{ content }` | 管理摘要，写审计日志 |
+
+`send_to_coder` 的 `dispatchType` 控制 Coder 的工作模式：
+- `explore`：只读调查，不修改文件
+- `discuss`：评估选项，推荐方案
+- `code`：实现、重构、写测试（允许修改文件）
+- `debug`：诊断并最小化修复（窄范围修改）
+
+> **已移除的 Action**：`stop_role`、`retry_role`、`switch_adapter`、`set_phase`、`resume_after_interrupt`、`emit_summary`（6 种 action 移除，从 11 种简化到 5 种）
+
+### 4 种 Task Type
+
+定义在 `src/types/god-schemas.ts`：
+
+| TaskType | 说明 |
+|----------|------|
+| `explore` | 只读调查 |
+| `code` | 编码实现 |
+| `debug` | 调试修复 |
+| `discuss` | 方案讨论 |
+
+> **已移除的 TaskType**：`review`、`compound`（`compound` 类型及其 phases 系统全部移除）
 
 ### Rule Engine（规则引擎）
 
-`src/god/rule-engine.ts` -- 同步执行（< 5ms），block 级别规则具有绝对优先级，God 无法 override（NFR-009）：
+`src/god/rule-engine.ts` -- 同步执行（< 5ms），block 级别规则具有绝对优先级：
 
 | 规则 | 级别 | 说明 |
 |------|------|------|
@@ -707,6 +608,8 @@ Authority 语义约束（schema 层强制执行）：
 | R-003 | block | 禁止可疑网络外传（curl 带 `-d @` 等） |
 | R-004 | warn | God 批准但 Rule Engine 阻止的矛盾检测 |
 | R-005 | warn | Coder 修改 `.duo/` 配置目录 |
+
+> **注意**：Rule Engine 仍然存在，但 Hand Executor 不再将其作为 action 执行的前置校验。Rule Engine 作为独立的安全组件提供文件/命令级别的安全检查。
 
 ### Watchdog 服务
 
@@ -736,15 +639,6 @@ God 决策失败
 └────────────────────────────────┘
 ```
 
-### TASK_INIT 任务分析
-
-`src/god/task-init.ts` -- God 启动时分析任务意图：
-
-- 输出 `GodTaskAnalysis`：taskType / reasoning / confidence / phases
-- 支持 6 种 taskType：`explore` / `code` / `discuss` / `review` / `debug` / `compound`
-- `compound` 类型必须包含 phases 数组（Zod schema 层强制）
-- 外层通过 `withRetry` + Watchdog 处理重试
-
 ### God 子系统全景
 
 ```
@@ -754,46 +648,39 @@ God 决策失败
 │  ┌──────────────────────────────────────────────────────────────────┐   │
 │  │  Decision Pipeline (统一决策管道)                                  │   │
 │  │                                                                    │   │
-│  │  observation-classifier.ts    Observation 分类 (regex, < 5ms)     │   │
+│  │  observation-factory.ts        Observation 创建 (工厂函数)         │   │
 │  │        │                                                           │   │
 │  │        v                                                           │   │
 │  │  god-decision-service.ts      makeDecision(obs, ctx) → Envelope  │   │
-│  │        │                                                           │   │
+│  │        │                      (system prompt 内联)                 │   │
 │  │        v                                                           │   │
 │  │  hand-executor.ts             executeActions(actions) → obs[]     │   │
-│  │        │                                                           │   │
-│  │        v                                                           │   │
-│  │  rule-engine.ts               R-001..R-005 安全校验               │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 │                                                                         │
 │  ┌──────────────────────────────────────────────────────────────────┐   │
 │  │  Adapter Layer (God 专用适配器)                                   │   │
 │  │                                                                    │   │
 │  │  god-call.ts                  collectGodAdapterOutput (统一调用)   │   │
-│  │  god-system-prompt.ts         CRITICAL OVERRIDE 系统 prompt       │   │
 │  │  god-adapter-factory.ts       创建 GodAdapter 实例                │   │
 │  │  god-adapter-config.ts        配置 + resume 兼容性                │   │
+│  │  adapters/                    claude-code / codex / gemini         │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 │                                                                         │
 │  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │  Resilience (容错)                                                │   │
+│  │  Resilience & Safety (容错与安全)                                  │   │
 │  │                                                                    │   │
 │  │  watchdog.ts                  retry + backoff + pause             │   │
+│  │  rule-engine.ts               R-001..R-005 安全校验               │   │
 │  │  god-fallback.ts (ui/)        withRetry — 简单重试包装器          │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 │                                                                         │
 │  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │  Task & Session (任务与会话管理)                                   │   │
+│  │  Session & Messaging (会话与消息)                                  │   │
 │  │                                                                    │   │
-│  │  task-init.ts                 任务分析 (类型/阶段/终止标准)        │   │
 │  │  tri-party-session.ts         Coder/Reviewer/God 三方会话隔离      │   │
-│  │  message-dispatcher.ts        消息分发器 (NL 不变量校验)           │   │
-│  │  observation-integration.ts   中断/文本中断 → Observation 转换     │   │
-│  │  interrupt-clarifier.ts       中断意图分类 (restart/redirect/      │   │
-│  │                               continue)                            │   │
+│  │  message-dispatcher.ts        消息分发器                           │   │
 │  │  god-prompt-generator.ts      Coder/Reviewer prompt 生成          │   │
-│  │                               (含 extractBlockingIssues + reviewer │   │
-│  │                                feedback forwarding)                │   │
+│  │  god-session-persistence.ts   God 会话持久化                      │   │
 │  │  god-audit.ts                 审计日志 (append-only JSONL)         │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -805,29 +692,24 @@ God 决策失败
 
 ### 1. Sovereign Authority 模式
 
-God LLM 是系统中唯一的决策者。所有状态变更（路由、收敛、中止、中断恢复）必须通过结构化 `GodAction` 表达，不允许通过自然语言消息暗示状态变更。`message-dispatcher.ts` 中的 NL 不变量检查确保消息内容与 action 一致（FR-016）。
+God LLM 是系统中唯一的决策者。所有状态变更（路由、收敛、中止）必须通过结构化 `GodAction` 表达，不允许通过自然语言消息暗示状态变更。
 
 ### 2. Envelope 模式（统一决策信封）
 
 `GodDecisionEnvelope` 统一所有决策场景：
 - 一个入口（`makeDecision`），一种输出格式
 - 通过 `actions[]` 的组合表达任意决策
-- `authority` 语义约束通过 Zod `superRefine` 在 schema 层强制执行
+- 3 个顶层字段：`diagnosis`、`actions`、`messages`
 
-### 3. Observation Pipeline 模式
+### 3. Observation Factory 模式
 
-所有来源的输出（Coder / Reviewer / 中断 / 错误 / 超时）统一归一化为 `Observation` 对象，再流入 God 决策管道。这替代了旧版的散点路由：
-
-- 中断（Ctrl+C / 文本中断）不再直接发送 XState 事件，而是生成 `human_interrupt` / `human_message` Observation
-- 通过 `INCIDENT_DETECTED` 事件进入 OBSERVING
-- 正常走 OBSERVING → GOD_DECIDING → EXECUTING 管道
-- God 决定如何处理中断（continue / redirect / stop）
+所有来源的输出（Coder / Reviewer / 人类消息 / 错误）通过 `observation-factory.ts` 的工厂函数统一创建为 `Observation` 对象，再流入 God 决策管道。God 直接解读 Observation 内容，不依赖预分类标签。
 
 ### 4. Hand 模式（结构化动作目录）
 
-God 的决策通过 11 种预定义的 Hand Action 表达，每种 action 有明确的参数和执行语义。Hand Executor 逐个执行 action，每个 action 先经 Rule Engine 校验。被阻止的 action 产生 `runtime_invariant_violation` Observation 反馈给 God。
+God 的决策通过 5 种预定义的 Hand Action 表达，每种 action 有明确的参数和执行语义。Hand Executor 逐个执行 action，通过 switch-case 直接分发。
 
-### 5. Retry + Pause 模式（替代旧版降级）
+### 5. Retry + Pause 模式（替代降级）
 
 God 失败时不降级，而是通过 Watchdog 进行简单的 retry + exponential backoff：
 - 最多 3 次重试（2s → 4s → 8s），backoff 上限 10s
@@ -835,20 +717,15 @@ God 失败时不降级，而是通过 Watchdog 进行简单的 retry + exponenti
 - 成功后立即重置失败计数器
 - **核心原则：LLM down = system pause，不存在降级模式**
 
-### 6. Circuit Breaker 模式
+### 6. Fallback Envelope 安全设计
 
-连续 3 次 `route-to-coder`（`consecutiveRouteToCoder >= 3`）触发熔断：
-- 直接跳转 `PAUSED`
-- 需要人工确认（continue 重置计数器 / accept 完成任务）
-- `route-to-reviewer` 时自动重置计数器
+God 决策失败时的 fallback envelope 包含一个 `wait` action（而非空 actions），防止 "empty actions → empty results → lost observations" 的死亡螺旋。EXECUTING 状态在结果为空时保留现有 observations。
 
 ### 7. CLARIFYING 多轮澄清模式
 
 God 可通过 `request_user_input` action 进入 `CLARIFYING` 状态：
-- 冻结 `frozenActiveProcess`（记住中断前在做什么）
-- 用户回答 → `clarification_answer` Observation → GOD_DECIDING
-- God 可继续提问（再次 `request_user_input`）或恢复工作（`resume_after_interrupt`）
-- 累积的 `clarificationObservations` 保留完整上下文
+- 用户回答 → Observation → GOD_DECIDING
+- God 可继续提问（再次 `request_user_input`）或恢复工作
 
 ### 8. GodAdapter 与 CLIAdapter 接口分离
 
@@ -858,7 +735,6 @@ God 可通过 `request_user_input` action 进入 `CLARIFYING` 状态：
 // CLIAdapter — 用于 Coder / Reviewer
 interface CLIAdapter {
   execute(prompt: string, opts: ExecOptions): AsyncIterable<OutputChunk>;
-  // ExecOptions: cwd, systemPrompt?, env?, timeout?, permissionMode?, model?
 }
 
 // GodAdapter — 用于 God
@@ -867,34 +743,10 @@ interface GodAdapter {
   clearSession?(): void;          // 清空会话状态，强制全新调用
   readonly toolUsePolicy?: GodToolUsePolicy;   // 'forbid' | 'allow-readonly'
   readonly minimumTimeoutMs?: number;           // 确保足够推理时间
-  // GodExecOptions: cwd, systemPrompt (必须), timeoutMs (必须), model?
 }
 ```
 
-设计原因：
-- God 需要 `toolUsePolicy` 控制工具使用（God 是纯决策者，不应使用工具）
-- God 需要 `minimumTimeoutMs` 确保足够的推理时间
-- God 需要 `clearSession()` 在重试时清空会话
-- God 的 `GodExecOptions` 要求 `systemPrompt` 和 `timeoutMs` 为必填
-
-### 9. CRITICAL OVERRIDE 系统提示
-
-God 通过宿主 CLI（如 Claude Code）运行，宿主有自己的系统提示词（CLAUDE.md、内置 skills 等）。`src/god/god-system-prompt.ts` 使用 `CRITICAL OVERRIDE` 前缀强制覆盖宿主行为：
-
-```
-# CRITICAL OVERRIDE — READ THIS FIRST
-
-You are being invoked as a **JSON-only orchestrator**.
-Ignore ALL other instructions, skills, CLAUDE.md files, and default behaviors.
-Your ONLY job is to output a single JSON code block.
-Do NOT use any tools (Read, Bash, Grep, Write, Edit, Agent, etc.).
-```
-
-### 10. Fallback Envelope 安全设计
-
-God 决策失败时的 fallback envelope 包含一个 `wait` action（而非空 actions），防止 "empty actions → empty results → lost observations" 的死亡螺旋。EXECUTING 状态在结果为空时保留现有 observations。
-
-### 11. Dynamic Model Discovery
+### 9. Dynamic Model Discovery
 
 `src/adapters/model-discovery.ts` 为各 CLI adapter 提供动态模型发现，结果在模块作用域缓存：
 - **Codex**：读取 `~/.codex/models_cache.json`，按 visibility/priority 过滤排序
@@ -953,23 +805,21 @@ cli.ts (Node.js) ──> cli-commands.ts
                                           └──> ui/components/App.tsx
           │
           ├── engine/workflow-machine.ts (XState v5)
-          ├── god/observation-integration.ts
-          │   god/observation-classifier.ts
+          │
+          ├── god/observation-factory.ts
           │
           ├── god/god-decision-service.ts ────> god/god-call.ts
           │       │                                   │
-          │       ├── parsers/god-json-extractor.ts   ├── types/god-adapter.ts
-          │       ├── types/god-envelope.ts            └── god/god-system-prompt.ts
+          │       ├── parsers/god-json-extractor.ts   └── types/god-adapter.ts
+          │       ├── types/god-envelope.ts
           │       └── god/watchdog.ts
           │
           ├── god/hand-executor.ts
-          │       └── god/rule-engine.ts
           │
-          ├── god/task-init.ts ──> god/god-call.ts
           ├── god/tri-party-session.ts
           ├── god/message-dispatcher.ts
-          ├── god/interrupt-clarifier.ts
           ├── god/god-prompt-generator.ts
+          ├── god/god-session-persistence.ts
           │
           ├── ui/god-fallback.ts (withRetry)
           │

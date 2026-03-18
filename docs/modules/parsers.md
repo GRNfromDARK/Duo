@@ -236,7 +236,7 @@ function extractGodJson<T>(
 
 从完整的 CLI 文本输出中提取 JSON 并通过 Zod schema 校验。采用两步提取策略（BUG-23 修复）：
 
-1. **策略一：code-fenced JSON 代码块** — 正则 `` /```json\s*\n([\s\S]*?)```/gi ``（大小写不敏感）全局匹配所有 JSON 代码块，取**最后一个**匹配结果。选择"最后一个"是因为 God LLM 可能在推理过程中输出多个中间 JSON 块，最终结果通常出现在末尾。
+1. **策略一：code-fenced JSON 代码块** — 正则 `` /```json\s*\n/gi ``（大小写不敏感）全局匹配所有 JSON 代码块的起始围栏，然后使用**状态机 JSON 扫描器**（`extractJsonObjectByScanning`）从围栏后开始扫描，跟踪 `braceDepth`、`inString`、`escaped` 三种状态，精确定位顶层 JSON 对象的闭合 `}`。取**最后一个**成功提取的结果。选择"最后一个"是因为 God LLM 可能在推理过程中输出多个中间 JSON 块，最终结果通常出现在末尾。使用状态机而非简单正则捕获是为了正确处理 JSON 字符串值中包含三反引号（如 Markdown 代码围栏）的情况。
 
 2. **策略二：裸 JSON 对象** — 找到文本中第一个 `{` 和最后一个 `}` 之间的内容尝试解析。这是 BUG-23 的修复，处理 God LLM 输出 JSON 但未使用代码围栏的情况。
 

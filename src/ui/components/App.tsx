@@ -34,33 +34,24 @@ import {
   resolveUserDecision,
 } from '../session-runner-state.js';
 import * as path from 'node:path';
-import { initializeTask } from '../../god/task-init.js';
-import { buildGodSystemPrompt } from '../../god/god-system-prompt.js';
 import { GodAuditLogger, logEnvelopeDecision } from '../../god/god-audit.js';
-import { withRetry, isPaused } from '../god-fallback.js';
 import type { GodTaskAnalysis } from '../../types/god-schemas.js';
-import type { GodDecisionEnvelope } from '../../types/god-envelope.js';
 import { TaskAnalysisCard } from './TaskAnalysisCard.js';
-import { generateCoderPrompt, generateReviewerPrompt, extractBlockingIssues } from '../../god/god-prompt-generator.js';
+import { generateCoderPrompt, generateReviewerPrompt } from '../../god/god-prompt-generator.js';
 import type { PromptContext } from '../../god/god-prompt-generator.js';
 import { ReclassifyOverlay } from './ReclassifyOverlay.js';
-import { PhaseTransitionBanner } from './PhaseTransitionBanner.js';
 import { CompletionScreen } from './CompletionScreen.js';
 import { canTriggerReclassify, writeReclassifyAudit } from '../reclassify-overlay.js';
-import { classifyInterruptIntent } from '../../god/interrupt-clarifier.js';
 import { buildContinuedTaskPrompt } from '../completion-flow.js';
 import { resolveGlobalCtrlCAction } from '../global-ctrl-c.js';
 import { performSafeShutdown } from '../safe-shutdown.js';
 import { appendPromptLog } from '../../session/prompt-log.js';
 import {
-  processWorkerOutput,
-  createProcessErrorObservation,
-  createTimeoutObservation,
-} from '../../god/observation-integration.js';
-import { ProcessTimeoutError } from '../../adapters/process-manager.js';
-import { classifyOutput, createObservation, deduplicateObservations } from '../../god/observation-classifier.js';
-import { formatGodMessage } from '../god-message-style.js';
-import { dispatchMessages, checkNLInvariantViolations } from '../../god/message-dispatcher.js';
+  createWorkObservation,
+  createHumanObservation,
+  deduplicateObservations,
+} from '../../god/observation-factory.js';
+import { dispatchMessages } from '../../god/message-dispatcher.js';
 import { GodDecisionService, type GodDecisionContext } from '../../god/god-decision-service.js';
 import { WatchdogService } from '../../god/watchdog.js';
 import { executeActions, type HandExecutionContext } from '../../god/hand-executor.js';
@@ -105,15 +96,11 @@ function mapStateToStatus(stateValue: string): WorkflowStatus {
     case 'REVIEWING':
       return 'active';
     case 'GOD_DECIDING':
-    case 'TASK_INIT':
     case 'OBSERVING':
     case 'EXECUTING':
       return 'routing';
     case 'PAUSED':
       return 'interrupted';
-    case 'INTERRUPTED':
-      return 'interrupted';
-    // Card E.2: CLARIFYING mapped to 'interrupted' visual status
     case 'CLARIFYING':
       return 'interrupted';
     case 'ERROR':
@@ -135,7 +122,6 @@ function getActiveAgentLabel(
 
   if (stateValue === 'CODING') return `${findName(config.coder)}:Coder`;
   if (stateValue === 'REVIEWING') return `${findName(config.reviewer)}:Reviewer`;
-  if (stateValue === 'TASK_INIT') return 'God:Init';
   if (stateValue === 'GOD_DECIDING') return 'God:Deciding';
   if (stateValue === 'OBSERVING') return 'God:Observing';
   if (stateValue === 'EXECUTING') return 'God:Executing';
@@ -304,7 +290,7 @@ function SessionRunner({
       ? (resumeSession.state.currentRole as 'coder' | 'reviewer' | null)
       : null,
   );
-  const lastUnresolvedIssuesRef = useRef<string[]>([]);
+  const pendingCoderDispatchTypeRef = useRef<string | null>(null);
   const initializedRef = useRef(false);
   const auditSeqRef = useRef(0);
   // Card D.1: track which worker role just completed (for OBSERVING classification)
@@ -330,13 +316,6 @@ function SessionRunner({
   // ── Reclassify overlay state (Ctrl+R) — Card C.3 ──
   const [showReclassify, setShowReclassify] = useState(false);
 
-  // ── Phase transition banner state — Card C.3 ──
-  const [showPhaseTransition, setShowPhaseTransition] = useState(false);
-  const [pendingPhaseTransition, setPendingPhaseTransition] = useState<{
-    nextPhaseId: string;
-    previousPhaseSummary: string;
-  } | null>(null);
-  const [currentPhaseId, setCurrentPhaseId] = useState<string | null>(restoredRuntime?.currentPhaseId ?? null);
 
   // ── God latency tracking (StatusBar display) — Card D.2 ──
   const [godLatency, setGodLatency] = useState<number | undefined>(undefined);
@@ -466,118 +445,14 @@ function SessionRunner({
     initializedRef.current = true;
   }, []);
 
-  // ── TASK_INIT state: run God intent parsing ──
-  // Uses withRetry for retry + backoff + pause
+  // ── GOD_DECIDING now starts directly from IDLE → START_TASK (no TASK_INIT phase) ──
+  // Initialize God audit logger on first GOD_DECIDING entry
   useEffect(() => {
-    if (stateValue !== 'TASK_INIT') return;
-
-    let cancelled = false;
-
-    // Initialize God audit logger if not yet created
+    if (stateValue !== 'GOD_DECIDING') return;
     if (!godAuditLoggerRef.current && sessionIdRef.current) {
       const sessionDir = getSessionDir();
       godAuditLoggerRef.current = new GodAuditLogger(sessionDir);
     }
-
-    // God paused → error immediately, auto-recovery will handle retry
-    if (!watchdogRef.current.isGodAvailable()) {
-      addMessage({
-        role: 'system',
-        content: 'God orchestrator unavailable. System paused.',
-        timestamp: Date.now(),
-      });
-      send({ type: 'PROCESS_ERROR', error: 'God orchestrator unavailable during task init' } as any);
-      return;
-    }
-
-    addMessage({
-      role: 'system',
-      content: `Analyzing task with God orchestrator (${getDisplayName(config.god)})...`,
-      timestamp: Date.now(),
-    });
-    addTimelineEvent('task_start', `God TASK_INIT started: ${getDisplayName(config.god)}`);
-
-    (async () => {
-      const startTime = Date.now();
-
-      const retryResult = await withRetry(
-        async () => {
-          const systemPrompt = buildGodSystemPrompt({
-            task: config.task,
-            coderName: getDisplayName(config.coder),
-            reviewerName: getDisplayName(config.reviewer),
-          });
-
-          const r = await initializeTask(
-            godAdapterRef.current,
-            config.task,
-            systemPrompt,
-            config.projectDir,
-            sessionIdRef.current ? getSessionDir() : undefined,
-            config.godModel,
-          );
-
-          // Treat null result as schema_validation failure to trigger retry
-          if (!r) throw new Error('TASK_INIT returned null (extraction/validation failed)');
-          return r;
-        },
-        watchdogRef.current,
-      );
-
-      // TASK_INIT uses buildGodSystemPrompt (5 decision points format).
-      // Unified decisions use SYSTEM_PROMPT (GodDecisionEnvelope format).
-      // Clear the session so the first unified decision starts fresh
-      // with its own system prompt instead of resuming TASK_INIT's session.
-      godAdapterRef.current.clearSession?.();
-
-      if (cancelled) return;
-
-      if (!isPaused(retryResult)) {
-        const result = retryResult.result;
-        setTaskAnalysis(result.analysis);
-
-        // Log to God audit + update StatusBar latency (Card D.2)
-        const latency = Date.now() - startTime;
-        setGodLatency(latency);
-        if (godAuditLoggerRef.current) {
-          godAuditLoggerRef.current.append({
-            timestamp: new Date().toISOString(),
-            decisionType: 'TASK_INIT',
-            inputSummary: config.task,
-            outputSummary: `taskType=${result.analysis.taskType}`,
-            latencyMs: latency,
-            decision: result.analysis,
-          }, result.analysis);
-        }
-
-        addTimelineEvent('task_start', `God TASK_INIT: ${result.analysis.taskType}`);
-        setShowTaskAnalysisCard(true);
-      } else {
-        // Paused — log failure to God audit
-        if (godAuditLoggerRef.current) {
-          godAuditLoggerRef.current.append({
-            timestamp: new Date().toISOString(),
-            decisionType: 'TASK_INIT_FAILURE',
-            inputSummary: config.task,
-            outputSummary: `Paused: watchdog failures=${watchdogRef.current.getConsecutiveFailures()}`,
-            latencyMs: Date.now() - startTime,
-            decision: { godPaused: watchdogRef.current.isPaused() },
-          });
-        }
-
-        addMessage({
-          role: 'system',
-          content: `God TASK_INIT failed after ${retryResult.retryCount} retries. System paused.`,
-          timestamp: Date.now(),
-        });
-        addTimelineEvent('error', 'God TASK_INIT failed, system paused');
-        send({ type: 'PROCESS_ERROR', error: 'God TASK_INIT failed after retries' } as any);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
   }, [stateValue]);
 
   // ── Save state on transitions ──
@@ -599,14 +474,6 @@ function SessionRunner({
           ? { godSessionId: godAdapterRef.current.getLastSessionId()! }
           : {}),
         ...(taskAnalysisRef.current ? { godTaskAnalysis: taskAnalysisRef.current } : {}),
-        currentPhaseId,
-        // Card E.2: persist clarification context for duo resume
-        ...(stateValue === 'CLARIFYING' ? {
-          clarification: {
-            frozenActiveProcess: ctx.frozenActiveProcess,
-            clarificationRound: ctx.clarificationRound,
-          },
-        } : {}),
       });
     } catch {
       // Best-effort persistence
@@ -644,19 +511,14 @@ function SessionRunner({
         const shouldSkipHistory = isSessionCapable(adapter) && adapter.hasActiveSession();
 
         // Prompt generation — direct call (pure template, no retry needed)
-        if (!taskAnalysis) throw new Error('No taskAnalysis available');
+        // dispatchType comes from the hand executor's pendingCoderDispatchType (default to 'code')
+        const dispatchType = pendingCoderDispatchTypeRef.current ?? 'code';
+        pendingCoderDispatchTypeRef.current = null; // consumed
         const prompt = generateCoderPrompt({
-          taskType: taskAnalysis.taskType as PromptContext['taskType'],
+          dispatchType: dispatchType as PromptContext['dispatchType'],
           taskGoal: config.task,
           lastReviewerOutput: ctx.lastReviewerOutput ?? undefined,
-          unresolvedIssues: lastUnresolvedIssuesRef.current,
           instruction: interruptInstruction,
-          phaseId: currentPhaseId ?? undefined,
-          phaseType: currentPhaseId
-            ? taskAnalysis.phases?.find(p => p.id === currentPhaseId)?.type as PromptContext['phaseType']
-            : undefined,
-          isPostReviewerRouting: lastWorkerRoleRef.current === 'reviewer'
-            || reviewerFeedbackPendingRef.current,
         }, {
           sessionDir: sessionIdRef.current
             ? path.join(config.projectDir, '.duo', 'sessions', sessionIdRef.current)
@@ -675,7 +537,6 @@ function SessionRunner({
               systemPrompt: null,
               meta: {
                 promptSource,
-                phaseId: currentPhaseId,
                 roleHint: config.coder === 'codex' ? 'coder' : undefined,
                 hasInterruptInstruction: Boolean(interruptInstruction),
               },
@@ -752,45 +613,23 @@ function SessionRunner({
               } catch { /* best-effort */ }
             }
 
-            // Card B.2: classify output through observation pipeline
-            // Non-work outputs (quota_exhausted, auth_failed, etc.) must NOT trigger CODE_COMPLETE
-            // Use llmText (pure LLM output) for classification — fullText is only for history logs.
-            const { isWork, observation } = processWorkerOutput(
-              outcome.llmText,
-              'coder',
-              { adapter: config.coder },
-            );
-
-            if (isWork) {
-              lastWorkerRoleRef.current = 'coder';
-              reviewerFeedbackPendingRef.current = false;
-              addTimelineEvent('coding', `Coder completed: ${tokens} tokens`);
-              send({ type: 'CODE_COMPLETE', output: outcome.llmText });
-            } else {
-              // Card D.1: Non-work output → route as incident through OBSERVING pipeline
-              addTimelineEvent('error', `Coder non-work output: ${observation.type}`);
-              addMessage({
-                role: 'system',
-                content: `Coder output classified as ${observation.type}: ${observation.summary}`,
-                timestamp: Date.now(),
-              });
-              send({ type: 'INCIDENT_DETECTED', observation });
-            }
+            // All successful outputs go to CODE_COMPLETE
+            // God interprets content directly; no pre-classification needed.
+            lastWorkerRoleRef.current = 'coder';
+            reviewerFeedbackPendingRef.current = false;
+            addTimelineEvent('coding', `Coder completed: ${tokens} tokens`);
+            send({ type: 'CODE_COMPLETE', output: outcome.llmText });
           }
         }
       } catch (err) {
         if (!cancelled) {
           const errorMsg = err instanceof Error ? err.message : String(err);
-          // BUG-9 fix: capture observation return value and route via INCIDENT_DETECTED
-          const observation = err instanceof ProcessTimeoutError
-            ? createTimeoutObservation({ adapter: config.coder })
-            : createProcessErrorObservation(errorMsg, { adapter: config.coder });
           addMessage({
             role: 'system',
             content: `Coder error: ${errorMsg}`,
             timestamp: Date.now(),
           });
-          send({ type: 'INCIDENT_DETECTED', observation });
+          send({ type: 'PROCESS_ERROR', error: errorMsg });
         }
       }
     })();
@@ -822,14 +661,10 @@ function SessionRunner({
       return;
     }
 
-    // Classify output into a typed Observation (pure sync, < 5ms)
-    const observation = classifyOutput(
+    // Create typed Observation (pure sync, no classification needed — God interprets directly)
+    const observation = createWorkObservation(
       output,
       source === 'reviewer' ? 'reviewer' : 'coder',
-      {
-        phaseId: currentPhaseId ?? undefined,
-        adapter: source === 'reviewer' ? config.reviewer : config.coder,
-      },
     );
 
     addTimelineEvent('coding', `Observation: ${observation.type} from ${source}`);
@@ -873,16 +708,10 @@ function SessionRunner({
           : undefined;
 
         // Prompt generation — direct call (pure template, no retry needed)
-        if (!taskAnalysis) throw new Error('No taskAnalysis available');
         const prompt = generateReviewerPrompt({
-          taskType: taskAnalysis.taskType,
           taskGoal: config.task,
           lastCoderOutput: ctx.lastCoderOutput ?? undefined,
           instruction: interruptInstruction,
-          phaseId: currentPhaseId ?? undefined,
-          phaseType: currentPhaseId
-            ? taskAnalysis.phases?.find(p => p.id === currentPhaseId)?.type as PromptContext['phaseType']
-            : undefined,
         });
         const promptSource = 'god_dynamic';
 
@@ -896,7 +725,6 @@ function SessionRunner({
               systemPrompt: null,
               meta: {
                 promptSource,
-                phaseId: currentPhaseId,
                 roleHint: config.reviewer === 'codex' ? 'reviewer' : undefined,
                 hasInterruptInstruction: Boolean(interruptInstruction),
               },
@@ -974,45 +802,23 @@ function SessionRunner({
             // Track reviewer outputs for loop detection (use clean LLM text for comparison)
             reviewerOutputsRef.current.push(outcome.llmText);
 
-            // Card B.2: classify output through observation pipeline
-            // Non-work outputs (quota_exhausted, auth_failed, etc.) must NOT trigger REVIEW_COMPLETE
-            // Use llmText (pure LLM output) for classification — fullText is only for history logs.
-            const { isWork, observation } = processWorkerOutput(
-              outcome.llmText,
-              'reviewer',
-              { adapter: config.reviewer },
-            );
-
-            if (isWork) {
-              lastWorkerRoleRef.current = 'reviewer';
-              reviewerFeedbackPendingRef.current = true;
-              addTimelineEvent('reviewing', `Reviewer completed: ${tokens} tokens`);
-              send({ type: 'REVIEW_COMPLETE', output: outcome.llmText });
-            } else {
-              // Card D.1: Non-work output → route as incident through OBSERVING pipeline
-              addTimelineEvent('error', `Reviewer non-work output: ${observation.type}`);
-              addMessage({
-                role: 'system',
-                content: `Reviewer output classified as ${observation.type}: ${observation.summary}`,
-                timestamp: Date.now(),
-              });
-              send({ type: 'INCIDENT_DETECTED', observation });
-            }
+            // All successful outputs go to REVIEW_COMPLETE
+            // God interprets content directly; no pre-classification needed.
+            lastWorkerRoleRef.current = 'reviewer';
+            reviewerFeedbackPendingRef.current = true;
+            addTimelineEvent('reviewing', `Reviewer completed: ${tokens} tokens`);
+            send({ type: 'REVIEW_COMPLETE', output: outcome.llmText });
           }
         }
       } catch (err) {
         if (!cancelled) {
           const errorMsg = err instanceof Error ? err.message : String(err);
-          // BUG-9 fix: capture observation return value and route via INCIDENT_DETECTED
-          const observation = err instanceof ProcessTimeoutError
-            ? createTimeoutObservation({ adapter: config.reviewer })
-            : createProcessErrorObservation(errorMsg, { adapter: config.reviewer });
           addMessage({
             role: 'system',
             content: `Reviewer error: ${errorMsg}`,
             timestamp: Date.now(),
           });
-          send({ type: 'INCIDENT_DETECTED', observation });
+          send({ type: 'PROCESS_ERROR', error: errorMsg });
         }
       }
     })();
@@ -1055,8 +861,6 @@ function SessionRunner({
   useEffect(() => {
     if (stateValue !== 'GOD_DECIDING') return;
 
-    if (showPhaseTransition) return;
-
     const manualWaitingMsg = 'Waiting for your decision. Type [c] to continue, [a] to accept, or enter new instructions.';
 
     if (!watchdogRef.current.isGodAvailable()) {
@@ -1091,33 +895,15 @@ function SessionRunner({
         const godCallStart = Date.now();
         const service = godDecisionServiceRef.current;
 
-        // Bug 11 fix: inject phase plan so God can follow phase sequence
-        const currentPhaseType = currentPhaseId && taskAnalysisRef.current?.phases
-          ? taskAnalysisRef.current.phases.find(p => p.id === currentPhaseId)?.type as GodDecisionContext['currentPhaseType']
-          : undefined;
-
         const decisionContext: GodDecisionContext = {
           taskGoal: config.task,
-          currentPhaseId: currentPhaseId ?? 'default',
-          currentPhaseType,
-          phases: taskAnalysisRef.current?.phases ?? undefined,
-          previousDecisions: ctx.lastDecision ? [ctx.lastDecision] : [],
           availableAdapters: [config.coder, config.reviewer],
           activeRole: ctx.activeProcess,
           sessionDir: getSessionDir(),
         };
 
-        // Determine if God adapter has an active session (resume mode → slim prompt)
-        const godIsResuming = isSessionCapable(godAdapterRef.current)
-          && godAdapterRef.current.hasActiveSession();
-
-        // Merge clarification history with current observations, deduplicating
-        // since clarificationObservations already includes current observations
-        const allObservations = deduplicateObservations([
-          ...ctx.clarificationObservations,
-          ...ctx.currentObservations,
-        ]);
-        const envelope = await service.makeDecision(allObservations, decisionContext, godIsResuming);
+        const allObservations = deduplicateObservations(ctx.currentObservations);
+        const envelope = await service.makeDecision(allObservations, decisionContext);
 
         if (cancelled) return;
         clearTimeout(timeoutId);
@@ -1153,21 +939,7 @@ function SessionRunner({
           pendingReviewerInstructionRef.current = dispatchResult.pendingReviewerMessage;
         }
 
-        // BUG-7/8 fix: Run NL invariant checks (Card D.3, FR-016)
-        const nlViolations = checkNLInvariantViolations(
-          envelope.messages,
-          envelope.actions,
-          { phaseId: envelope.diagnosis.currentPhaseId },
-        );
-        for (const violation of nlViolations) {
-          addMessage({
-            role: 'system',
-            content: `NL invariant violation: ${violation.summary}`,
-            timestamp: Date.now(),
-          });
-        }
-
-        // BUG-7/8 fix: Log complete envelope decision audit (Card F.2)
+        // Log complete envelope decision audit
         if (godAuditLoggerRef.current) {
           logEnvelopeDecision(godAuditLoggerRef.current, {
             observations: ctx.currentObservations,
@@ -1191,7 +963,7 @@ function SessionRunner({
     })();
 
     return () => { cancelled = true; clearTimeout(timeoutId); };
-  }, [stateValue, showPhaseTransition, reclassifyTrigger]);
+  }, [stateValue, reclassifyTrigger]);
 
   // ── EXECUTING: run GodActions via Hand executor, send EXECUTION_COMPLETE ──
   // Card D.1: Hand executor runs actions sequentially, results flow back as observations
@@ -1209,97 +981,61 @@ function SessionRunner({
     (async () => {
       try {
         const handContext: HandExecutionContext = {
-          currentPhaseId: currentPhaseId ?? 'default',
           pendingCoderMessage: pendingInstructionRef.current,
+          pendingCoderDispatchType: null,
           pendingReviewerMessage: null,
-          adapters: new Map<string, { kill(): Promise<void> }>([
-            ['coder', coderAdapterRef.current],
-            ['reviewer', reviewerAdapterRef.current],
-          ]),
           auditLogger: godAuditLoggerRef.current,
-          activeRole: ctx.activeProcess,
           taskCompleted: false,
           waitState: { active: false, reason: null, estimatedSeconds: null },
           clarificationState: { active: false, question: null },
-          interruptResumeStrategy: null,
-          adapterConfig: new Map([
-            ['coder', config.coder],
-            ['reviewer', config.reviewer],
-          ]),
           sessionDir: getSessionDir(),
           cwd: config.projectDir,
-          // BUG-15 fix: pass envelope messages so accept_task D.3 validation runs
-          envelopeMessages: envelope.messages,
         };
 
         const results = await executeActions(envelope.actions, handContext);
 
         if (cancelled) return;
 
-        // Change 2: populate unresolvedIssues from reviewer output when post-reviewer routing
-        if (lastWorkerRoleRef.current === 'reviewer' && ctx.lastReviewerOutput) {
-          lastUnresolvedIssuesRef.current = extractBlockingIssues(ctx.lastReviewerOutput);
-        }
-
         // Apply side effects from hand executor back to orchestration state
         if (handContext.pendingCoderMessage && handContext.pendingCoderMessage !== pendingInstructionRef.current) {
           pendingInstructionRef.current = handContext.pendingCoderMessage;
         }
-        // BUG-11 fix: save reviewer pending message from hand executor
+        if (handContext.pendingCoderDispatchType) {
+          pendingCoderDispatchTypeRef.current = handContext.pendingCoderDispatchType;
+        }
         if (handContext.pendingReviewerMessage && handContext.pendingReviewerMessage !== pendingReviewerInstructionRef.current) {
           pendingReviewerInstructionRef.current = handContext.pendingReviewerMessage;
         }
-        if (handContext.currentPhaseId !== (currentPhaseId ?? 'default')) {
-          addMessage({
-            role: 'system',
-            content: `→ Phase transition: ${currentPhaseId ?? 'default'} → ${handContext.currentPhaseId}`,
-            timestamp: Date.now(),
-          });
-          setCurrentPhaseId(handContext.currentPhaseId);
-          // Bug 3 fix: clear unresolvedIssues on phase transition
-          lastUnresolvedIssuesRef.current = [];
-          reviewerFeedbackPendingRef.current = false;
-        }
 
-        // Bug 3 fix: clear unresolvedIssues on accept_task or convergence
         if (handContext.taskCompleted || envelope.actions.some(a => a.type === 'accept_task')) {
-          lastUnresolvedIssuesRef.current = [];
           reviewerFeedbackPendingRef.current = false;
           if (envelope.actions.some(a => a.type === 'accept_task')) {
             addMessage({
               role: 'system',
-              content: '✓ Task accepted by God',
+              content: 'Task accepted by God',
               timestamp: Date.now(),
             });
           }
         }
 
-        // Card E.2: Display God's clarification question with styled formatting
+        // Display God's clarification question
         if (handContext.clarificationState.active && handContext.clarificationState.question) {
-          const clarificationLines = formatGodMessage(
-            handContext.clarificationState.question,
-            'clarification',
-          );
-          const roundLabel = ctx.clarificationRound > 0
-            ? ` (round ${ctx.clarificationRound + 1})`
-            : '';
           addMessage({
             role: 'system',
-            content: clarificationLines.join('\n') + roundLabel,
+            content: `God asks: ${handContext.clarificationState.question}`,
             timestamp: Date.now(),
           });
         }
 
-        // BUG-12 fix: detect conflicting routing actions in envelope
+        // Detect conflicting routing actions in envelope
         const routingConflicts = detectRoutingConflicts(envelope);
         if (routingConflicts.length > 0) {
           const conflictObs: import('../../types/observation.js').Observation = {
             source: 'runtime',
-            type: 'runtime_invariant_violation',
+            type: 'runtime_error',
             summary: `Multiple routing actions in single envelope: [${routingConflicts.join(', ')}]. Only first will be used for routing.`,
             severity: 'warning',
             timestamp: new Date().toISOString(),
-            phaseId: currentPhaseId ?? 'default',
           };
           results.push(conflictObs);
           addMessage({
@@ -1356,13 +1092,12 @@ function SessionRunner({
       });
 
       if (stateValue === 'CODING' || stateValue === 'REVIEWING') {
-        // Text interrupt: kill current process, then resume
+        // Text interrupt: kill current process, create observation and go to GOD_DECIDING
         const adapter =
           stateValue === 'CODING'
             ? coderAdapterRef.current
             : reviewerAdapterRef.current;
-        const resumeAs = stateValue === 'CODING' ? 'coder' : 'reviewer';
-        lastInterruptedRoleRef.current = resumeAs;
+        lastInterruptedRoleRef.current = stateValue === 'CODING' ? 'coder' : 'reviewer';
         pendingInstructionRef.current = text;
 
         outputManagerRef.current.interrupt();
@@ -1375,9 +1110,12 @@ function SessionRunner({
           timestamp: Date.now(),
         });
 
-        send({ type: 'USER_INTERRUPT' });
-        // xstate v5 queues events — USER_INPUT is processed after INTERRUPTED transition
-        send({ type: 'USER_INPUT', input: text, resumeAs });
+        // Route to OBSERVING → GOD_DECIDING via CODE_COMPLETE/REVIEW_COMPLETE with captured output
+        if (stateValue === 'CODING') {
+          send({ type: 'CODE_COMPLETE', output: bufferedText || '(interrupted)' });
+        } else {
+          send({ type: 'REVIEW_COMPLETE', output: bufferedText || '(interrupted)' });
+        }
         return;
       }
 
@@ -1396,78 +1134,9 @@ function SessionRunner({
         return;
       }
 
-      if (stateValue === 'INTERRUPTED') {
-        const interruptContext = {
-          userInput: text,
-          taskGoal: config.task,
-          currentPhaseId: currentPhaseId ?? undefined,
-          lastCoderOutput: ctx.lastCoderOutput?.slice(0, 1000) ?? undefined,
-          lastReviewerOutput: ctx.lastReviewerOutput?.slice(0, 1000) ?? undefined,
-          sessionDir: path.join(config.projectDir, '.duo', 'sessions', sessionIdRef.current ?? 'unknown'),
-          seq: ++auditSeqRef.current,
-          projectDir: config.projectDir,
-        };
-
-        if (watchdogRef.current.isGodAvailable()) {
-          setIsClassifyingIntent(true);
-          void (async () => {
-            try {
-              const classification = await classifyInterruptIntent(
-                godAdapterRef.current,
-                interruptContext,
-                config.godModel,
-              );
-
-              if (classification.needsClarification) {
-                addMessage({
-                  role: 'system',
-                  content: `God asks: ${classification.instruction}`,
-                  timestamp: Date.now(),
-                });
-                return;
-              }
-
-              pendingInstructionRef.current = classification.instruction;
-
-              if (classification.intent === 'restart') {
-                lastUnresolvedIssuesRef.current = [];
-                setPendingPhaseTransition(null);
-                setShowPhaseTransition(false);
-                addMessage({
-                  role: 'system',
-                  content: `God: restarting current attempt - ${classification.instruction}`,
-                  timestamp: Date.now(),
-                });
-                send({ type: 'OBSERVATIONS_READY', observations: [createObservation('clarification_answer', 'human', classification.instruction, { severity: 'info', rawRef: classification.instruction })] });
-                return;
-              }
-
-              addMessage({
-                role: 'system',
-                content: `God: ${classification.intent} - ${classification.instruction}`,
-                timestamp: Date.now(),
-              });
-              send({ type: 'OBSERVATIONS_READY', observations: [createObservation('clarification_answer', 'human', classification.instruction, { severity: 'info', rawRef: classification.instruction })] });
-            } catch {
-              pendingInstructionRef.current = text;
-              send({ type: 'OBSERVATIONS_READY', observations: [createObservation('clarification_answer', 'human', text, { severity: 'info', rawRef: text })] });
-            } finally {
-              setIsClassifyingIntent(false);
-            }
-          })();
-        } else {
-          pendingInstructionRef.current = text;
-          send({ type: 'OBSERVATIONS_READY', observations: [createObservation('clarification_answer', 'human', text, { severity: 'info', rawRef: text })] });
-        }
-        return;
-      }
-
-      // Card E.2: CLARIFYING — user answers God's clarification question
+      // CLARIFYING — user answers God's clarification question
       if (stateValue === 'CLARIFYING') {
-        const obs = createObservation('clarification_answer', 'human', text, {
-          severity: 'info',
-          rawRef: text,
-        });
+        const obs = createHumanObservation(text);
         send({ type: 'OBSERVATIONS_READY', observations: [obs] });
         return;
       }
@@ -1477,7 +1146,7 @@ function SessionRunner({
 
   // ── Handle Ctrl+C interrupt ──
   const handleInterrupt = useCallback(() => {
-    // Single Ctrl+C: interrupt current process
+    // Single Ctrl+C: interrupt current process, route through observation pipeline
     if (stateValue === 'CODING' || stateValue === 'REVIEWING') {
       const adapter =
         stateValue === 'CODING'
@@ -1495,7 +1164,13 @@ function SessionRunner({
         timestamp: Date.now(),
       });
       addTimelineEvent('interrupted', `User interrupt: ${bufferedText.length} chars`);
-      send({ type: 'USER_INTERRUPT' });
+
+      // Route to OBSERVING → GOD_DECIDING via CODE_COMPLETE/REVIEW_COMPLETE
+      if (stateValue === 'CODING') {
+        send({ type: 'CODE_COMPLETE', output: bufferedText || '(interrupted)' });
+      } else {
+        send({ type: 'REVIEW_COMPLETE', output: bufferedText || '(interrupted)' });
+      }
     }
   }, [stateValue, ctx, send, exit, addMessage, addTimelineEvent]);
 
@@ -1521,12 +1196,11 @@ function SessionRunner({
             : {};
         })(),
         ...(taskAnalysisRef.current ? { godTaskAnalysis: taskAnalysisRef.current } : {}),
-        currentPhaseId,
       });
     } catch {
       // Best-effort persistence before exit.
     }
-  }, [ctx.activeProcess, stateValue, currentPhaseId]);
+  }, [ctx.activeProcess, stateValue]);
 
   const handleSafeExit = useCallback(async () => {
     await performSafeShutdown({
@@ -1556,22 +1230,16 @@ function SessionRunner({
   const handleTaskAnalysisConfirm = useCallback(
     (taskType: string) => {
       setShowTaskAnalysisCard(false);
-      // BUG-8 fix: Update taskAnalysis state with user-selected taskType
       setTaskAnalysis(prev => prev ? { ...prev, taskType: taskType as GodTaskAnalysis['taskType'] } : prev);
-
-      // Card C.3: Set initial phase for compound tasks — use taskType param (user's choice)
-      if (taskType === 'compound' && taskAnalysis?.phases && taskAnalysis.phases.length > 0) {
-        setCurrentPhaseId(taskAnalysis.phases[0].id);
-      }
 
       addMessage({
         role: 'system',
         content: `Task analysis confirmed: type=${taskType}.`,
         timestamp: Date.now(),
       });
-      send({ type: 'TASK_INIT_COMPLETE' });
+      // No TASK_INIT_COMPLETE needed — GOD_DECIDING starts directly from START_TASK
     },
-    [taskAnalysis, send, addMessage, setTaskAnalysis],
+    [send, addMessage, setTaskAnalysis],
   );
 
   const handleTaskAnalysisTimeout = useCallback(() => {
@@ -1596,7 +1264,12 @@ function SessionRunner({
         content: 'LLM interrupted for task reclassification.',
         timestamp: Date.now(),
       });
-      send({ type: 'USER_INTERRUPT' });
+      // Route through normal completion path
+      if (stateValue === 'CODING') {
+        send({ type: 'CODE_COMPLETE', output: '(interrupted for reclassification)' });
+      } else {
+        send({ type: 'REVIEW_COMPLETE', output: '(interrupted for reclassification)' });
+      }
     }
 
     setShowReclassify(true);
@@ -1637,75 +1310,19 @@ function SessionRunner({
 
       // Trigger re-run of GOD_DECIDING auto-decision after reclassify
       setReclassifyTrigger(prev => prev + 1);
-
-      // Resume to GOD_DECIDING so the autonomous decision can re-run
-      if (stateValue === 'INTERRUPTED') {
-        send({ type: 'USER_INPUT', input: `Reclassified to ${newType}`, resumeAs: 'decision' });
-      }
     },
     [taskAnalysis, config, stateValue, send, addMessage, addTimelineEvent],
   );
 
   const handleReclassifyCancel = useCallback(() => {
     setShowReclassify(false);
-
-    // BUG-4 fix: If we interrupted the LLM to show the overlay, restore to
-    // the previous role so the user isn't stuck in INTERRUPTED with no prompt.
-    if (stateValue === 'INTERRUPTED' && lastInterruptedRoleRef.current) {
-      addMessage({
-        role: 'system',
-        content: 'Task reclassification cancelled. Resuming previous work.',
-        timestamp: Date.now(),
-      });
-      send({
-        type: 'USER_INPUT',
-        input: 'Reclassification cancelled, resuming',
-        resumeAs: lastInterruptedRoleRef.current,
-      });
-    } else {
-      addMessage({
-        role: 'system',
-        content: 'Task reclassification cancelled.',
-        timestamp: Date.now(),
-      });
-    }
-  }, [stateValue, send, addMessage]);
-
-  // ── Phase transition confirm handler — Card C.3 (AC-033) ──
-  const handlePhaseTransitionConfirm = useCallback(() => {
-    setShowPhaseTransition(false);
-    if (!pendingPhaseTransition) return;
-
-    setCurrentPhaseId(pendingPhaseTransition.nextPhaseId);
-
     addMessage({
       role: 'system',
-      content: `Phase transition confirmed → ${pendingPhaseTransition.nextPhaseId}`,
+      content: 'Task reclassification cancelled.',
       timestamp: Date.now(),
     });
-    addTimelineEvent('task_start', `Phase transition → ${pendingPhaseTransition.nextPhaseId}`);
+  }, [addMessage]);
 
-    // Send continue with phase context (workflow machine handles pendingPhaseId)
-    send({ type: 'USER_CONFIRM', action: 'continue' });
-    setPendingPhaseTransition(null);
-  }, [pendingPhaseTransition, send, addMessage, addTimelineEvent]);
-
-  // ── Phase transition cancel handler — Card C.3 ──
-  const handlePhaseTransitionCancel = useCallback(() => {
-    setShowPhaseTransition(false);
-    setPendingPhaseTransition(null);
-
-    // BUG-1 fix: Clear pendingPhaseId in XState context so subsequent
-    // USER_CONFIRM 'continue' doesn't trigger the cancelled phase transition.
-    send({ type: 'CLEAR_PENDING_PHASE' });
-
-    addMessage({
-      role: 'system',
-      content: 'Phase transition cancelled. Staying in current phase. Type [c] to continue, [a] to accept.',
-      timestamp: Date.now(),
-    });
-    addTimelineEvent('task_start', 'Phase transition cancelled by user');
-  }, [send, addMessage, addTimelineEvent]);
 
   // ── Build status ──
   const status = mapStateToStatus(stateValue);
@@ -1716,7 +1333,6 @@ function SessionRunner({
   const workflowState: WorkflowStateHint = (() => {
     if (isClassifyingIntent) return { phase: 'classifying_intent' as const };
     switch (stateValue) {
-      case 'TASK_INIT': return { phase: 'task_init' as const };
       case 'GOD_DECIDING':
         // Post-reviewer GOD_DECIDING = convergence evaluation (is the task done?)
         return lastWorkerRoleRef.current === 'reviewer'
@@ -1752,26 +1368,9 @@ function SessionRunner({
     );
   }
 
-  if (
-    showPhaseTransition
-    && pendingPhaseTransition
-    && (stateValue === 'GOD_DECIDING' || stateValue === 'PAUSED')
-  ) {
-    return (
-      <Box flexDirection="column" width={columns} height={rows}>
-        <PhaseTransitionBanner
-          nextPhaseId={pendingPhaseTransition.nextPhaseId}
-          previousPhaseSummary={pendingPhaseTransition.previousPhaseSummary}
-          onConfirm={handlePhaseTransitionConfirm}
-          onCancel={handlePhaseTransitionCancel}
-        />
-      </Box>
-    );
-  }
-
   // SPEC-DECISION: Render TaskAnalysisCard as full replacement for MainLayout
   // to avoid useInput conflicts. Card disappears once confirmed.
-  if (showTaskAnalysisCard && taskAnalysis && stateValue === 'TASK_INIT') {
+  if (showTaskAnalysisCard && taskAnalysis) {
     return (
       <Box flexDirection="column" width={columns} height={rows}>
         <TaskAnalysisCard
@@ -1801,7 +1400,6 @@ function SessionRunner({
         activeAgent,
         tokenCount,
         taskType: taskAnalysis?.taskType,
-        currentPhase: currentPhaseId ?? undefined,
         godAdapter: config.god,
         reviewerAdapter: config.reviewer,
         coderModel: config.coderModel,

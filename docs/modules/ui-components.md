@@ -6,14 +6,17 @@
 
 Duo 的终端 UI 基于以下技术栈：
 
-- **Ink** (React for CLI) — 使用 React 组件模型渲染终端界面，提供 `Box`, `Text`, `useInput`, `useApp`, `useStdout` 等原语
+- **OpenTUI** (`@opentui/core` + `@opentui/react`) — 替代 Ink 的终端 UI 框架，通过 `src/tui/primitives.tsx` 提供 Ink 兼容 API（`Box`、`Text`、`ScrollBox`、`useInput`、`useApp`、`useStdout`），使组件代码零改动迁移
 - **@xstate/react** — 通过 `useMachine` hook 驱动工作流状态机 (`workflowMachine`)，实现 CODING -> ROUTING -> REVIEWING -> EVALUATING 等状态转换
 - **纯函数状态层** — 所有复杂逻辑提取到 `src/ui/*.ts`（见 `ui-state.md`），组件仅负责渲染和事件绑定
+- **TUI 适配层** — `src/tui/` 目录（见 `ui-state.md` TUI 层一节），负责 OpenTUI 原语桥接、CLI 入口和 Bun 运行时定位
 
-整个 UI 组件层共 **22 个组件**，分为三组：
-- **Core 组件**（15 个）— 通用 UI 组件：布局、输入、消息渲染、Overlay、状态栏等
+整个 UI 组件层共 **21 个组件**，分为三组：
+- **Core 组件**（14 个）— 通用 UI 组件：布局、输入、消息渲染、Overlay、状态栏等
 - **God LLM 组件**（4 个）— God 决策层专用组件：阶段切换、重分类、Setup 向导、任务分析
 - **Lifecycle 组件**（3 个）— 任务完成屏幕、任务 banner、思考指示器
+
+> **OpenTUI 迁移说明**：`ScrollIndicator.tsx` 组件已删除。其功能由 OpenTUI 的 `ScrollBox` 组件原生提供（`stickyScroll` 自动跟随、`scrollBy`/`scrollTo` 编程滚动）。MainLayout 现在直接使用 `ScrollBox` 管理消息区滚动，不再需要手动 scroll state 管理。
 
 ## 组件树结构
 
@@ -38,10 +41,10 @@ App (根组件)
     └── MainLayout
         ├── StatusBar                  — 顶部状态栏（含 God 信息）
         ├── TaskBanner                 — 持久任务目标展示
-        ├── RenderedLineView[]         — 消息行列表（基于 message-lines.ts）
-        │   └── LineSpan 渲染          — 逐 span 着色
-        ├── ThinkingIndicator          — LLM 思考中动画
-        ├── ScrollIndicator            — 新输出提示条
+        ├── ScrollBox                  — OpenTUI 原生滚动容器（stickyScroll）
+        │   ├── RenderedLineView[]     — 消息行列表（基于 message-lines.ts）
+        │   │   └── LineSpan 渲染     — 逐 span 着色
+        │   └── ThinkingIndicator      — LLM 思考中动画
         ├── InputArea                  — 用户输入区域
         └── [Overlay 层]（全屏替换布局）
             ├── HelpOverlay            — 快捷键帮助
@@ -59,7 +62,7 @@ App (根组件)
 
 ---
 
-## Core 组件（15 个）
+## Core 组件（14 个）
 
 ### 1. App.tsx — 根组件
 
@@ -180,21 +183,18 @@ type WorkflowStateHint =
 |------|------|------|
 | Status Bar | 1 行 | `StatusBar` 组件或 fallback `<Text inverse bold>` |
 | Task Banner | 0-1 行 | `TaskBanner` 组件（仅当有 `contextData.taskSummary` 时显示） |
-| 分隔线 + 滚动位置 | 1 行 | `─` 填充 + 可选的 ` L45/120 ` 滚动位置标识 |
-| 消息区 | 动态行 | 滚动窗口内的 `RenderedLineView` 列表 + ThinkingIndicator + ScrollIndicator + 可选 scrollbar |
+| 分隔线 | 1 行 | `─` 填充 |
+| 消息区 | 动态行 | OpenTUI `ScrollBox`（`stickyScroll`）内的 `RenderedLineView` 列表 + ThinkingIndicator |
 | 分隔线 | 1 行 | `─` 重复 `columns` 次 |
 | InputArea / Footer | 3 行或自定义 | 用户输入区域或自定义 footer（如 CompletionScreen inline 模式） |
 
-高度计算: `messageAreaHeight = max(1, rows - STATUS_BAR_HEIGHT(1) - bannerHeight(0|1) - activeFooterHeight(3|N) - SEPARATOR_LINES(2))`
-
 **关键行为**:
 
-- **消息渲染管线**: `messages` -> `filterMessages(displayMode)` -> `.slice(clearedCount)` -> `buildRenderedMessageLines(columns)` -> `renderedLines[effectiveOffset..effectiveOffset+visibleSlots]` -> `RenderedLineView` 组件
-- **Scrollbar**: 当消息行数超过可见区域时，在消息区右侧显示单字符宽的滚动条（`buildScrollTrack` 函数：`█` 表示 thumb，`┃` 表示轨道），cyan 颜色高亮 thumb；thumb 大小 = `max(1, round(visibleSlots/totalLines * trackHeight))`
-- **滚动状态**: 持有 `ScrollState`（来自 `scroll-state.ts`），通过 `computeScrollView` 计算可见窗口
+- **消息渲染管线**: `messages` -> `filterMessages(displayMode)` -> `.slice(clearedCount)` -> `buildRenderedMessageLines(columns)` -> `RenderedLineView` 组件列表
+- **滚动管理**: 使用 OpenTUI `ScrollBox` 组件原生管理滚动。`stickyScroll` prop 实现自动跟随（新消息到达时自动滚到底部）。通过 `scrollRef.current.scrollBy({ x: 0, y: delta })` 和 `scrollRef.current.scrollTo({ x: 0, y: target })` 实现编程滚动（j/k 快捷键、PageUp/PageDown、G 跳底）
 - **显示模式**: 持有 `DisplayMode`（默认 `'minimal'`），通过 `toggleDisplayMode` 切换
 - **Overlay 状态**: 持有 `OverlayState`（来自 `overlay-state.ts`），有 overlay 时全屏替换正常布局（渲染 HelpOverlay/ContextOverlay/TimelineOverlay/SearchOverlay）
-- **清屏功能**: `Ctrl+L` 记录 `clearedCount`（当前已过滤消息数），后续只显示新消息，不删除历史；同时重置 `scrollState` 为 `INITIAL_SCROLL_STATE`
+- **清屏功能**: `Ctrl+L` 记录 `clearedCount`（当前已过滤消息数），后续只显示新消息，不删除历史
 - **上下文感知指示器**: `resolveIndicatorConfig(workflowState, isLLMRunning, messages)` 根据 `WorkflowStateHint.phase` 返回不同的指示器配置（message/color/showElapsed），如 `task_init` -> "Analyzing task..."（yellow, showElapsed:true）；`god_convergence` -> "Evaluating convergence..."（yellow, showElapsed:true）；`llm_running` 仅在 `shouldShowThinking` 返回 true 时显示
 - **键盘处理**: `useInput` -> `processKeybinding(input, key, ctx)` -> `handleAction(action)`，分发到各状态更新函数；`suspendGlobalKeys` 为 true 时忽略所有按键
 - **Search overlay 输入**: 当 search overlay 打开时，额外将文本输入路由到 `updateSearchQuery`；Backspace 删末字符，普通字符追加，忽略 ctrl/escape/return/tab/`/`
@@ -288,29 +288,7 @@ interface CodeBlockProps {
 
 ---
 
-### 5. ScrollIndicator.tsx — 新输出提示条
-
-**Props**:
-
-```ts
-interface ScrollIndicatorProps {
-  visible: boolean;
-  columns: number;
-  newMessageCount?: number;
-}
-```
-
-**职责**: 当用户向上滚动且有新消息到达时，在消息区底部显示提示。
-
-**关键行为**:
-- `visible` 为 false 时返回 `null`（不渲染）
-- 提示文本: `↓ New output (N new) (press G to follow)`，水平居中（通过计算 padding），cyan 加粗
-- `newMessageCount` 大于 0 时显示 `(N new)` 计数
-- 固定高度 1 行
-
----
-
-### 6. DirectoryPicker.tsx — 目录选择器
+### 5. DirectoryPicker.tsx — 目录选择器
 
 **Props**:
 
@@ -341,7 +319,7 @@ interface DirectoryPickerProps {
 
 ---
 
-### 7. HelpOverlay.tsx — 快捷键帮助
+### 6. HelpOverlay.tsx — 快捷键帮助
 
 **Props**:
 
@@ -364,7 +342,7 @@ interface HelpOverlayProps {
 
 ---
 
-### 8. ContextOverlay.tsx — 会话上下文信息
+### 7. ContextOverlay.tsx — 会话上下文信息
 
 **Props**:
 
@@ -393,7 +371,7 @@ interface ContextOverlayProps {
 
 ---
 
-### 9. TimelineOverlay.tsx — 事件时间线
+### 8. TimelineOverlay.tsx — 事件时间线
 
 **Props**:
 
@@ -423,7 +401,7 @@ interface TimelineOverlayProps {
 
 ---
 
-### 10. SearchOverlay.tsx — 消息搜索
+### 9. SearchOverlay.tsx — 消息搜索
 
 **Props**:
 
@@ -449,7 +427,7 @@ interface SearchOverlayProps {
 
 ---
 
-### 11. InputArea.tsx — 用户输入区域
+### 10. InputArea.tsx — 用户输入区域
 
 **Props**:
 
@@ -489,7 +467,7 @@ interface InputAreaProps {
 
 ---
 
-### 12. SystemMessage.tsx — 系统消息
+### 11. SystemMessage.tsx — 系统消息
 
 **Props**:
 
@@ -520,7 +498,7 @@ interface SystemMessageProps {
 
 ---
 
-### 13. DisagreementCard.tsx — 分歧卡片
+### 12. DisagreementCard.tsx — 分歧卡片
 
 **Props**:
 
@@ -548,7 +526,7 @@ interface DisagreementCardProps {
 
 ---
 
-### 14. MessageView.tsx — 消息渲染
+### 13. MessageView.tsx — 消息渲染
 
 **Props**:
 
@@ -571,7 +549,7 @@ interface MessageViewProps {
 
 ---
 
-### 15. StreamRenderer.tsx — Markdown 流式渲染
+### 14. StreamRenderer.tsx — Markdown 流式渲染
 
 **Props**:
 
@@ -614,7 +592,7 @@ interface StreamRendererProps {
 
 ## God LLM 组件（4 个）
 
-### 16. PhaseTransitionBanner.tsx — 阶段切换 Escape Window
+### 15. PhaseTransitionBanner.tsx — 阶段切换 Escape Window
 
 **来源**: FR-010 (AC-033, AC-034)
 
@@ -644,7 +622,7 @@ interface PhaseTransitionBannerProps {
 
 ---
 
-### 17. ReclassifyOverlay.tsx — 运行时任务重分类
+### 16. ReclassifyOverlay.tsx — 运行时任务重分类
 
 **来源**: FR-002a (AC-010, AC-011, AC-012)
 
@@ -665,7 +643,7 @@ interface ReclassifyOverlayProps {
 - **可选类型**: `explore`、`code`、`review`、`debug`（不含 `compound` 和 `discuss`）
 - **当前信息显示**: 当前任务类型 `[currentType]` 和描述
 - **选择列表**: 每项显示 `[N] type  description`，当前类型标记 `← current`（黄色）
-- **键盘**: 将 Ink 的 key 对象转换为字符串（`arrow_down`/`arrow_up`/`enter`/`escape`/原始 input），然后委托给 `handleReclassifyKey`
+- **键盘**: 将 key 对象转换为字符串（`arrow_down`/`arrow_up`/`enter`/`escape`/原始 input），然后委托给 `handleReclassifyKey`
   - `↑/↓` 循环移动选择
   - `Enter` 确认当前选择
   - `1-4` 数字键直接选中并确认
@@ -684,7 +662,7 @@ interface ReclassifyOverlayProps {
 
 ---
 
-### 18. SetupWizard.tsx — Setup 向导
+### 17. SetupWizard.tsx — Setup 向导
 
 **Props**:
 
@@ -733,7 +711,7 @@ interface SetupWizardProps {
 
 ---
 
-### 19. TaskAnalysisCard.tsx — God 任务分析卡片
+### 18. TaskAnalysisCard.tsx — God 任务分析卡片
 
 **来源**: FR-001a (AC-004, AC-005, AC-006, AC-007)
 
@@ -756,7 +734,7 @@ interface TaskAnalysisCardProps {
 - **任务类型列表**: 6 种类型（explore/code/discuss/review/debug/compound），God 推荐类型标记 `★ recommended` / `★ 推荐`（黄色）
 - **置信度显示**: `Confidence: N%`（`Math.round(analysis.confidence * 100)`）
 - **任务摘要**: 截取 `analysis.reasoning` 前 60 字符，超长添加 `…`，用引号包裹
-- **键盘**: 将 Ink 的 key/input 映射为字符串后委托给 `handleKeyPress`
+- **键盘**: 将 key/input 映射为字符串后委托给 `handleKeyPress`
   - `1-9` 数字键直接选中并确认
   - `↑/↓` 移动选择并暂停倒计时
   - `Enter` 确认当前选择
@@ -769,7 +747,7 @@ interface TaskAnalysisCardProps {
 
 ## Lifecycle 组件（3 个）
 
-### 20. CompletionScreen.tsx — 任务完成屏幕
+### 19. CompletionScreen.tsx — 任务完成屏幕
 
 **Props**:
 
@@ -821,7 +799,7 @@ type CompletionInputAction =
 
 ---
 
-### 21. TaskBanner.tsx — 持久任务目标展示
+### 20. TaskBanner.tsx — 持久任务目标展示
 
 **Props**:
 
@@ -849,7 +827,7 @@ interface TaskBannerProps {
 
 ---
 
-### 22. ThinkingIndicator.tsx — LLM 思考中指示器
+### 21. ThinkingIndicator.tsx — LLM 思考中指示器
 
 **Props**:
 
@@ -894,10 +872,10 @@ interface ThinkingIndicatorProps {
 | `Ctrl+L` | 清屏（保留历史，记录 clearedCount） | 始终可用 |
 | `j` / `↓` | 向下滚动 1 行 | 无 overlay 且输入为空 |
 | `k` / `↑` | 向上滚动 1 行 | 无 overlay 且输入为空 |
-| `G` | 跳到最新消息（重新启用 auto-follow） | 无 overlay 且输入为空 |
-| `PageDown` | 向下滚动一页（pageSize = messageAreaHeight） | 无 overlay |
+| `G` | 跳到最新消息（OpenTUI ScrollBox scrollTo） | 无 overlay 且输入为空 |
+| `PageDown` | 向下滚动一页 | 无 overlay |
 | `PageUp` | 向上滚动一页 | 无 overlay |
-| Mouse wheel | 上下滚动（通过 SGR 鼠标跟踪，mouse-input.ts 转为箭头键） | 无 overlay |
+| Mouse wheel | 上下滚动（OpenTUI 原生处理） | 无 overlay |
 | `Shift+drag` | 选中/复制文本 | 始终可用 |
 | `Enter` | 展开/折叠代码块 | 无 overlay 且输入为空 |
 | `Enter` | 提交输入 | 输入非空 |

@@ -31,7 +31,6 @@ export type RestoreEventType =
   | 'RESTORED_TO_CODING'
   | 'RESTORED_TO_REVIEWING'
   | 'RESTORED_TO_WAITING'
-  | 'RESTORED_TO_INTERRUPTED'
   | 'RESTORED_TO_CLARIFYING';
 
 export interface RestoredSessionRuntime {
@@ -48,8 +47,6 @@ export interface RestoredSessionRuntime {
   godSessionId?: string;
   /** God task analysis restored from session (FR-011) */
   godTaskAnalysis?: GodTaskAnalysis;
-  /** Current phase ID for compound tasks */
-  currentPhaseId?: string | null;
 }
 
 const CHARS_PER_TOKEN = 4;
@@ -231,7 +228,6 @@ export function buildRestoredSessionRuntime(
     reviewerSessionId: loaded.state.reviewerSessionId,
     godSessionId: loaded.state.godSessionId,
     godTaskAnalysis: loaded.state.godTaskAnalysis,
-    currentPhaseId: loaded.state.currentPhaseId ?? null,
   };
 }
 
@@ -412,7 +408,8 @@ function mapRestoreEvent(state: SessionState): RestoreEventType {
     case 'routing_post_code':
       return 'RESTORED_TO_REVIEWING';
     case 'interrupted':
-      return 'RESTORED_TO_INTERRUPTED';
+      // INTERRUPTED state removed — restore to GOD_DECIDING (RESTORED_TO_WAITING)
+      return 'RESTORED_TO_WAITING';
     case 'clarifying':
       return 'RESTORED_TO_CLARIFYING';
     case 'god_deciding':
