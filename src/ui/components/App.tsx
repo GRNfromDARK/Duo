@@ -14,12 +14,9 @@ import type { WorkflowContext } from '../../engine/workflow-machine.js';
 import { createAdapter } from '../../adapters/factory.js';
 import { createGodAdapter } from '../../god/god-adapter-factory.js';
 import { OutputStreamManager } from '../../adapters/output-stream-manager.js';
-import { ContextManager } from '../../session/context-manager.js';
-import type { RoundRecord } from '../../session/context-manager.js';
+import type { RoundRecord } from '../../types/session.js';
 import { SessionManager } from '../../session/session-manager.js';
 import type { LoadedSession } from '../../session/session-manager.js';
-import { ConvergenceService } from '../../decision/convergence-service.js';
-import { ChoiceDetector } from '../../decision/choice-detector.js';
 import { MainLayout } from './MainLayout.js';
 import type { WorkflowStateHint } from './MainLayout.js';
 import type { WorkflowStatus } from './StatusBar.js';
@@ -37,24 +34,21 @@ import {
   createStreamAggregation,
   finalizeStreamAggregation,
   resolveUserDecision,
-  type ChoiceRoute,
 } from '../session-runner-state.js';
 import * as path from 'node:path';
 import { initializeTask } from '../../god/task-init.js';
 import { buildGodSystemPrompt } from '../../god/god-system-prompt.js';
 import { GodAuditLogger, logEnvelopeDecision } from '../../god/god-audit.js';
-import type { GodRetryController } from '../god-fallback.js';
-import type { GodTaskAnalysis, GodAutoDecision } from '../../types/god-schemas.js';
+import { withRetry, isPaused } from '../god-fallback.js';
+import type { GodTaskAnalysis } from '../../types/god-schemas.js';
 import type { GodDecisionEnvelope } from '../../types/god-envelope.js';
 import { TaskAnalysisCard } from './TaskAnalysisCard.js';
 import type { ConvergenceLogEntry } from '../../god/god-convergence.js';
 import { generateCoderPrompt, generateReviewerPrompt, extractBlockingIssues } from '../../god/god-prompt-generator.js';
 import type { PromptContext } from '../../god/god-prompt-generator.js';
-import { GodDecisionBanner } from './GodDecisionBanner.js';
 import { ReclassifyOverlay } from './ReclassifyOverlay.js';
 import { PhaseTransitionBanner } from './PhaseTransitionBanner.js';
 import { CompletionScreen } from './CompletionScreen.js';
-import { withGodFallback, withGodFallbackSync } from '../god-fallback.js';
 import { canTriggerReclassify, writeReclassifyAudit } from '../reclassify-overlay.js';
 import { classifyInterruptIntent } from '../../god/interrupt-clarifier.js';
 import { buildContinuedTaskPrompt } from '../completion-flow.js';
@@ -118,7 +112,7 @@ function mapStateToStatus(stateValue: string): WorkflowStatus {
     case 'OBSERVING':
     case 'EXECUTING':
       return 'routing';
-    case 'MANUAL_FALLBACK':
+    case 'PAUSED':
       return 'interrupted';
     case 'INTERRUPTED':
       return 'interrupted';
@@ -297,38 +291,11 @@ function SessionRunner({
   const coderAdapterRef = useRef<CLIAdapter>(createAdapter(config.coder));
   const reviewerAdapterRef = useRef<CLIAdapter>(createAdapter(config.reviewer));
   const godAdapterRef = useRef<GodAdapter>(createGodAdapter(config.god));
-  const contextManagerRef = useRef(
-    new ContextManager({
-      contextWindowSize: 200000,
-      promptsDir: path.join(config.projectDir, '.duo', 'prompts'),
-    }),
-  );
-  const convergenceRef = useRef(new ConvergenceService({ maxRounds: MAX_ROUNDS }));
-  const choiceDetectorRef = useRef(new ChoiceDetector());
   const sessionManagerRef = useRef(
     new SessionManager(path.join(config.projectDir, '.duo', 'sessions')),
   );
   const outputManagerRef = useRef(new OutputStreamManager());
   const godAuditLoggerRef = useRef<GodAuditLogger | null>(null);
-  // GodRetryController wraps WatchdogService for withGodFallback.
-  // On failure, asks Watchdog AI to diagnose and decide retry/fallback.
-  const godRetryControllerRef = useRef<GodRetryController>({
-    isGodAvailable: () => watchdogRef.current.isGodAvailable(),
-    handleGodSuccess: () => watchdogRef.current.handleGodSuccess(),
-    handleGodFailure: async (error) => {
-      const decision = await watchdogRef.current.diagnose(
-        error, null, [],
-        { taskGoal: config.task, round: 0, maxRounds: 1 },
-      );
-      const shouldRetry = decision.decision === 'retry_fresh' || decision.decision === 'retry_with_hint';
-      return {
-        retry: shouldRetry,
-        notification: shouldRetry
-          ? { type: 'retrying' as const, message: `◈ Watchdog: ${decision.analysis}` }
-          : { type: 'god_disabled' as const, message: `⚠ Watchdog: ${decision.analysis}` },
-      };
-    },
-  });
 
   // ── Mutable orchestration state ──
   const roundsRef = useRef<RoundRecord[]>(restoredRuntime?.rounds ?? []);
@@ -343,7 +310,6 @@ function SessionRunner({
       ? (resumeSession.state.currentRole as 'coder' | 'reviewer' | null)
       : null,
   );
-  const choiceRouteRef = useRef<ChoiceRoute | null>(null);
   const convergenceLogRef = useRef<ConvergenceLogEntry[]>(restoredRuntime?.godConvergenceLog ?? []);
   const lastUnresolvedIssuesRef = useRef<string[]>([]);
   const initializedRef = useRef(false);
@@ -352,14 +318,8 @@ function SessionRunner({
   const lastWorkerRoleRef = useRef<'coder' | 'reviewer'>('coder');
   /** Tracks whether Reviewer feedback has been consumed by Coder (Change 5) */
   const reviewerFeedbackPendingRef = useRef<boolean>(false);
-  // Watchdog: separate adapter instance (no shared session state with God)
-  const watchdogAdapterRef = useRef<GodAdapter>(createGodAdapter(config.god));
-  const watchdogRef = useRef(
-    new WatchdogService(watchdogAdapterRef.current, {
-      model: config.godModel,
-      restoredState: resumeSession?.state.degradationState,
-    }),
-  );
+  // Watchdog: simple retry+backoff+pause (no adapter needed)
+  const watchdogRef = useRef(new WatchdogService());
   // Card D.1: unified God decision service instance (uses Watchdog for error recovery)
   const godDecisionServiceRef = useRef(
     new GodDecisionService(godAdapterRef.current, watchdogRef.current, config.godModel),
@@ -373,14 +333,6 @@ function SessionRunner({
 
   // ── BUG-21 fix: reclassify trigger to re-run GOD_DECIDING auto-decision ──
   const [reclassifyTrigger, setReclassifyTrigger] = useState(0);
-
-  // ── God auto-decision state ──
-  // Currently unused since ESCAPE_WINDOW_MS=0 (instant execution bypasses the banner).
-  // Kept for future re-enablement of the escape window.
-  const [godDecision, setGodDecision] = useState<GodAutoDecision | null>(null);
-  const [showGodBanner, setShowGodBanner] = useState(false);
-  // Stores the pending envelope when GodDecisionBanner escape window is active
-  const pendingEnvelopeRef = useRef<GodDecisionEnvelope | null>(null);
 
   // ── Reclassify overlay state (Ctrl+R) — Card C.3 ──
   const [showReclassify, setShowReclassify] = useState(false);
@@ -522,7 +474,7 @@ function SessionRunner({
   }, []);
 
   // ── TASK_INIT state: run God intent parsing ──
-  // C.2: Uses withGodFallback for unified retry + degradation (AC-2, AC-3)
+  // Uses withRetry for retry + backoff + pause
   useEffect(() => {
     if (stateValue !== 'TASK_INIT') return;
 
@@ -534,15 +486,14 @@ function SessionRunner({
       godAuditLoggerRef.current = new GodAuditLogger(sessionDir);
     }
 
-    // God disabled → skip immediately (withGodFallback handles this but we want
-    // the specific "disabled" message before the async IIFE)
+    // God paused → error immediately, auto-recovery will handle retry
     if (!watchdogRef.current.isGodAvailable()) {
       addMessage({
         role: 'system',
-        content: 'God orchestrator disabled. Skipping task analysis.',
+        content: 'God orchestrator unavailable. System paused.',
         timestamp: Date.now(),
       });
-      send({ type: 'TASK_INIT_SKIP' });
+      send({ type: 'PROCESS_ERROR', error: 'God orchestrator unavailable during task init' } as any);
       return;
     }
 
@@ -556,8 +507,7 @@ function SessionRunner({
     (async () => {
       const startTime = Date.now();
 
-      const { result, usedGod, notification } = await withGodFallback(
-        godRetryControllerRef.current,
+      const retryResult = await withRetry(
         async () => {
           const systemPrompt = buildGodSystemPrompt({
             task: config.task,
@@ -578,7 +528,7 @@ function SessionRunner({
           if (!r) throw new Error('TASK_INIT returned null (extraction/validation failed)');
           return r;
         },
-        () => null, // v1 fallback: no task analysis
+        watchdogRef.current,
       );
 
       // TASK_INIT uses buildGodSystemPrompt (5 decision points format).
@@ -589,12 +539,8 @@ function SessionRunner({
 
       if (cancelled) return;
 
-      // Show degradation notification if any (AC-5)
-      if (notification) {
-        addMessage({ role: 'system', content: notification.message, timestamp: Date.now() });
-      }
-
-      if (usedGod && result) {
+      if (!isPaused(retryResult)) {
+        const result = retryResult.result;
         setTaskAnalysis(result.analysis);
 
         // Log to God audit + update StatusBar latency (Card D.2)
@@ -615,21 +561,26 @@ function SessionRunner({
         addTimelineEvent('task_start', `God TASK_INIT: ${result.analysis.taskType}, ${result.analysis.suggestedMaxRounds} rounds`);
         setShowTaskAnalysisCard(true);
       } else {
-        // Fallback path — log failure to God audit
-        if (!usedGod && godAuditLoggerRef.current) {
+        // Paused — log failure to God audit
+        if (godAuditLoggerRef.current) {
           godAuditLoggerRef.current.append({
             timestamp: new Date().toISOString(),
             round: 0,
             decisionType: 'TASK_INIT_FAILURE',
             inputSummary: config.task,
-            outputSummary: `Degraded to v1: watchdog failures=${watchdogRef.current.getState().consecutiveFailures}`,
+            outputSummary: `Paused: watchdog failures=${watchdogRef.current.getConsecutiveFailures()}`,
             latencyMs: Date.now() - startTime,
-            decision: { godDisabled: watchdogRef.current.getState().godDisabled },
+            decision: { godPaused: watchdogRef.current.isPaused() },
           });
         }
 
-        addTimelineEvent('error', 'God TASK_INIT failed, using v1 fallback');
-        send({ type: 'TASK_INIT_SKIP' });
+        addMessage({
+          role: 'system',
+          content: `God TASK_INIT failed after ${retryResult.retryCount} retries. System paused.`,
+          timestamp: Date.now(),
+        });
+        addTimelineEvent('error', 'God TASK_INIT failed, system paused');
+        send({ type: 'PROCESS_ERROR', error: 'God TASK_INIT failed after retries' } as any);
       }
     })();
 
@@ -659,7 +610,6 @@ function SessionRunner({
           : {}),
         ...(taskAnalysisRef.current ? { godTaskAnalysis: taskAnalysisRef.current } : {}),
         godConvergenceLog: convergenceLogRef.current,
-        degradationState: watchdogRef.current.serializeState(),
         currentPhaseId,
         // Card E.2: persist clarification context for duo resume
         ...(stateValue === 'CLARIFYING' ? {
@@ -704,57 +654,30 @@ function SessionRunner({
         pendingInstructionRef.current = null;
         const shouldSkipHistory = isSessionCapable(adapter) && adapter.hasActiveSession();
 
-        // B.4 + C.2: God dynamic prompt generation with withGodFallbackSync (FR-003, AR-004, AC-2)
-        let prompt: string;
-        let promptSource: 'choice_route' | 'god_dynamic' | 'context_fallback';
-        if (choiceRouteRef.current?.target === 'coder') {
-          prompt = choiceRouteRef.current.prompt;
-          promptSource = 'choice_route';
-        } else {
-          const { result: generatedPrompt, notification: promptNotification } = withGodFallbackSync(
-            watchdogRef.current,
-            () => {
-              if (!taskAnalysis) throw new Error('No taskAnalysis available');
-              return generateCoderPrompt({
-                taskType: taskAnalysis.taskType as PromptContext['taskType'],
-                round: ctx.round,
-                maxRounds: ctx.maxRounds,
-                taskGoal: config.task,
-                lastReviewerOutput: ctx.lastReviewerOutput ?? undefined,
-                unresolvedIssues: lastUnresolvedIssuesRef.current,
-                convergenceLog: convergenceLogRef.current,
-                instruction: interruptInstruction,
-                phaseId: currentPhaseId ?? undefined,
-                phaseType: currentPhaseId
-                  ? taskAnalysis.phases?.find(p => p.id === currentPhaseId)?.type as PromptContext['phaseType']
-                  : undefined,
-                isPostReviewerRouting: lastWorkerRoleRef.current === 'reviewer'
-                  || reviewerFeedbackPendingRef.current,
-              }, {
-                sessionDir: sessionIdRef.current
-                  ? path.join(config.projectDir, '.duo', 'sessions', sessionIdRef.current)
-                  : path.join(config.projectDir, '.duo', 'sessions'),
-                seq: ++auditSeqRef.current,
-              });
-            },
-            () => contextManagerRef.current.buildCoderPrompt(
-              config.task,
-              roundsRef.current,
-              {
-                ...(ctx.lastReviewerOutput
-                  ? { reviewerFeedback: ctx.lastReviewerOutput }
-                  : {}),
-                ...(interruptInstruction ? { interruptInstruction } : {}),
-                ...(shouldSkipHistory ? { skipHistory: true } : {}),
-              },
-            ),
-          );
-          if (promptNotification) {
-            addMessage({ role: 'system', content: promptNotification.message, timestamp: Date.now() });
-          }
-          prompt = generatedPrompt;
-          promptSource = promptNotification ? 'context_fallback' : 'god_dynamic';
-        }
+        // Prompt generation — direct call (pure template, no retry needed)
+        if (!taskAnalysis) throw new Error('No taskAnalysis available');
+        const prompt = generateCoderPrompt({
+          taskType: taskAnalysis.taskType as PromptContext['taskType'],
+          round: ctx.round,
+          maxRounds: ctx.maxRounds,
+          taskGoal: config.task,
+          lastReviewerOutput: ctx.lastReviewerOutput ?? undefined,
+          unresolvedIssues: lastUnresolvedIssuesRef.current,
+          convergenceLog: convergenceLogRef.current,
+          instruction: interruptInstruction,
+          phaseId: currentPhaseId ?? undefined,
+          phaseType: currentPhaseId
+            ? taskAnalysis.phases?.find(p => p.id === currentPhaseId)?.type as PromptContext['phaseType']
+            : undefined,
+          isPostReviewerRouting: lastWorkerRoleRef.current === 'reviewer'
+            || reviewerFeedbackPendingRef.current,
+        }, {
+          sessionDir: sessionIdRef.current
+            ? path.join(config.projectDir, '.duo', 'sessions', sessionIdRef.current)
+            : path.join(config.projectDir, '.duo', 'sessions'),
+          seq: ++auditSeqRef.current,
+        });
+        const promptSource = 'god_dynamic';
 
         if (sessionIdRef.current) {
           try {
@@ -927,18 +850,19 @@ function SessionRunner({
 
     // Record round summary after reviewer output (preserves old EVALUATING behavior)
     if (source === 'reviewer') {
+      const summaryText = output.length <= 800 ? output : output.slice(0, 797) + '...';
       roundsRef.current.push({
         index: ctx.round + 1,
         coderOutput: ctx.lastCoderOutput ?? '',
         reviewerOutput: output,
-        summary: contextManagerRef.current.generateSummary(output),
+        summary: summaryText,
         timestamp: Date.now(),
       });
 
       const summaryMsg = createRoundSummaryMessage(
         ctx.round + 1,
         ctx.round + 2,
-        contextManagerRef.current.generateSummary(output).slice(0, 100),
+        summaryText.slice(0, 100),
       );
       setMessages((prev) => [...prev, summaryMsg]);
 
@@ -986,48 +910,21 @@ function SessionRunner({
           ? reviewerOutputsRef.current[reviewerOutputsRef.current.length - 1]
           : undefined;
 
-        // B.4 + C.2: God dynamic prompt generation with withGodFallbackSync (FR-003, AR-004, AC-2)
-        let prompt: string;
-        let promptSource: 'choice_route' | 'god_dynamic' | 'context_fallback';
-        if (choiceRouteRef.current?.target === 'reviewer') {
-          prompt = choiceRouteRef.current.prompt;
-          promptSource = 'choice_route';
-        } else {
-          const { result: generatedPrompt, notification: promptNotification } = withGodFallbackSync(
-            watchdogRef.current,
-            () => {
-              if (!taskAnalysis) throw new Error('No taskAnalysis available');
-              return generateReviewerPrompt({
-                taskType: taskAnalysis.taskType,
-                round: ctx.round,
-                maxRounds: ctx.maxRounds,
-                taskGoal: config.task,
-                lastCoderOutput: ctx.lastCoderOutput ?? undefined,
-                instruction: interruptInstruction,
-                phaseId: currentPhaseId ?? undefined,
-                phaseType: currentPhaseId
-                  ? taskAnalysis.phases?.find(p => p.id === currentPhaseId)?.type as PromptContext['phaseType']
-                  : undefined,
-              });
-            },
-            () => contextManagerRef.current.buildReviewerPrompt(
-              config.task,
-              roundsRef.current,
-              ctx.lastCoderOutput ?? '',
-              {
-                ...(interruptInstruction ? { interruptInstruction } : {}),
-                ...(shouldSkipHistory ? { skipHistory: true } : {}),
-                roundNumber: ctx.round + 1,
-                ...(lastReviewerOut ? { previousReviewerOutput: lastReviewerOut } : {}),
-              },
-            ),
-          );
-          if (promptNotification) {
-            addMessage({ role: 'system', content: promptNotification.message, timestamp: Date.now() });
-          }
-          prompt = generatedPrompt;
-          promptSource = promptNotification ? 'context_fallback' : 'god_dynamic';
-        }
+        // Prompt generation — direct call (pure template, no retry needed)
+        if (!taskAnalysis) throw new Error('No taskAnalysis available');
+        const prompt = generateReviewerPrompt({
+          taskType: taskAnalysis.taskType,
+          round: ctx.round,
+          maxRounds: ctx.maxRounds,
+          taskGoal: config.task,
+          lastCoderOutput: ctx.lastCoderOutput ?? undefined,
+          instruction: interruptInstruction,
+          phaseId: currentPhaseId ?? undefined,
+          phaseType: currentPhaseId
+            ? taskAnalysis.phases?.find(p => p.id === currentPhaseId)?.type as PromptContext['phaseType']
+            : undefined,
+        });
+        const promptSource = 'god_dynamic';
 
         if (sessionIdRef.current) {
           try {
@@ -1190,7 +1087,7 @@ function SessionRunner({
     });
     addTimelineEvent('error', `Error: ${ctx.lastError ?? 'Unknown'}`);
 
-    // Auto-recover to GOD_DECIDING / MANUAL_FALLBACK handling
+    // Auto-recover to GOD_DECIDING / PAUSED handling
     send({ type: 'RECOVERY' });
   }, [stateValue]);
 
@@ -1201,13 +1098,10 @@ function SessionRunner({
 
     if (showPhaseTransition) return;
 
-    setGodDecision(null);
-    setShowGodBanner(false);
-
     const manualWaitingMsg = 'Waiting for your decision. Type [c] to continue, [a] to accept, or enter new instructions.';
 
     if (!watchdogRef.current.isGodAvailable()) {
-      send({ type: 'MANUAL_FALLBACK_REQUIRED' } as any);
+      send({ type: 'PAUSE_REQUIRED' } as any);
       addMessage({
         role: 'system',
         content: `God unavailable. ${manualWaitingMsg}`,
@@ -1218,7 +1112,7 @@ function SessionRunner({
 
     let cancelled = false;
 
-    // Bug 4 fix: GOD_DECIDING timeout — fallback to MANUAL_FALLBACK if God hangs
+    // Bug 4 fix: GOD_DECIDING timeout — fallback to PAUSED if God hangs
     const GOD_DECIDING_TIMEOUT_MS = 610_000; // ~10 minutes, must exceed adapter GOD_TIMEOUT_MS (600s)
     const timeoutId = setTimeout(() => {
       if (cancelled) return;
@@ -1228,13 +1122,9 @@ function SessionRunner({
         content: `God decision timed out after ${GOD_DECIDING_TIMEOUT_MS / 1000}s. ${manualWaitingMsg}`,
         timestamp: Date.now(),
       });
-      // Record timeout in Watchdog state (fire-and-forget since we're in a sync setTimeout callback)
-      void watchdogRef.current.diagnose(
-        { kind: 'timeout', message: `God decision timed out after ${GOD_DECIDING_TIMEOUT_MS / 1000}s` },
-        null, [],
-        { taskGoal: config.task, round: 0, maxRounds: 1 },
-      );
-      send({ type: 'MANUAL_FALLBACK_REQUIRED' } as any);
+      // Record timeout in Watchdog state
+      watchdogRef.current.shouldRetry();
+      send({ type: 'PAUSE_REQUIRED' } as any);
     }, GOD_DECIDING_TIMEOUT_MS);
 
     (async () => {
@@ -1331,10 +1221,6 @@ function SessionRunner({
           });
         }
 
-        // GodDecisionBanner is configured for instant execution (ESCAPE_WINDOW_MS=0),
-        // so we send DECISION_READY directly without routing through the visual banner.
-        // To re-enable the escape window, set ESCAPE_WINDOW_MS > 0 in god-decision-banner.ts
-        // and route through setShowGodBanner(true) + pendingEnvelopeRef here.
         send({ type: 'DECISION_READY', envelope });
       } catch (err) {
         clearTimeout(timeoutId);
@@ -1345,7 +1231,7 @@ function SessionRunner({
           content: `God decision failed: ${err instanceof Error ? err.message : String(err)}. ${manualWaitingMsg}`,
           timestamp: Date.now(),
         });
-        send({ type: 'MANUAL_FALLBACK_REQUIRED' } as any);
+        send({ type: 'PAUSE_REQUIRED' } as any);
       }
     })();
 
@@ -1542,7 +1428,7 @@ function SessionRunner({
         return;
       }
 
-      if (stateValue === 'MANUAL_FALLBACK') {
+      if (stateValue === 'PAUSED') {
         const decision = resolveUserDecision(
           stateValue,
           text,
@@ -1686,7 +1572,6 @@ function SessionRunner({
         })(),
         ...(taskAnalysisRef.current ? { godTaskAnalysis: taskAnalysisRef.current } : {}),
         godConvergenceLog: convergenceLogRef.current,
-        degradationState: watchdogRef.current.serializeState(),
         currentPhaseId,
       });
     } catch {
@@ -1701,7 +1586,6 @@ function SessionRunner({
         coderAdapterRef.current,
         reviewerAdapterRef.current,
         godAdapterRef.current,
-        watchdogAdapterRef.current,
       ],
       beforeExit: saveStateForExit,
       onExit: () => exit(),
@@ -1747,35 +1631,6 @@ function SessionRunner({
     addTimelineEvent('task_start', 'TaskAnalysisCard auto-confirmed (timeout)');
   }, [addTimelineEvent]);
 
-  // ── GodDecisionBanner handlers ──
-  // Currently unused: ESCAPE_WINDOW_MS=0 means decisions execute instantly
-  // without routing through the visual banner. Kept for future re-enablement
-  // of the escape window (set ESCAPE_WINDOW_MS > 0 in god-decision-banner.ts).
-  const handleGodDecisionExecute = useCallback(() => {
-    if (!godDecision) return;
-    setShowGodBanner(false);
-
-    const envelope = pendingEnvelopeRef.current;
-    if (envelope) {
-      pendingEnvelopeRef.current = null;
-      addTimelineEvent('task_start', `God decision executed: ${godDecision.action}`);
-      send({ type: 'DECISION_READY', envelope });
-    }
-  }, [godDecision, send, addTimelineEvent]);
-
-  const handleGodDecisionCancel = useCallback(() => {
-    setShowGodBanner(false);
-    setGodDecision(null);
-    pendingEnvelopeRef.current = null;
-    addMessage({
-      role: 'system',
-      content: 'God auto-decision cancelled. Waiting for your decision. Type [c] to continue, [a] to accept, or enter new instructions.',
-      timestamp: Date.now(),
-    });
-    addTimelineEvent('task_start', 'God auto-decision: cancelled by user');
-    send({ type: 'MANUAL_FALLBACK_REQUIRED' } as any);
-  }, [send, addMessage, addTimelineEvent]);
-
   // ── Ctrl+R reclassify handler — Card C.3 (AC-010) ──
   const handleReclassify = useCallback(() => {
     if (!canTriggerReclassify(stateValue)) return;
@@ -1804,10 +1659,6 @@ function SessionRunner({
   const handleReclassifySelect = useCallback(
     (newType: string) => {
       setShowReclassify(false);
-
-      // BUG-7 fix: Clear any stale God auto-decision from before reclassification
-      setGodDecision(null);
-      setShowGodBanner(false);
 
       if (!taskAnalysis) return;
 
@@ -1960,7 +1811,7 @@ function SessionRunner({
   if (
     showPhaseTransition
     && pendingPhaseTransition
-    && (stateValue === 'GOD_DECIDING' || stateValue === 'MANUAL_FALLBACK')
+    && (stateValue === 'GOD_DECIDING' || stateValue === 'PAUSED')
   ) {
     return (
       <Box flexDirection="column" width={columns} height={rows}>
@@ -1969,18 +1820,6 @@ function SessionRunner({
           previousPhaseSummary={pendingPhaseTransition.previousPhaseSummary}
           onConfirm={handlePhaseTransitionConfirm}
           onCancel={handlePhaseTransitionCancel}
-        />
-      </Box>
-    );
-  }
-
-  if (showGodBanner && godDecision && stateValue === 'GOD_DECIDING') {
-    return (
-      <Box flexDirection="column" width={columns} height={rows}>
-        <GodDecisionBanner
-          decision={godDecision}
-          onExecute={handleGodDecisionExecute}
-          onCancel={handleGodDecisionCancel}
         />
       </Box>
     );
@@ -2025,7 +1864,7 @@ function SessionRunner({
         reviewerAdapter: config.reviewer,
         coderModel: config.coderModel,
         reviewerModel: config.reviewerModel,
-        degradationLevel: watchdogRef.current.serializeState().level,
+        // degradationLevel removed — StatusBar no longer shows degradation indicators
         godLatency,
       }}
       contextData={contextData}

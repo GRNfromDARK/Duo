@@ -1,8 +1,6 @@
-import type { ChoiceDetectionResult } from '../decision/choice-detector.js';
 import type { WorkflowContext } from '../engine/workflow-machine.js';
-import type { DegradationState } from '../types/degradation.js';
 import type { ConvergenceLogEntry } from '../god/god-convergence.js';
-import type { RoundRecord } from '../session/context-manager.js';
+import type { RoundRecord } from '../types/session.js';
 import type { LoadedSession, SessionState } from '../session/session-manager.js';
 import type { OutputChunk } from '../types/adapter.js';
 import type { GodTaskAnalysis } from '../types/god-schemas.js';
@@ -24,18 +22,6 @@ export type StreamOutcome =
   | { kind: 'success'; fullText: string; displayText: string }
   | { kind: 'error'; fullText: string; displayText: string; errorMessage: string }
   | { kind: 'no_output'; fullText: string; displayText: string };
-
-export interface ChoiceRoute {
-  source: 'coder' | 'reviewer';
-  target: 'coder' | 'reviewer';
-  prompt: string;
-}
-
-export interface RouteDecision {
-  event: 'ROUTE_TO_REVIEW' | 'ROUTE_TO_EVALUATE' | 'ROUTE_TO_CODER';
-  choiceRoute?: ChoiceRoute;
-  clearChoiceRoute?: boolean;
-}
 
 export type UserDecision =
   | { type: 'confirm'; action: 'accept' | 'continue'; pendingInstruction?: string }
@@ -65,15 +51,8 @@ export interface RestoredSessionRuntime {
   godTaskAnalysis?: GodTaskAnalysis;
   /** God convergence log restored from session (FR-011) */
   godConvergenceLog?: ConvergenceLogEntry[];
-  /** God degradation state restored from session (FR-G01) */
-  degradationState?: DegradationState;
   /** Current phase ID for compound tasks */
   currentPhaseId?: string | null;
-}
-
-interface ChoiceDetectorLike {
-  detect(text: string): ChoiceDetectionResult;
-  buildForwardPrompt(result: ChoiceDetectionResult, taskContext: string): string;
 }
 
 const CHARS_PER_TOKEN = 4;
@@ -188,7 +167,7 @@ export function resolveUserDecision(
   const trimmed = text.trim();
   const lower = trimmed.toLowerCase();
 
-  if (stateValue === 'WAITING_USER' || stateValue === 'MANUAL_FALLBACK') {
+  if (stateValue === 'WAITING_USER' || stateValue === 'PAUSED') {
     if (lower === 'a' || lower === 'accept') {
       return { type: 'confirm', action: 'accept' };
     }
@@ -213,54 +192,6 @@ export function resolveUserDecision(
   }
 
   return null;
-}
-
-export function decidePostCodeRoute(
-  output: string,
-  taskContext: string,
-  detector: ChoiceDetectorLike,
-  activeChoiceRoute: ChoiceRoute | null,
-): RouteDecision {
-  if (activeChoiceRoute?.source === 'reviewer' && activeChoiceRoute.target === 'coder') {
-    return {
-      event: 'ROUTE_TO_REVIEW',
-      clearChoiceRoute: true,
-    };
-  }
-
-  const detection = detector.detect(output);
-  if (detection.detected) {
-    return {
-      event: 'ROUTE_TO_REVIEW',
-      choiceRoute: createChoiceRoute('coder', taskContext, detector, detection),
-    };
-  }
-
-  return { event: 'ROUTE_TO_REVIEW' };
-}
-
-export function decidePostReviewRoute(
-  output: string,
-  taskContext: string,
-  detector: ChoiceDetectorLike,
-  activeChoiceRoute: ChoiceRoute | null,
-): RouteDecision {
-  if (activeChoiceRoute?.source === 'coder' && activeChoiceRoute.target === 'reviewer') {
-    return {
-      event: 'ROUTE_TO_CODER',
-      clearChoiceRoute: true,
-    };
-  }
-
-  const detection = detector.detect(output);
-  if (detection.detected) {
-    return {
-      event: 'ROUTE_TO_CODER',
-      choiceRoute: createChoiceRoute('reviewer', taskContext, detector, detection),
-    };
-  }
-
-  return { event: 'ROUTE_TO_EVALUATE' };
 }
 
 export function buildRestoredSessionRuntime(
@@ -300,21 +231,7 @@ export function buildRestoredSessionRuntime(
     godSessionId: loaded.state.godSessionId,
     godTaskAnalysis: loaded.state.godTaskAnalysis,
     godConvergenceLog: loaded.state.godConvergenceLog,
-    degradationState: loaded.state.degradationState,
     currentPhaseId: loaded.state.currentPhaseId ?? null,
-  };
-}
-
-function createChoiceRoute(
-  source: 'coder' | 'reviewer',
-  taskContext: string,
-  detector: ChoiceDetectorLike,
-  detection: ChoiceDetectionResult,
-): ChoiceRoute {
-  return {
-    source,
-    target: source === 'coder' ? 'reviewer' : 'coder',
-    prompt: detector.buildForwardPrompt(detection, taskContext),
   };
 }
 

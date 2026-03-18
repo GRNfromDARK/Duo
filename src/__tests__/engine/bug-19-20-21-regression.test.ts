@@ -4,9 +4,8 @@
  *
  * BUG-19 [P2]: handleInterrupt and state-save useEffect stale closure on taskAnalysis
  *   → Fixed by using taskAnalysisRef (tested via ref pattern verification)
- * BUG-20 [P2]: confirmContinueWithPhase guard uses !== null, doesn't exclude undefined
- *   → Fixed by using != null (loose comparison)
- *   → In D.1, GOD_DECIDING no longer uses USER_CONFIRM; MANUAL_FALLBACK retains it
+ * BUG-20 [P2]: confirmContinueWithPhase guard (now removed — PAUSED simplified to retry/quit)
+ *   → In v2, PAUSED uses confirmContinue → GOD_DECIDING and confirmAccept → DONE
  * BUG-21 [P2]: GOD_DECIDING auto-decision not re-triggered after reclassify
  *   → Fixed by adding reclassifyTrigger to useEffect deps (tested via state machine behavior)
  */
@@ -40,43 +39,36 @@ function makeEnvelope(actions: GodDecisionEnvelope['actions'] = []): GodDecision
 
 function advanceToGodDeciding(actor: ReturnType<typeof startActor>) {
   actor.send({ type: 'START_TASK', prompt: 'test task' });
-  actor.send({ type: 'TASK_INIT_SKIP' });
+  actor.send({ type: 'TASK_INIT_COMPLETE' });
   actor.send({ type: 'CODE_COMPLETE', output: 'done' });
   actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
 }
 
 // ══════════════════════════════════════════════════════════════════
-// BUG-20: MANUAL_FALLBACK confirmContinueWithPhase guard
-// In D.1, GOD_DECIDING uses DECISION_READY; MANUAL_FALLBACK retains USER_CONFIRM
+// BUG-20: PAUSED simplified transitions (v2: retry/quit only)
+// In v2, PAUSED uses confirmContinue → GOD_DECIDING (retry) and confirmAccept → DONE (quit)
 // ══════════════════════════════════════════════════════════════════
 
-describe('BUG-20 regression: confirmContinueWithPhase guard in MANUAL_FALLBACK', () => {
-  it('pendingPhaseId=null: USER_CONFIRM continue uses normal path (no phase switch)', () => {
+describe('BUG-20 regression: PAUSED simplified transitions', () => {
+  it('USER_CONFIRM continue → GOD_DECIDING (retry)', () => {
     const actor = startActor();
     advanceToGodDeciding(actor);
-    actor.send({ type: 'MANUAL_FALLBACK_REQUIRED' });
-    expect(actor.getSnapshot().value).toBe('MANUAL_FALLBACK');
+    actor.send({ type: 'PAUSE_REQUIRED' });
+    expect(actor.getSnapshot().value).toBe('PAUSED');
 
-    expect(actor.getSnapshot().context.pendingPhaseId).toBeNull();
     actor.send({ type: 'USER_CONFIRM', action: 'continue' });
-
-    expect(actor.getSnapshot().value).toBe('CODING');
-    expect(actor.getSnapshot().context.taskPrompt).toBe('test task');
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
     actor.stop();
   });
 
-  it('MANUAL_FALLBACK with pendingPhaseId: confirmContinueWithPhase fires correctly', () => {
-    const actor = startActor({ pendingPhaseId: 'phase2', pendingPhaseSummary: 'Next phase' });
+  it('USER_CONFIRM accept → DONE (quit)', () => {
+    const actor = startActor();
     advanceToGodDeciding(actor);
-    actor.send({ type: 'MANUAL_FALLBACK_REQUIRED' });
-    expect(actor.getSnapshot().value).toBe('MANUAL_FALLBACK');
+    actor.send({ type: 'PAUSE_REQUIRED' });
+    expect(actor.getSnapshot().value).toBe('PAUSED');
 
-    expect(actor.getSnapshot().context.pendingPhaseId).toBe('phase2');
-    actor.send({ type: 'USER_CONFIRM', action: 'continue' });
-
-    expect(actor.getSnapshot().value).toBe('CODING');
-    expect(actor.getSnapshot().context.taskPrompt).toContain('phase2');
-    expect(actor.getSnapshot().context.pendingPhaseId).toBeNull();
+    actor.send({ type: 'USER_CONFIRM', action: 'accept' });
+    expect(actor.getSnapshot().value).toBe('DONE');
     actor.stop();
   });
 
@@ -118,7 +110,7 @@ describe('BUG-19 regression: taskAnalysisRef pattern', () => {
   it('XState context round changes trigger state-save useEffect but taskAnalysis from ref is current', () => {
     const actor = startActor();
     actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
 
     // Complete a full cycle to increment round
     actor.send({ type: 'CODE_COMPLETE', output: 'v1' });
@@ -151,7 +143,7 @@ describe('BUG-21 regression: reclassify re-triggers auto-decision in GOD_DECIDIN
   it('reclassify from CLARIFYING via OBSERVATIONS_READY reaches GOD_DECIDING', () => {
     const actor = startActor();
     actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
     // Get to CLARIFYING via God request_user_input
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });

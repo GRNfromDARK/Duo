@@ -15,20 +15,13 @@ import {
 import type { PromptContext } from '../../god/god-prompt-generator.js';
 import { evaluateRules } from '../../god/rule-engine.js';
 import { validateCLIChoices } from '../../session/session-starter.js';
-import { ConvergenceService } from '../../decision/convergence-service.js';
-import { DegradationManager } from '../../god/degradation-manager.js';
 import { cleanupOldDecisions } from '../../god/god-audit.js';
 import {
   GodTaskAnalysisSchema,
   GodPostReviewerDecisionSchema,
-  GodAutoDecisionSchema,
 } from '../../types/god-schemas.js';
 import { workflowMachine } from '../../engine/workflow-machine.js';
 import type { ConvergenceLogEntry } from '../../god/god-convergence.js';
-import { ContextManager } from '../../session/context-manager.js';
-import { makeAutoDecision, type AutoDecisionContext } from '../../god/auto-decision.js';
-import type { RuleEngineResult, ActionContext } from '../../god/rule-engine.js';
-import { InterruptHandler, type InterruptHandlerDeps } from '../../engine/interrupt-handler.js';
 import { parseMarkdown } from '../../ui/markdown-parser.js';
 import { OutputStreamManager } from '../../adapters/output-stream-manager.js';
 import { ProcessTimeoutError } from '../../adapters/process-manager.js';
@@ -161,7 +154,7 @@ describe('BUG-5: EXECUTING→CODING round increment (Card D.1)', () => {
 
     // Navigate: IDLE → TASK_INIT → CODING → OBSERVING → GOD_DECIDING → EXECUTING
     actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
     // Now in OBSERVING
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
@@ -184,7 +177,7 @@ describe('BUG-5: EXECUTING→CODING round increment (Card D.1)', () => {
     const actor1 = createActor(workflowMachine, { input: { round: 0, maxRounds: 10 } });
     actor1.start();
     actor1.send({ type: 'START_TASK', prompt: 'test' });
-    actor1.send({ type: 'TASK_INIT_SKIP' });
+    actor1.send({ type: 'TASK_INIT_COMPLETE' });
     actor1.send({ type: 'CODE_COMPLETE', output: 'done' });
     actor1.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
     actor1.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'retry' }]) });
@@ -197,7 +190,7 @@ describe('BUG-5: EXECUTING→CODING round increment (Card D.1)', () => {
     const actor2 = createActor(workflowMachine, { input: { round: 0, maxRounds: 10 } });
     actor2.start();
     actor2.send({ type: 'START_TASK', prompt: 'test' });
-    actor2.send({ type: 'TASK_INIT_SKIP' });
+    actor2.send({ type: 'TASK_INIT_COMPLETE' });
     actor2.send({ type: 'CODE_COMPLETE', output: 'done' });
     actor2.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
     actor2.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_reviewer', message: 'review' }]) });
@@ -289,58 +282,6 @@ describe('BUG-7: god adapter validation', () => {
   test('test_regression_7_no_god_param_still_works', () => {
     const result = validateCLIChoices('claude-code', 'codex', detected);
     expect(result.valid).toBe(true);
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
-// BUG-8 (P1): Soft approval must exclude [CHANGES_REQUESTED]
-// ══════════════════════════════════════════════════════════════
-
-describe('BUG-8: soft approval with CHANGES_REQUESTED exclusion', () => {
-  const service = new ConvergenceService();
-
-  test('test_bug_8_changes_requested_prevents_soft_approval', () => {
-    // Output with soft-approval language BUT also [CHANGES_REQUESTED] marker
-    // and explicit "Blocking: 0" so countBlockingIssues returns 0
-    const output = 'Blocking: 0\nLGTM overall, but [CHANGES_REQUESTED] for minor fix.';
-    const result = service.classify(output);
-
-    expect(result.classification).not.toBe('soft_approved');
-    expect(result.classification).toBe('changes_requested');
-  });
-
-  test('test_regression_8_soft_approval_still_works_without_changes_requested', () => {
-    const output = 'Blocking: 0\nLGTM, looks good to me!';
-    const result = service.classify(output);
-
-    expect(result.classification).toBe('soft_approved');
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
-// BUG-9 (P2): DegradationManager state persistence
-// ══════════════════════════════════════════════════════════════
-
-describe('BUG-9: DegradationManager state persistence across resume', () => {
-  test('test_bug_9_godDisabled_survives_resume', () => {
-    const manager1 = new DegradationManager();
-    for (let i = 0; i < 3; i++) {
-      manager1.handleGodFailure({ kind: 'process_exit', message: 'crash' });
-    }
-    expect(manager1.isGodAvailable()).toBe(false);
-
-    // Serialize and restore
-    const serialized = manager1.serializeState();
-    const manager2 = new DegradationManager({ restoredState: serialized });
-
-    expect(manager2.isGodAvailable()).toBe(false);
-    expect(manager2.getState().godDisabled).toBe(true);
-    expect(manager2.getState().level).toBe('L4');
-  });
-
-  test('test_regression_9_fresh_manager_starts_available', () => {
-    const manager = new DegradationManager();
-    expect(manager.isGodAvailable()).toBe(true);
   });
 });
 
@@ -468,28 +409,6 @@ describe('BUG-11: Zod schema refine constraints', () => {
 });
 
 // ══════════════════════════════════════════════════════════════
-// BUG-12: GodAutoDecision reasoning accepts any length
-// ══════════════════════════════════════════════════════════════
-
-describe('BUG-12: reasoning has no length limit', () => {
-  test('test_bug_12_long_reasoning_accepted', () => {
-    const result = GodAutoDecisionSchema.safeParse({
-      action: 'accept',
-      reasoning: 'x'.repeat(10000),
-    });
-    expect(result.success).toBe(true);
-  });
-
-  test('test_regression_12_normal_reasoning_accepted', () => {
-    const result = GodAutoDecisionSchema.safeParse({
-      action: 'accept',
-      reasoning: 'Task completed successfully. All tests pass.',
-    });
-    expect(result.success).toBe(true);
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
 // Round 2 BUG-2 (P1): God session ID must NOT be restored on duo resume
 // ══════════════════════════════════════════════════════════════
 
@@ -603,117 +522,6 @@ describe('Round2 BUG-3: nextPhaseId preserved by Zod schema', () => {
 });
 
 // ══════════════════════════════════════════════════════════════
-// Round 2 BUG-5 (P2): God overlay shows current phase from audit entries
-// ══════════════════════════════════════════════════════════════
-
-describe('Round2 BUG-5: God overlay shows current phase', () => {
-  test('test_regression_r2_bug5_overlay_shows_transitioned_phase', async () => {
-    const { createGodOverlayState } = await import('../../ui/god-overlay.js');
-
-    const compoundAnalysis = {
-      taskType: 'compound' as const,
-      reasoning: 'Multi-phase task',
-      phases: [
-        { id: 'explore', name: 'Explore', type: 'explore' as const, description: 'Research' },
-        { id: 'implement', name: 'Implement', type: 'code' as const, description: 'Code' },
-        { id: 'test', name: 'Test', type: 'review' as const, description: 'Test' },
-      ],
-      confidence: 0.85,
-      suggestedMaxRounds: 10,
-      terminationCriteria: ['Done'],
-    };
-
-    const auditEntries = [
-      {
-        seq: 1,
-        timestamp: '2026-03-11T10:00:00.000Z',
-        round: 0,
-        decisionType: 'TASK_INIT',
-        inputSummary: 'task',
-        outputSummary: 'compound',
-        decision: compoundAnalysis,
-      },
-      {
-        seq: 2,
-        timestamp: '2026-03-11T10:01:00.000Z',
-        round: 2,
-        decisionType: 'PHASE_TRANSITION',
-        inputSummary: 'Phase complete',
-        outputSummary: 'Transitioning to implement',
-        decision: { action: 'phase_transition', nextPhaseId: 'implement', reasoning: 'explore done' },
-      },
-    ];
-
-    const state = createGodOverlayState(compoundAnalysis, auditEntries, []);
-
-    // Should show 'implement' (from PHASE_TRANSITION), NOT 'explore' (first phase)
-    expect(state.currentPhase).toBe('implement');
-  });
-
-  test('test_regression_r2_bug5_overlay_fallback_to_first_phase_when_no_transition', async () => {
-    const { createGodOverlayState } = await import('../../ui/god-overlay.js');
-
-    const compoundAnalysis = {
-      taskType: 'compound' as const,
-      reasoning: 'Multi-phase task',
-      phases: [
-        { id: 'explore', name: 'Explore', type: 'explore' as const, description: 'Research' },
-        { id: 'code', name: 'Code', type: 'code' as const, description: 'Implement' },
-      ],
-      confidence: 0.85,
-      suggestedMaxRounds: 10,
-      terminationCriteria: ['Done'],
-    };
-
-    // No PHASE_TRANSITION entries
-    const state = createGodOverlayState(compoundAnalysis, [], []);
-    expect(state.currentPhase).toBe('explore');
-  });
-
-  test('test_regression_r2_bug5_overlay_uses_latest_transition', async () => {
-    const { createGodOverlayState } = await import('../../ui/god-overlay.js');
-
-    const compoundAnalysis = {
-      taskType: 'compound' as const,
-      reasoning: 'Multi-phase task',
-      phases: [
-        { id: 'phase1', name: 'P1', type: 'explore' as const, description: 'R' },
-        { id: 'phase2', name: 'P2', type: 'code' as const, description: 'C' },
-        { id: 'phase3', name: 'P3', type: 'review' as const, description: 'T' },
-      ],
-      confidence: 0.85,
-      suggestedMaxRounds: 15,
-      terminationCriteria: ['Done'],
-    };
-
-    const auditEntries = [
-      {
-        seq: 1, timestamp: '2026-03-11T10:00:00Z', round: 1,
-        decisionType: 'PHASE_TRANSITION',
-        inputSummary: '', outputSummary: '',
-        decision: { action: 'phase_transition', nextPhaseId: 'phase2', reasoning: 'p1 done' },
-      },
-      {
-        seq: 2, timestamp: '2026-03-11T10:01:00Z', round: 3,
-        decisionType: 'POST_CODER',
-        inputSummary: '', outputSummary: '',
-        decision: { action: 'continue_to_review', reasoning: 'ok' },
-      },
-      {
-        seq: 3, timestamp: '2026-03-11T10:02:00Z', round: 4,
-        decisionType: 'PHASE_TRANSITION',
-        inputSummary: '', outputSummary: '',
-        decision: { action: 'phase_transition', nextPhaseId: 'phase3', reasoning: 'p2 done' },
-      },
-    ];
-
-    const state = createGodOverlayState(compoundAnalysis, auditEntries, []);
-    // Should show the LATEST transition target
-    expect(state.currentPhase).toBe('phase3');
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
 // Round 3 BUG-2 (P1): evaluatePhaseTransition respects nextPhaseId
 // ══════════════════════════════════════════════════════════════
 
@@ -783,32 +591,6 @@ describe('Round3 BUG-2: evaluatePhaseTransition uses God nextPhaseId', () => {
 
     // Only one phase, nextPhaseId doesn't exist, sequential also doesn't exist
     expect(result.shouldTransition).toBe(false);
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
-// Round 3 BUG-4 (P2): DegradationManager distinct fallback messages
-// ══════════════════════════════════════════════════════════════
-
-describe('Round3 BUG-4: DegradationManager distinct fallback messages', () => {
-  test('test_bug_r3_4_first_and_subsequent_fallback_messages_differ', () => {
-    const manager = new DegradationManager();
-
-    // First fallback
-    manager.handleGodFailure({ kind: 'process_exit', message: 'crash' });
-    const action1 = manager.handleGodFailure({ kind: 'process_exit', message: 'crash again' });
-    expect(action1.type).toBe('fallback');
-    const firstMessage = action1.notification!.message;
-
-    // Reset for second fallback
-    manager.handleGodSuccess();
-    manager.handleGodFailure({ kind: 'timeout', message: 'timeout' });
-    const action2 = manager.handleGodFailure({ kind: 'timeout', message: 'timeout again' });
-    expect(action2.type).toBe('fallback');
-    const secondMessage = action2.notification!.message;
-
-    // Messages should be different
-    expect(firstMessage).not.toBe(secondMessage);
   });
 });
 
@@ -973,162 +755,6 @@ describe('Round4 BUG-1: hasNoImprovement excludes all-zero counts', () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
-// Round 4 BUG-2 (P1): enforceTokenBudget uses CHARS_PER_TOKEN
-// ══════════════════════════════════════════════════════════════
-
-describe('Round4 BUG-2: enforceTokenBudget multiplies by CHARS_PER_TOKEN', () => {
-  test('test_bug_r4_2_token_budget_allows_correct_char_count', () => {
-    // contextWindowSize = 1000 tokens → 1000 * 4 * 0.8 = 3200 chars allowed
-    const cm = new ContextManager({ contextWindowSize: 1000 });
-    const longOutput = 'x'.repeat(2500);
-    const prompt = cm.buildCoderPrompt('Task', [
-      { index: 1, coderOutput: longOutput, reviewerOutput: '', timestamp: Date.now() },
-    ]);
-
-    // Before fix: maxChars = 1000 * 0.8 = 800 → prompt truncated to 800
-    // After fix: maxChars = 1000 * 4 * 0.8 = 3200 → prompt NOT truncated
-    expect(prompt.length).toBeGreaterThan(800);
-    expect(prompt).not.toContain('...');
-  });
-
-  test('test_regression_r4_2_still_truncates_when_over_real_budget', () => {
-    // contextWindowSize = 100 tokens → 100 * 4 * 0.8 = 320 chars
-    const cm = new ContextManager({ contextWindowSize: 100 });
-    const longOutput = 'x'.repeat(500);
-    const prompt = cm.buildCoderPrompt('Task', [
-      { index: 1, coderOutput: longOutput, reviewerOutput: longOutput, timestamp: Date.now() },
-    ]);
-
-    // Should still be truncated since content exceeds 320 chars
-    expect(prompt.length).toBeLessThanOrEqual(320);
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
-// Round 4 BUG-3 (P1): auto-decision accept/local-fallback skip path-based rule checks
-// ══════════════════════════════════════════════════════════════
-
-describe('Round4 BUG-3: accept/local-fallback skip path-based rule checks', () => {
-  test('test_bug_r4_3_accept_not_blocked_for_non_documents_project', async () => {
-    const godOutput = `\`\`\`json\n{"action":"accept","reasoning":"Done"}\n\`\`\``;
-    const mockAdapter = {
-      name: 'mock-god', displayName: 'Mock God', version: '1.0.0',
-      isInstalled: async () => true, getVersion: async () => '1.0.0',
-      execute() {
-        const chunks = [{ type: 'text' as const, content: godOutput, timestamp: Date.now() }];
-        return { [Symbol.asyncIterator]() { let i = 0; return { async next() { if (i < chunks.length) return { value: chunks[i++], done: false }; return { value: undefined as any, done: true }; } }; } };
-      },
-      kill: async () => {}, isRunning: () => false,
-    };
-
-    const tempDir = mkdtempSync(join(tmpdir(), 'bug-r4-3-'));
-    try {
-      const result = await makeAutoDecision(mockAdapter, {
-        round: 3, maxRounds: 10, taskGoal: 'test',
-        sessionDir: tempDir, seq: 1, waitingReason: 'converged',
-        projectDir: '/tmp/some-project-outside-documents',
-      }, evaluateRules);
-
-      // accept should NOT be blocked even though project is outside ~/Documents
-      expect(result.blocked).toBe(false);
-      expect(result.decision.action).toBe('accept');
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
-    }
-  });
-
-  test('test_bug_r4_3_invalid_request_human_falls_back_without_blocking', async () => {
-    const godOutput = `\`\`\`json\n{"action":"request_human","reasoning":"Need input"}\n\`\`\``;
-    const mockAdapter = {
-      name: 'mock-god', displayName: 'Mock God', version: '1.0.0',
-      isInstalled: async () => true, getVersion: async () => '1.0.0',
-      execute() {
-        const chunks = [{ type: 'text' as const, content: godOutput, timestamp: Date.now() }];
-        return { [Symbol.asyncIterator]() { let i = 0; return { async next() { if (i < chunks.length) return { value: chunks[i++], done: false }; return { value: undefined as any, done: true }; } }; } };
-      },
-      kill: async () => {}, isRunning: () => false,
-    };
-
-    const tempDir = mkdtempSync(join(tmpdir(), 'bug-r4-3b-'));
-    try {
-      const result = await makeAutoDecision(mockAdapter, {
-        round: 3, maxRounds: 10, taskGoal: 'test',
-        sessionDir: tempDir, seq: 1, waitingReason: 'converged',
-        projectDir: '/tmp/some-project-outside-documents',
-      }, evaluateRules);
-
-      expect(result.blocked).toBe(false);
-      expect(result.decision.action).toBe('continue_with_instruction');
-      expect(result.reasoning).toContain('Local fallback');
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
-    }
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
-// Round 4 BUG-4 (P1): InterruptHandler disposed guard
-// ══════════════════════════════════════════════════════════════
-
-describe('Round4 BUG-4: InterruptHandler ignores events after dispose', () => {
-  function createMockDeps(): InterruptHandlerDeps {
-    return {
-      processManager: {
-        kill: vi.fn().mockResolvedValue(undefined),
-        isRunning: vi.fn().mockReturnValue(true),
-        getBufferedOutput: vi.fn().mockReturnValue('partial'),
-      },
-      sessionManager: { saveState: vi.fn() },
-      actor: {
-        send: vi.fn(),
-        getSnapshot: vi.fn().mockReturnValue({
-          value: 'CODING',
-          context: { sessionId: 'sess', round: 1, activeProcess: 'coder' },
-        }),
-      },
-      onExit: vi.fn(),
-      onInterrupted: vi.fn(),
-      onObservation: vi.fn(),
-    };
-  }
-
-  test('test_bug_r4_4_handleSigint_noop_after_dispose', async () => {
-    const deps = createMockDeps();
-    const handler = new InterruptHandler(deps);
-    handler.dispose();
-
-    await handler.handleSigint();
-
-    // Card E.1: check onObservation instead of actor.send
-    expect(deps.onObservation).not.toHaveBeenCalled();
-    expect(deps.processManager.kill).not.toHaveBeenCalled();
-  });
-
-  test('test_bug_r4_4_handleTextInterrupt_noop_after_dispose', async () => {
-    const deps = createMockDeps();
-    const handler = new InterruptHandler(deps);
-    handler.dispose();
-
-    await handler.handleTextInterrupt('test', 'coder');
-
-    // Card E.1: check onObservation instead of actor.send
-    expect(deps.onObservation).not.toHaveBeenCalled();
-    expect(deps.processManager.kill).not.toHaveBeenCalled();
-  });
-
-  test('test_bug_r4_4_handleUserInput_noop_after_dispose', () => {
-    const deps = createMockDeps();
-    const handler = new InterruptHandler(deps);
-    handler.dispose();
-
-    handler.handleUserInput('test', 'coder');
-
-    // Card E.1: check onObservation instead of actor.send
-    expect(deps.onObservation).not.toHaveBeenCalled();
   });
 });
 
@@ -1365,36 +991,6 @@ describe('Round6 BUG-2: R-002 command_exec uses token-based path matching', () =
 
     const r002 = result.results.find((r) => r.ruleId === 'R-002');
     expect(r002!.matched).toBe(true);
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
-// Round 6 BUG-3 (P2): DegradationManager.enterL4 seq/round from context
-// ══════════════════════════════════════════════════════════════
-
-describe('Round6 BUG-3: DegradationManager enterL4 uses context seq/round', () => {
-  test('test_bug_r6_3_enterL4_uses_provided_seq_and_round', () => {
-    const manager = new DegradationManager();
-
-    manager.handleGodFailure({ kind: 'process_exit', message: 'e1' }, { seq: 10, round: 5 });
-    manager.handleGodFailure({ kind: 'process_exit', message: 'e2' }, { seq: 11, round: 5 });
-    const action = manager.handleGodFailure({ kind: 'timeout', message: 'e3' }, { seq: 12, round: 6 });
-
-    expect(action.auditEntry).toBeDefined();
-    expect(action.auditEntry!.seq).toBe(12);
-    expect(action.auditEntry!.round).toBe(6);
-  });
-
-  test('test_regression_r6_3_enterL4_defaults_to_zero_without_context', () => {
-    const manager = new DegradationManager();
-
-    manager.handleGodFailure({ kind: 'process_exit', message: 'e1' });
-    manager.handleGodFailure({ kind: 'process_exit', message: 'e2' });
-    const action = manager.handleGodFailure({ kind: 'timeout', message: 'e3' });
-
-    expect(action.auditEntry).toBeDefined();
-    expect(action.auditEntry!.seq).toBe(0);
-    expect(action.auditEntry!.round).toBe(0);
   });
 });
 
@@ -1640,7 +1236,7 @@ describe('Round 8 BUG-1: saveState merges partial state', () => {
       godSessionId: 'god-789',
     });
 
-    // Now save partial state (as InterruptHandler.saveAndExit does)
+    // Now save partial state (as interrupt save-and-exit does)
     mgr.saveState(id, {
       round: 2,
       status: 'interrupted',
@@ -1702,83 +1298,6 @@ describe('Round 8 BUG-1: saveState merges partial state', () => {
     expect(loaded.state.godTaskAnalysis).toBeDefined();
     expect(loaded.state.godTaskAnalysis?.taskType).toBe('code');
     expect(loaded.state.godConvergenceLog).toHaveLength(1);
-  });
-});
-
-// ── BUG-2: [CHANGES_REQUESTED] should not inflate blocking issue count ──
-
-describe('Round 8 BUG-2: CHANGES_REQUESTED not counted as blocking issue', () => {
-  test('test_bug_r8_2_changes_requested_not_counted', () => {
-    const svc = new ConvergenceService();
-    const output = '**Blocking**: Missing null check\n**Blocking**: SQL injection\n\n[CHANGES_REQUESTED]';
-    const count = svc.countBlockingIssues(output);
-    // Should be exactly 2, not 3 (the [CHANGES_REQUESTED] tag should not be counted)
-    expect(count).toBe(2);
-  });
-
-  test('test_bug_r8_2_only_changes_requested_yields_zero', () => {
-    const svc = new ConvergenceService();
-    const output = 'Some feedback text.\n\n[CHANGES_REQUESTED]';
-    const count = svc.countBlockingIssues(output);
-    expect(count).toBe(0);
-  });
-});
-
-// ── BUG-3: auto-decision uses extractWithRetry ──
-
-describe('Round 8 BUG-3: auto-decision uses extractWithRetry', () => {
-  test('test_bug_r8_3_auto_decision_retries_on_format_error', async () => {
-    // First call returns malformed JSON, second call returns valid JSON
-    let callCount = 0;
-    const mockAdapter = {
-      name: 'mock-god',
-      displayName: 'Mock God',
-      version: '1.0.0',
-      isInstalled: async () => true,
-      getVersion: async () => '1.0.0',
-      execute(_prompt: string, _opts: any): AsyncIterable<OutputChunk> {
-        callCount++;
-        const output = callCount === 1
-          ? '```json\n{action: "accept", reasoning: "done"}\n```'  // invalid JSON (missing quotes)
-          : '```json\n{"action": "accept", "reasoning": "All criteria met"}\n```';
-        const chunks: OutputChunk[] = [
-          { type: 'text', content: output, timestamp: Date.now() },
-        ];
-        return {
-          [Symbol.asyncIterator]() {
-            let i = 0;
-            return {
-              async next() {
-                if (i < chunks.length) return { value: chunks[i++], done: false };
-                return { value: undefined as unknown as OutputChunk, done: true };
-              },
-            };
-          },
-        };
-      },
-      kill: async () => {},
-      isRunning: () => false,
-    };
-
-    const context: AutoDecisionContext = {
-      round: 2,
-      maxRounds: 5,
-      taskGoal: 'test goal',
-      sessionDir: mkdtempSync(join(tmpdir(), 'r8-bug3-')),
-      seq: 1,
-      waitingReason: 'converged',
-    };
-
-    const result = await makeAutoDecision(
-      mockAdapter as any,
-      context,
-      () => ({ blocked: false, results: [] }),
-    );
-
-    // With extractWithRetry, the second call should succeed
-    expect(callCount).toBe(2);
-    expect(result.decision.action).toBe('accept');
-    rmSync(context.sessionDir, { recursive: true, force: true });
   });
 });
 
@@ -1874,7 +1393,7 @@ describe('Round9 BUG-1: EXECUTING→CODING (send_to_coder) increments round (Car
 
     // IDLE → TASK_INIT → CODING → OBSERVING → GOD_DECIDING → EXECUTING
     actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
     actor.send({ type: 'CODE_COMPLETE', output: 'empty output' });
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
     expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
@@ -1895,7 +1414,7 @@ describe('Round9 BUG-1: EXECUTING→CODING (send_to_coder) increments round (Car
     actor.start();
 
     actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
 
     // Simulate 2 repeated send_to_coder cycles (within circuit breaker limit of 3),
     // each should increment round
@@ -1908,12 +1427,12 @@ describe('Round9 BUG-1: EXECUTING→CODING (send_to_coder) increments round (Car
       expect(actor.getSnapshot().context.round).toBe(i + 1);
     }
 
-    // 3rd consecutive route-to-coder trips circuit breaker → MANUAL_FALLBACK
+    // 3rd consecutive route-to-coder trips circuit breaker → PAUSED
     actor.send({ type: 'CODE_COMPLETE', output: 'bad output again' });
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
     actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'retry' }]) });
     actor.send({ type: 'EXECUTION_COMPLETE', results: [] });
-    expect(actor.getSnapshot().value).toBe('MANUAL_FALLBACK');
+    expect(actor.getSnapshot().value).toBe('PAUSED');
     expect(actor.getSnapshot().context.lastError).toContain('Circuit breaker');
 
     actor.stop();
@@ -1926,7 +1445,7 @@ describe('Round9 BUG-1: EXECUTING→CODING (send_to_coder) increments round (Car
     actor.start();
 
     actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
     actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_reviewer', message: 'review' }]) });
@@ -2064,39 +1583,6 @@ describe('Round9 BUG-3: collectAdapterOutput includes error chunks', () => {
     };
   }
 
-  test('test_bug_r9_3_auto_decision_collects_error_chunks', async () => {
-    // Verify that auto-decision's collectAdapterOutput also collects error chunks
-    const adapter = createMockAdapterWithChunks([
-      { type: 'text', content: 'Reasoning: ', timestamp: Date.now() },
-      { type: 'error', content: 'Error: edge case detected. ', timestamp: Date.now() },
-      { type: 'code', content: '```json\n{"action":"request_human","reasoning":"need human input"}\n```', timestamp: Date.now() },
-    ]);
-
-    const tmpDir = mkdtempSync(join(tmpdir(), 'r9-bug3-auto-'));
-    try {
-      const result = await makeAutoDecision(
-        adapter as any,
-        {
-          round: 0,
-          maxRounds: 10,
-          taskGoal: 'test',
-          sessionDir: tmpDir,
-          seq: 0,
-          waitingReason: 'converged',
-          projectDir: tmpDir,
-        },
-        (_action: ActionContext): RuleEngineResult => ({ blocked: false, results: [] }),
-      );
-
-      // Auto-decision should have processed without losing the error chunk
-      expect(result.decision).toBeDefined();
-      expect(result.decision.action).toBe('continue_with_instruction');
-      expect(result.reasoning).toContain('Local fallback');
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
   test('test_bug_r9_3_convergence_collects_error_chunks', async () => {
     const { evaluateConvergence } = await import('../../god/god-convergence.js');
 
@@ -2147,7 +1633,7 @@ describe('R10-BUG-3: EXECUTING→CODING respects round increment (Card D.1)', ()
     actor.start();
 
     actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
     expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
@@ -2169,7 +1655,7 @@ describe('R10-BUG-3: EXECUTING→CODING respects round increment (Card D.1)', ()
     actor.start();
 
     actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
 
@@ -2180,43 +1666,6 @@ describe('R10-BUG-3: EXECUTING→CODING respects round increment (Card D.1)', ()
     expect(actor.getSnapshot().context.round).toBe(4);
 
     actor.stop();
-  });
-});
-
-// ── BUG-4 (R10-P2): SIMILARITY_THRESHOLD raised to avoid false positives ──
-
-describe('R10-BUG-4: Similarity threshold avoids false positive loop detection', () => {
-  test('test_bug_r10_4_different_issues_same_project_not_loop', () => {
-    const svc = new ConvergenceService({ maxRounds: 10 });
-
-    // Two outputs about the same project sharing many domain keywords but discussing different issues.
-    // Jaccard similarity ~0.45 — would be falsely detected at 0.35 threshold but not at 0.45.
-    const output1 = 'The session manager configuration needs update. The adapter factory should handle the service registry lookup. Fix the convergence check for blocking issues.';
-    const output2 = 'The session manager validation needs review. The adapter factory should handle the service timeout errors correctly. Fix the convergence check for stagnant progress detection.';
-
-    const result = svc.evaluate(output2, {
-      currentRound: 3,
-      previousOutputs: [output1],
-    });
-
-    // These discuss different issues (config/registry vs validation/timeout), should NOT be a loop
-    expect(result.loopDetected).toBe(false);
-  });
-
-  test('test_bug_r10_4_truly_similar_outputs_still_detected_as_loop', () => {
-    const svc = new ConvergenceService({ maxRounds: 10 });
-
-    // Nearly identical outputs — genuine loop
-    const output1 = 'Fix the null check on line 42 of session-manager.ts. The variable sessionData could be undefined when accessed.';
-    const output2 = 'The null check on line 42 of session-manager.ts is still missing. The sessionData variable could be undefined.';
-
-    const result = svc.evaluate(output2, {
-      currentRound: 3,
-      previousOutputs: [output1],
-    });
-
-    // These are genuinely the same issue restated — should still be detected
-    expect(result.loopDetected).toBe(true);
   });
 });
 
@@ -2244,7 +1693,7 @@ describe('R13-BUG-1: ProcessTimeoutError enables TIMEOUT dispatch to state machi
     const actor = createActor(workflowMachine, { input: { round: 0, maxRounds: 10 } });
     actor.start();
     actor.send({ type: 'START_TASK', prompt: 'test task' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
     expect(actor.getSnapshot().value).toBe('CODING');
 
     // Simulate: adapter throws ProcessTimeoutError → orchestration catches → dispatches TIMEOUT
@@ -2263,7 +1712,7 @@ describe('R13-BUG-1: ProcessTimeoutError enables TIMEOUT dispatch to state machi
     const actor = createActor(workflowMachine, { input: { round: 0, maxRounds: 10 } });
     actor.start();
     actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
     // Card D.1: navigate to REVIEWING via OBSERVING → GOD_DECIDING → EXECUTING(send_to_reviewer)
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
@@ -2385,43 +1834,6 @@ describe('BUG-5: Message objects must include id field', () => {
     const msg2: Message = { id: nextMsgId(), role: 'system', content: 'b', timestamp: Date.now() };
 
     expect(msg1.id).not.toBe(msg2.id);
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
-// BUG-7 (P2): Reclassify must clear stale God auto-decision state
-// ══════════════════════════════════════════════════════════════
-
-describe('BUG-7: Reclassify clears stale God decision', () => {
-  test('test_bug_7_handleReclassifySelect_clears_god_banner_state', () => {
-    // Simulate the state management that handleReclassifySelect performs.
-    // Before the fix, godDecision and showGodBanner were not cleared,
-    // causing a stale banner to appear after reclassification.
-    let showGodBanner = true;
-    let godDecision: any = { action: 'continue', reasoning: 'stale', confidenceScore: 0.8 };
-    let showReclassify = true;
-
-    // Simulate handleReclassifySelect (the fixed version)
-    showReclassify = false;
-    godDecision = null;       // BUG-7 fix
-    showGodBanner = false;    // BUG-7 fix
-
-    expect(showReclassify).toBe(false);
-    expect(godDecision).toBeNull();
-    expect(showGodBanner).toBe(false);
-  });
-
-  test('test_bug_7_rendering_priority_does_not_show_stale_banner_after_reclassify', () => {
-    // Simulate the rendering priority chain from App.tsx:
-    // showReclassify → showPhaseTransition → showGodBanner → MainLayout
-    // After reclassification completes, all overlay flags should be false.
-    const showReclassify = false;  // reclassify done
-    const showPhaseTransition = false;
-    const showGodBanner = false;   // BUG-7 fix clears this
-
-    // The GodDecisionBanner should NOT render
-    const wouldShowGodBanner = !showReclassify && !showPhaseTransition && showGodBanner;
-    expect(wouldShowGodBanner).toBe(false);
   });
 });
 

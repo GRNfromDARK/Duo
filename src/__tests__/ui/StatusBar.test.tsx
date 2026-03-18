@@ -1,6 +1,6 @@
 /**
  * StatusBar unit tests — Card D.2: God info display
- * Tests God adapter, taskType, currentPhase, degradationLevel, and godLatency rendering.
+ * Tests God adapter, taskType, currentPhase, and godLatency rendering.
  */
 import React from 'react';
 import { describe, it, expect } from 'vitest';
@@ -72,34 +72,6 @@ describe('StatusBar — God info display (Card D.2)', () => {
     expect(output).not.toContain('φ:');
   });
 
-  // AC-4: Show degradation status
-  it('shows "God:disabled" for L4 degradation', () => {
-    const output = renderBar({ degradationLevel: 'L4' });
-    expect(output).toContain('God:disabled');
-  });
-
-  it('shows downgrade indicator for L2', () => {
-    const output = renderBar({ degradationLevel: 'L2' });
-    expect(output).toContain('↓L2');
-  });
-
-  it('shows downgrade indicator for L3', () => {
-    const output = renderBar({ degradationLevel: 'L3' });
-    expect(output).toContain('↓L3');
-  });
-
-  it('hides degradation for L1 (normal)', () => {
-    const output = renderBar({ degradationLevel: 'L1' });
-    expect(output).not.toContain('↓L1');
-    expect(output).not.toContain('God:disabled');
-  });
-
-  it('hides degradation when not provided', () => {
-    const output = renderBar({});
-    expect(output).not.toContain('↓');
-    expect(output).not.toContain('God:disabled');
-  });
-
   // God latency display
   it('shows God latency when provided', () => {
     const output = renderBar({ godLatency: 1500 });
@@ -118,7 +90,6 @@ describe('StatusBar — God info display (Card D.2)', () => {
       reviewerAdapter: 'claude',
       taskType: 'compound',
       currentPhase: 'implement',
-      degradationLevel: 'L1',
       godLatency: 800,
     });
     expect(output).toContain('God:o3');

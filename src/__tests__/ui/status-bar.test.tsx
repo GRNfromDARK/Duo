@@ -122,40 +122,6 @@ describe('StatusBar', () => {
     expect(lastFrame()!).toContain('Done');
   });
 
-  // Card D.2: Degradation level display
-  describe('Degradation level display', () => {
-    it('shows "God:disabled" when degradationLevel is L4', () => {
-      const { lastFrame } = renderBar({
-        columns: 120,
-        degradationLevel: 'L4',
-      });
-      expect(lastFrame()!).toContain('God:disabled');
-    });
-
-    it('shows degradation level when L2 or L3', () => {
-      const { lastFrame } = renderBar({
-        columns: 120,
-        degradationLevel: 'L3',
-      });
-      expect(lastFrame()!).toContain('↓L3');
-    });
-
-    it('does not show degradation at L1 (normal)', () => {
-      const { lastFrame } = renderBar({
-        columns: 120,
-        degradationLevel: 'L1',
-      });
-      expect(lastFrame()!).not.toContain('↓L1');
-      expect(lastFrame()!).not.toContain('God:disabled');
-    });
-
-    it('does not show degradation when not provided', () => {
-      const { lastFrame } = renderBar({ columns: 120 });
-      expect(lastFrame()!).not.toContain('↓L');
-      expect(lastFrame()!).not.toContain('God:disabled');
-    });
-  });
-
   // Card D.2: God latency display
   describe('God latency display', () => {
     it('shows god latency in ms', () => {

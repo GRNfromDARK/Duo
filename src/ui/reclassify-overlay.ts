@@ -17,7 +17,7 @@ export const RECLASSIFY_ALLOWED_STATES: string[] = [
   'CODING',
   'REVIEWING',
   'GOD_DECIDING',
-  'MANUAL_FALLBACK',
+  'PAUSED',
 ];
 
 export interface ReclassifyOverlayState {

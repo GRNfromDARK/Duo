@@ -73,7 +73,6 @@ export interface MainLayoutProps {
     reviewerAdapter?: string;
     coderModel?: string;
     reviewerModel?: string;
-    degradationLevel?: string;
     godLatency?: number;
   };
   /** Context overlay data */
@@ -348,7 +347,6 @@ export function MainLayout({
               reviewerAdapter={statusBarProps.reviewerAdapter}
               coderModel={statusBarProps.coderModel}
               reviewerModel={statusBarProps.reviewerModel}
-              degradationLevel={statusBarProps.degradationLevel}
               godLatency={statusBarProps.godLatency}
             />
           ) : (

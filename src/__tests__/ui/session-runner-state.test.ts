@@ -1,15 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { LoadedSession } from '../../session/session-manager.js';
-import { ChoiceDetector } from '../../decision/choice-detector.js';
 import {
   applyOutputChunk,
   buildRestoredSessionRuntime,
   createStreamAggregation,
-  decidePostCodeRoute,
-  decidePostReviewRoute,
   finalizeStreamAggregation,
   resolveUserDecision,
-  type ChoiceRoute,
 } from '../../ui/session-runner-state.js';
 
 describe('session-runner-state', () => {
@@ -142,41 +138,6 @@ describe('session-runner-state', () => {
         type: 'resume',
         input: 're-review with a security focus',
         resumeAs: 'reviewer',
-      });
-    });
-  });
-
-  describe('choice routing', () => {
-    const detector = new ChoiceDetector();
-
-    it('routes coder choices to reviewer automatically', () => {
-      const decision = decidePostCodeRoute(
-        'Which option should we choose?\nA. Keep the current API\nB. Rename the endpoint',
-        'Build a user API',
-        detector,
-        null,
-      );
-
-      expect(decision.event).toBe('ROUTE_TO_REVIEW');
-      expect(decision.choiceRoute).toMatchObject({
-        source: 'coder',
-        target: 'reviewer',
-      });
-      expect(decision.choiceRoute?.prompt).toContain('Choices:');
-    });
-
-    it('routes back to coder after reviewer answers a coder choice', () => {
-      const activeChoiceRoute: ChoiceRoute = {
-        source: 'coder',
-        target: 'reviewer',
-        prompt: 'forward prompt',
-      };
-
-      expect(
-        decidePostReviewRoute('I choose option 1.', 'Build a user API', detector, activeChoiceRoute),
-      ).toEqual({
-        event: 'ROUTE_TO_CODER',
-        clearChoiceRoute: true,
       });
     });
   });
@@ -320,13 +281,6 @@ describe('session-runner-state', () => {
           summary: 'round 0',
         },
       ];
-      const degradationState = {
-        level: 'L1' as const,
-        consecutiveFailures: 0,
-        godDisabled: false,
-        fallbackActive: false,
-      };
-
       const loaded: LoadedSession = {
         metadata: {
           id: 'session-god-1',
@@ -346,7 +300,6 @@ describe('session-runner-state', () => {
           godAdapter: 'codex',
           godTaskAnalysis,
           godConvergenceLog,
-          degradationState,
         },
         history: [
           { round: 0, role: 'coder', content: 'code', timestamp: 10 },
@@ -364,7 +317,6 @@ describe('session-runner-state', () => {
       expect(runtime.godSessionId).toBe('god_ses_123');
       expect(runtime.godTaskAnalysis).toEqual(godTaskAnalysis);
       expect(runtime.godConvergenceLog).toEqual(godConvergenceLog);
-      expect(runtime.degradationState).toEqual(degradationState);
     });
 
     it('passes through currentPhaseId from persisted state (BUG-6 regression)', () => {
@@ -493,7 +445,6 @@ describe('session-runner-state', () => {
       expect(runtime.godSessionId).toBeUndefined();
       expect(runtime.godTaskAnalysis).toBeUndefined();
       expect(runtime.godConvergenceLog).toBeUndefined();
-      expect(runtime.degradationState).toBeUndefined();
     });
   });
 });

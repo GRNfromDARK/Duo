@@ -45,7 +45,7 @@ const defaultCtx: KeyContext = {
 
 // ── AC-1: Ctrl+R triggers reclassify action ──
 
-describe('AC-1: Ctrl+R in CODING/REVIEWING/GOD_DECIDING/MANUAL_FALLBACK', () => {
+describe('AC-1: Ctrl+R in CODING/REVIEWING/GOD_DECIDING/PAUSED', () => {
   it('Ctrl+R produces reclassify action', () => {
     const action = processKeybinding('r', key({ ctrl: true }), defaultCtx);
     expect(action.type).toBe('reclassify');
@@ -69,8 +69,8 @@ describe('AC-1: Ctrl+R in CODING/REVIEWING/GOD_DECIDING/MANUAL_FALLBACK', () => 
     expect(canTriggerReclassify('GOD_DECIDING')).toBe(true);
   });
 
-  it('canTriggerReclassify allows MANUAL_FALLBACK', () => {
-    expect(canTriggerReclassify('MANUAL_FALLBACK')).toBe(true);
+  it('canTriggerReclassify allows PAUSED', () => {
+    expect(canTriggerReclassify('PAUSED')).toBe(true);
   });
 
   it('canTriggerReclassify rejects IDLE', () => {
@@ -86,7 +86,7 @@ describe('AC-1: Ctrl+R in CODING/REVIEWING/GOD_DECIDING/MANUAL_FALLBACK', () => 
       'CODING',
       'REVIEWING',
       'GOD_DECIDING',
-      'MANUAL_FALLBACK',
+      'PAUSED',
     ]);
   });
 });

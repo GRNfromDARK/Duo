@@ -40,7 +40,7 @@ function makeEnvelope(actions: GodDecisionEnvelope['actions'] = []): GodDecision
 /** Advance to GOD_DECIDING via normal code completion */
 function advanceToGodDeciding(actor: ReturnType<typeof startActor>) {
   actor.send({ type: 'START_TASK', prompt: 'compound task' });
-  actor.send({ type: 'TASK_INIT_SKIP' });
+  actor.send({ type: 'TASK_INIT_COMPLETE' });
   actor.send({ type: 'CODE_COMPLETE', output: 'done' });
   actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
 }
@@ -52,7 +52,7 @@ describe('BUG-1 regression: CLEAR_PENDING_PHASE event', () => {
   it('CLEAR_PENDING_PHASE resets pendingPhaseId and pendingPhaseSummary to null', () => {
     const actor = startActor({ pendingPhaseId: 'p2', pendingPhaseSummary: 'Implementation phase' });
     actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
 
@@ -88,7 +88,7 @@ describe('BUG-2 regression: pendingPhaseId visible in context for guard checks',
   it('context.pendingPhaseId is accessible when set via input', () => {
     const actor = startActor({ pendingPhaseId: 'p2' });
     actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
 
@@ -124,7 +124,7 @@ describe('BUG-4 regression: CLARIFYING recovery via observation pipeline', () =>
   it('OBSERVATIONS_READY with clarification_answer recovers CLARIFYING to GOD_DECIDING', () => {
     const actor = startActor();
     actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
     advanceToClarifying(actor);
     expect(actor.getSnapshot().value).toBe('CLARIFYING');
 
@@ -136,7 +136,7 @@ describe('BUG-4 regression: CLARIFYING recovery via observation pipeline', () =>
   it('without OBSERVATIONS_READY, CLARIFYING state persists', () => {
     const actor = startActor();
     actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
     advanceToClarifying(actor);
 
     expect(actor.getSnapshot().value).toBe('CLARIFYING');
@@ -148,7 +148,7 @@ describe('BUG-4 regression: CLARIFYING recovery via observation pipeline', () =>
   it('interrupt during CODING goes through INCIDENT_DETECTED → OBSERVING (not INTERRUPTED)', () => {
     const actor = startActor();
     actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
 
     // Card E.1: interrupts go through observation pipeline, not USER_INTERRUPT
     actor.send({ type: 'INCIDENT_DETECTED', observation: makeObs('human_interrupt', 'human') });

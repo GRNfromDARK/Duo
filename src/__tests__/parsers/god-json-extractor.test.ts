@@ -6,7 +6,6 @@ import {
   GodPostCoderDecisionSchema,
   GodPostReviewerDecisionSchema,
   GodConvergenceJudgmentSchema,
-  GodAutoDecisionSchema,
 } from '../../types/god-schemas.js';
 
 // ── Valid mock data ──────────────────────────────────────────────
@@ -38,11 +37,6 @@ const validConvergenceJudgment = {
   blockingIssueCount: 0,
   criteriaProgress: [{ criterion: 'Tests pass', satisfied: true }],
   reviewerVerdict: 'All good',
-};
-
-const validAutoDecision = {
-  action: 'accept',
-  reasoning: 'The output looks correct',
 };
 
 // ── Helper ───────────────────────────────────────────────────────
@@ -218,25 +212,6 @@ describe('Zod schemas', () => {
     expect(result.success).toBe(false);
   });
 
-  it('GodAutoDecisionSchema validates correct data', () => {
-    const result = GodAutoDecisionSchema.safeParse(validAutoDecision);
-    expect(result.success).toBe(true);
-  });
-
-  it('GodAutoDecisionSchema validates continue_with_instruction', () => {
-    const data = {
-      action: 'continue_with_instruction',
-      reasoning: 'Need to adjust',
-      instruction: 'Focus on error handling',
-    };
-    const result = GodAutoDecisionSchema.safeParse(data);
-    expect(result.success).toBe(true);
-  });
-
-  it('GodAutoDecisionSchema rejects invalid action', () => {
-    const result = GodAutoDecisionSchema.safeParse({ action: 'invalid', reasoning: 'test' });
-    expect(result.success).toBe(false);
-  });
 });
 
 // ── extractWithRetry tests ───────────────────────────────────────

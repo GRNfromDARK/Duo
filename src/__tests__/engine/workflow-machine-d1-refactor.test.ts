@@ -26,7 +26,7 @@ function startActor(context?: Partial<WorkflowContext>) {
 /** Helper: send START_TASK and skip TASK_INIT */
 function sendStartAndSkipInit(actor: ReturnType<typeof startActor>, prompt: string) {
   actor.send({ type: 'START_TASK', prompt });
-  actor.send({ type: 'TASK_INIT_SKIP' });
+  actor.send({ type: 'TASK_INIT_COMPLETE' });
 }
 
 /** Helper: create a minimal test observation */
@@ -464,14 +464,14 @@ describe('error and interrupt paths', () => {
     actor.stop();
   });
 
-  it('GOD_DECIDING → MANUAL_FALLBACK on MANUAL_FALLBACK_REQUIRED', () => {
+  it('GOD_DECIDING → PAUSED on PAUSE_REQUIRED', () => {
     const actor = startActor();
     sendStartAndSkipInit(actor, 'test');
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
     expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
-    actor.send({ type: 'MANUAL_FALLBACK_REQUIRED' });
-    expect(actor.getSnapshot().value).toBe('MANUAL_FALLBACK');
+    actor.send({ type: 'PAUSE_REQUIRED' });
+    expect(actor.getSnapshot().value).toBe('PAUSED');
     actor.stop();
   });
 });
@@ -515,7 +515,7 @@ describe('full Observe → Decide → Act cycle', () => {
     // Start
     actor.send({ type: 'START_TASK', prompt: 'build feature' });
     expect(actor.getSnapshot().value).toBe('TASK_INIT');
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
     expect(actor.getSnapshot().value).toBe('CODING');
 
     // Coder completes → OBSERVING
@@ -643,7 +643,7 @@ describe('circuit breaker: consecutiveRouteToCoder', () => {
     actor.stop();
   });
 
-  it('trips circuit breaker on 3rd consecutive route-to-coder → MANUAL_FALLBACK', () => {
+  it('trips circuit breaker on 3rd consecutive route-to-coder → PAUSED', () => {
     const actor = startActor();
     sendStartAndSkipInit(actor, 'test');
 
@@ -653,12 +653,12 @@ describe('circuit breaker: consecutiveRouteToCoder', () => {
     runCoderCycle(actor);
     expect(actor.getSnapshot().value).toBe('CODING');
 
-    // 3rd route-to-coder: circuit breaker trips → MANUAL_FALLBACK
+    // 3rd route-to-coder: circuit breaker trips → PAUSED
     actor.send({ type: 'CODE_COMPLETE', output: 'v3' });
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
     actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'iterate again' }]) });
     actor.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
-    expect(actor.getSnapshot().value).toBe('MANUAL_FALLBACK');
+    expect(actor.getSnapshot().value).toBe('PAUSED');
     expect(actor.getSnapshot().context.lastError).toContain('Circuit breaker');
 
     actor.stop();
@@ -684,39 +684,39 @@ describe('circuit breaker: consecutiveRouteToCoder', () => {
     actor.stop();
   });
 
-  it('resets counter on TASK_INIT_SKIP', () => {
+  it('resets counter on TASK_INIT_COMPLETE', () => {
     const actor = startActor({ consecutiveRouteToCoder: 5 });
     actor.start();
     actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
     expect(actor.getSnapshot().context.consecutiveRouteToCoder).toBe(0);
     actor.stop();
   });
 });
 
 // ══════════════════════════════════════════════════════════════════
-// MANUAL_FALLBACK still supports USER_CONFIRM for backward compat
+// PAUSED: simplified retry/quit transitions
 // ══════════════════════════════════════════════════════════════════
-describe('MANUAL_FALLBACK backward compatibility', () => {
-  it('MANUAL_FALLBACK → CODING on USER_CONFIRM continue', () => {
+describe('PAUSED simplified transitions', () => {
+  it('PAUSED → GOD_DECIDING on USER_CONFIRM continue (retry)', () => {
     const actor = startActor();
     sendStartAndSkipInit(actor, 'test');
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
-    actor.send({ type: 'MANUAL_FALLBACK_REQUIRED' });
-    expect(actor.getSnapshot().value).toBe('MANUAL_FALLBACK');
+    actor.send({ type: 'PAUSE_REQUIRED' });
+    expect(actor.getSnapshot().value).toBe('PAUSED');
 
     actor.send({ type: 'USER_CONFIRM', action: 'continue' });
-    expect(actor.getSnapshot().value).toBe('CODING');
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
     actor.stop();
   });
 
-  it('MANUAL_FALLBACK → DONE on USER_CONFIRM accept', () => {
+  it('PAUSED → DONE on USER_CONFIRM accept', () => {
     const actor = startActor();
     sendStartAndSkipInit(actor, 'test');
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
-    actor.send({ type: 'MANUAL_FALLBACK_REQUIRED' });
+    actor.send({ type: 'PAUSE_REQUIRED' });
 
     actor.send({ type: 'USER_CONFIRM', action: 'accept' });
     expect(actor.getSnapshot().value).toBe('DONE');

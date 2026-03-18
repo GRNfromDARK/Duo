@@ -55,7 +55,7 @@ type UserConfirmEvent = { type: 'USER_CONFIRM'; action: 'continue' | 'accept' };
 type ProcessErrorEvent = { type: 'PROCESS_ERROR'; error: string };
 type TimeoutEvent = { type: 'TIMEOUT' };
 type TaskInitCompleteEvent = { type: 'TASK_INIT_COMPLETE'; maxRounds?: number };
-type TaskInitSkipEvent = { type: 'TASK_INIT_SKIP' };
+// TASK_INIT_SKIP removed — God is always required in v2 architecture
 type ResumeSessionEvent = { type: 'RESUME_SESSION'; sessionId: string };
 type RecoveryEvent = { type: 'RECOVERY' };
 type RestoredToCodingEvent = { type: 'RESTORED_TO_CODING' };
@@ -65,7 +65,7 @@ type RestoredToInterruptedEvent = { type: 'RESTORED_TO_INTERRUPTED' };
 // Card E.2: resume into CLARIFYING state
 type RestoredToClarifyingEvent = { type: 'RESTORED_TO_CLARIFYING' };
 type ClearPendingPhaseEvent = { type: 'CLEAR_PENDING_PHASE' };
-type ManualFallbackRequiredEvent = { type: 'MANUAL_FALLBACK_REQUIRED' };
+type PauseRequiredEvent = { type: 'PAUSE_REQUIRED' };
 // Card D.1: new events for Observe → Decide → Act loop
 type ObservationsReadyEvent = { type: 'OBSERVATIONS_READY'; observations: Observation[] };
 type DecisionReadyEvent = { type: 'DECISION_READY'; envelope: GodDecisionEnvelope };
@@ -75,7 +75,6 @@ type IncidentDetectedEvent = { type: 'INCIDENT_DETECTED'; observation: Observati
 export type WorkflowEvent =
   | StartTaskEvent
   | TaskInitCompleteEvent
-  | TaskInitSkipEvent
   | CodeCompleteEvent
   | ReviewCompleteEvent
   | UserInterruptEvent
@@ -91,7 +90,7 @@ export type WorkflowEvent =
   | RestoredToInterruptedEvent
   | RestoredToClarifyingEvent
   | ClearPendingPhaseEvent
-  | ManualFallbackRequiredEvent
+  | PauseRequiredEvent
   | ObservationsReadyEvent
   | DecisionReadyEvent
   | ExecutionCompleteEvent
@@ -173,8 +172,6 @@ export const workflowMachine = setup({
       (event as UserInputEvent).resumeAs === 'decision',
     confirmContinue: ({ event }) =>
       (event as UserConfirmEvent).action === 'continue',
-    confirmContinueWithPhase: ({ event, context }) =>
-      (event as UserConfirmEvent).action === 'continue' && context.pendingPhaseId != null,
     confirmAccept: ({ event }) =>
       (event as UserConfirmEvent).action === 'accept',
     // Card D.1: post-execution target guards (E.2: pass context for resume routing)
@@ -246,11 +243,10 @@ export const workflowMachine = setup({
             },
           }),
         },
-        TASK_INIT_SKIP: {
-          target: 'CODING',
+        PROCESS_ERROR: {
+          target: 'ERROR',
           actions: assign({
-            activeProcess: () => 'coder' as const,
-            consecutiveRouteToCoder: () => 0,
+            lastError: ({ event }) => (event as ProcessErrorEvent).error,
           }),
         },
       },
@@ -367,8 +363,8 @@ export const workflowMachine = setup({
             pendingPhaseSummary: () => null,
           }),
         },
-        MANUAL_FALLBACK_REQUIRED: {
-          target: 'MANUAL_FALLBACK',
+        PAUSE_REQUIRED: {
+          target: 'PAUSED',
         },
         PROCESS_ERROR: {
           target: 'ERROR',
@@ -384,9 +380,9 @@ export const workflowMachine = setup({
       on: {
         EXECUTION_COMPLETE: [
           {
-            // Bug 1 fix: circuit breaker — 3+ consecutive route-to-coder → MANUAL_FALLBACK
+            // Bug 1 fix: circuit breaker — 3+ consecutive route-to-coder → PAUSED
             guard: 'circuitBreakerTripped',
-            target: 'MANUAL_FALLBACK',
+            target: 'PAUSED',
             actions: assign({
               currentObservations: ({ event }) => (event as ExecutionCompleteEvent).results,
               activeProcess: () => null,
@@ -465,36 +461,13 @@ export const workflowMachine = setup({
       },
     },
 
-    MANUAL_FALLBACK: {
+    PAUSED: {
       on: {
-        CLEAR_PENDING_PHASE: {
-          actions: assign({
-            pendingPhaseId: () => null,
-            pendingPhaseSummary: () => null,
-          }),
-        },
         USER_CONFIRM: [
           {
-            guard: 'confirmContinueWithPhase',
-            target: 'CODING',
-            actions: assign({
-              round: ({ context }) => context.round + 1,
-              activeProcess: () => 'coder' as const,
-              consecutiveRouteToCoder: () => 0,
-              taskPrompt: ({ context }) =>
-                context.pendingPhaseId
-                  ? `[Phase: ${context.pendingPhaseId}] ${(context.taskPrompt ?? '').replace(/^\[Phase: [^\]]*\] /, '')}`.trim()
-                  : context.taskPrompt,
-              pendingPhaseId: () => null,
-              pendingPhaseSummary: () => null,
-            }),
-          },
-          {
             guard: 'confirmContinue',
-            target: 'CODING',
+            target: 'GOD_DECIDING',
             actions: assign({
-              round: ({ context }) => context.round + 1,
-              activeProcess: () => 'coder' as const,
               consecutiveRouteToCoder: () => 0,
             }),
           },

@@ -23,7 +23,7 @@ function startActor(context?: Partial<WorkflowContext>) {
 /** Helper: send START_TASK and skip TASK_INIT */
 function sendStartAndSkipInit(actor: ReturnType<typeof startActor>, prompt: string) {
   actor.send({ type: 'START_TASK', prompt });
-  actor.send({ type: 'TASK_INIT_SKIP' });
+  actor.send({ type: 'TASK_INIT_COMPLETE' });
 }
 
 function makeObs(type: Observation['type'] = 'work_output', source: Observation['source'] = 'coder'): Observation {
@@ -80,11 +80,11 @@ describe('WorkflowMachine', () => {
   });
 
   describe('AC-2: normal flow (Observe → Decide → Act)', () => {
-    it('IDLE → TASK_INIT → CODING on START_TASK + TASK_INIT_SKIP', () => {
+    it('IDLE → TASK_INIT → CODING on START_TASK + TASK_INIT_COMPLETE', () => {
       const actor = startActor();
       actor.send({ type: 'START_TASK', prompt: 'build feature X' });
       expect(actor.getSnapshot().value).toBe('TASK_INIT');
-      actor.send({ type: 'TASK_INIT_SKIP' });
+      actor.send({ type: 'TASK_INIT_COMPLETE' });
       expect(actor.getSnapshot().value).toBe('CODING');
       expect(actor.getSnapshot().context.taskPrompt).toBe('build feature X');
       actor.stop();
@@ -145,7 +145,7 @@ describe('WorkflowMachine', () => {
     it('full loop: code → review → iterate → accept', () => {
       const actor = startActor();
       actor.send({ type: 'START_TASK', prompt: 'build it' });
-      actor.send({ type: 'TASK_INIT_SKIP' });
+      actor.send({ type: 'TASK_INIT_COMPLETE' });
 
       // Round 0: code → review
       advanceFromCoding(actor, [{ type: 'send_to_reviewer', message: 'review' }]);
@@ -165,13 +165,13 @@ describe('WorkflowMachine', () => {
       actor.stop();
     });
 
-    it('GOD_DECIDING → MANUAL_FALLBACK on MANUAL_FALLBACK_REQUIRED', () => {
+    it('GOD_DECIDING → PAUSED on PAUSE_REQUIRED', () => {
       const actor = startActor();
       sendStartAndSkipInit(actor, 'test');
       actor.send({ type: 'CODE_COMPLETE', output: 'done' });
       actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
-      actor.send({ type: 'MANUAL_FALLBACK_REQUIRED' });
-      expect(actor.getSnapshot().value).toBe('MANUAL_FALLBACK');
+      actor.send({ type: 'PAUSE_REQUIRED' });
+      expect(actor.getSnapshot().value).toBe('PAUSED');
       actor.stop();
     });
   });
@@ -392,10 +392,10 @@ describe('WorkflowMachine', () => {
       actor.stop();
     });
 
-    it('TASK_INIT → CODING on TASK_INIT_SKIP (degradation path)', () => {
+    it('TASK_INIT → CODING on TASK_INIT_COMPLETE', () => {
       const actor = startActor();
       actor.send({ type: 'START_TASK', prompt: 'test' });
-      actor.send({ type: 'TASK_INIT_SKIP' });
+      actor.send({ type: 'TASK_INIT_COMPLETE' });
       expect(actor.getSnapshot().value).toBe('CODING');
       expect(actor.getSnapshot().context.activeProcess).toBe('coder');
       actor.stop();
