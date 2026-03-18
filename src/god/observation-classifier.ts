@@ -269,7 +269,7 @@ function buildSummary(type: ObservationType, raw: string): string {
 /**
  * Remove duplicate observations using timestamp+source+type as identity key.
  * Used when merging clarificationObservations with currentObservations,
- * since clarificationObservations already contains current-round observations.
+ * since clarificationObservations already contains current observations.
  */
 export function deduplicateObservations(observations: Observation[]): Observation[] {
   const seen = new Set<string>();

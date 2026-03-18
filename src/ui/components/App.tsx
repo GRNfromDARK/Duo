@@ -670,7 +670,7 @@ function SessionRunner({
             appendPromptLog(getSessionDir(), {
               agent: 'coder',
               adapter: config.coder,
-              kind: 'coder_round',
+              kind: 'coder_iteration',
               prompt,
               systemPrompt: null,
               meta: {
@@ -867,7 +867,7 @@ function SessionRunner({
         pendingReviewerInstructionRef.current = null;
         pendingInstructionRef.current = null;
         const shouldSkipHistory = isSessionCapable(adapter) && adapter.hasActiveSession();
-        // Get the last reviewer output for feedback checklist (round 2+)
+        // Get the last reviewer output for feedback checklist (subsequent iterations)
         const lastReviewerOut = reviewerOutputsRef.current.length > 0
           ? reviewerOutputsRef.current[reviewerOutputsRef.current.length - 1]
           : undefined;
@@ -891,7 +891,7 @@ function SessionRunner({
             appendPromptLog(getSessionDir(), {
               agent: 'reviewer',
               adapter: config.reviewer,
-              kind: 'reviewer_round',
+              kind: 'reviewer_iteration',
               prompt,
               systemPrompt: null,
               meta: {
@@ -1112,7 +1112,7 @@ function SessionRunner({
           && godAdapterRef.current.hasActiveSession();
 
         // Merge clarification history with current observations, deduplicating
-        // since clarificationObservations already includes current-round observations
+        // since clarificationObservations already includes current observations
         const allObservations = deduplicateObservations([
           ...ctx.clarificationObservations,
           ...ctx.currentObservations,

@@ -252,10 +252,10 @@ function buildUserPrompt(observations: Observation[], context: GodDecisionContex
 }
 
 /**
- * Build a slim prompt for resume rounds.
+ * Build a slim prompt for resume iterations.
  * God's session context already contains: system prompt, Hand catalog, task goal,
  * previous decisions, available adapters, phase plan.
- * Only send: phase & round, observations, format reminder.
+ * Only send: phase, observations, format reminder.
  */
 function buildResumePrompt(observations: Observation[], context: GodDecisionContext): string {
   const sections: string[] = [];

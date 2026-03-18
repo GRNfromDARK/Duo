@@ -143,7 +143,7 @@ export class ClaudeCodeGodAdapter implements GodAdapter {
       }
     } catch (err) {
       // Error recovery: if we were resuming and it failed, clear the stale session ID
-      // so next round falls back to fresh session with full system prompt
+      // so next iteration falls back to fresh session with full system prompt
       if (wasResuming) {
         this.lastSessionId = null;
       }

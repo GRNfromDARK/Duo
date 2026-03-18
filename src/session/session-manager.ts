@@ -42,7 +42,7 @@ export interface SessionState {
   godSessionId?: string;
   /** Legacy persisted God adapter name from older sessions. */
   godAdapter?: string;
-  /** God task analysis — written on first round only (FR-011) */
+  /** God task analysis — written on initial analysis only (FR-011) */
   godTaskAnalysis?: GodTaskAnalysis;
   /** Current phase ID for compound tasks — persisted for duo resume */
   currentPhaseId?: string | null;

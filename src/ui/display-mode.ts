@@ -17,7 +17,7 @@ export function toggleDisplayMode(current: DisplayMode): DisplayMode {
 /**
  * Filter messages based on display mode.
  * In minimal mode, routing events (metadata.isRoutingEvent) are hidden.
- * All other messages (user, LLM, system non-routing, round summaries) are kept.
+ * All other messages (user, LLM, system non-routing) are kept.
  */
 export function filterMessages(
   messages: Message[],

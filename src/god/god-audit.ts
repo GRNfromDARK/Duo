@@ -166,7 +166,7 @@ export class GodAuditLogger {
  * Card D.2: FR-002, FR-010 — tracks reviewer original conclusion + God final verdict.
  *
  * @param logger - GodAuditLogger instance
- * @param params - reviewer observation, God envelope, round
+ * @param params - reviewer observation, God envelope
  */
 export function logReviewerOverrideAudit(
   logger: GodAuditLogger,

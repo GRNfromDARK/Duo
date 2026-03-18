@@ -37,7 +37,7 @@ function isEmptyStreamingPlaceholder(message: Message): boolean {
  * appeared for the current turn. Walks the message array backwards:
  * - Empty streaming assistant placeholder → show (waiting for first token)
  * - Actively streaming with content → LLM producing output → hide
- * - Completed (non-streaming) assistant message → new round starting,
+ * - Completed (non-streaming) assistant message → new iteration starting,
  *   streaming message not yet created → show
  * - User message reached → still waiting for output → show
  * - Only system messages or empty array → show (first turn)
@@ -56,7 +56,7 @@ export function shouldShowThinking(
       // Actively streaming with content = LLM producing output → hide
       if (msg.isStreaming) return false;
       // Completed message (not streaming) while LLM is running =
-      // new round starting, streaming message not yet created → show
+      // new iteration starting, streaming message not yet created → show
       return true;
     }
     if (msg.role === 'user') return true;

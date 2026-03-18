@@ -1,5 +1,5 @@
 /**
- * God Prompt Generator — dynamic prompt generation for Coder/Reviewer per round.
+ * God Prompt Generator — dynamic prompt generation for Coder/Reviewer per iteration.
  * Replaces ContextManager's prompt building for God-orchestrated sessions.
  * Source: FR-003 (AC-013, AC-014, AC-015), FR-003a, FR-003b, FR-003c
  */
@@ -177,7 +177,7 @@ Focus on producing high-quality work output. Do not make management decisions.`)
   }
 
   // Strategy instructions based on task type (FR-003a)
-  // First round without reviewer feedback → propose only (no file modifications)
+  // First iteration without reviewer feedback → propose only (no file modifications)
   const proposeOnly = !ctx.isPostReviewerRouting && !ctx.instruction;
   sections.push(getStrategyInstructions(effectiveType, proposeOnly));
 
@@ -200,7 +200,7 @@ Focus on producing high-quality work output. Do not make management decisions.`)
 }
 
 /**
- * Generate a Reviewer prompt for the current round.
+ * Generate a Reviewer prompt for the current iteration.
  */
 export function generateReviewerPrompt(ctx: {
   taskType: string;
