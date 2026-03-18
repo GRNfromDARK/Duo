@@ -61,16 +61,7 @@ export const GodConvergenceJudgmentSchema = z.object({
   reviewerVerdict: z.string(),
 });
 
-// GodAutoDecision — FR-008 GOD_DECIDING 自主决策
-
-export const GodAutoDecisionSchema = z.object({
-  action: z.enum(['accept', 'continue_with_instruction']),
-  reasoning: z.string(),
-  instruction: z.string().optional(), // continue_with_instruction 时提供
-});
-
 export type GodTaskAnalysis = z.infer<typeof GodTaskAnalysisSchema>;
 export type GodPostCoderDecision = z.infer<typeof GodPostCoderDecisionSchema>;
 export type GodPostReviewerDecision = z.infer<typeof GodPostReviewerDecisionSchema>;
 export type GodConvergenceJudgment = z.infer<typeof GodConvergenceJudgmentSchema>;
-export type GodAutoDecision = z.infer<typeof GodAutoDecisionSchema>;

@@ -19,7 +19,6 @@ import { cleanupOldDecisions } from '../../god/god-audit.js';
 import {
   GodTaskAnalysisSchema,
   GodPostReviewerDecisionSchema,
-  GodAutoDecisionSchema,
 } from '../../types/god-schemas.js';
 import { workflowMachine } from '../../engine/workflow-machine.js';
 import type { ConvergenceLogEntry } from '../../god/god-convergence.js';
@@ -404,28 +403,6 @@ describe('BUG-11: Zod schema refine constraints', () => {
       reasoning: 'All good',
       confidenceScore: 0.95,
       progressTrend: 'improving',
-    });
-    expect(result.success).toBe(true);
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
-// BUG-12: GodAutoDecision reasoning accepts any length
-// ══════════════════════════════════════════════════════════════
-
-describe('BUG-12: reasoning has no length limit', () => {
-  test('test_bug_12_long_reasoning_accepted', () => {
-    const result = GodAutoDecisionSchema.safeParse({
-      action: 'accept',
-      reasoning: 'x'.repeat(10000),
-    });
-    expect(result.success).toBe(true);
-  });
-
-  test('test_regression_12_normal_reasoning_accepted', () => {
-    const result = GodAutoDecisionSchema.safeParse({
-      action: 'accept',
-      reasoning: 'Task completed successfully. All tests pass.',
     });
     expect(result.success).toBe(true);
   });
@@ -1857,43 +1834,6 @@ describe('BUG-5: Message objects must include id field', () => {
     const msg2: Message = { id: nextMsgId(), role: 'system', content: 'b', timestamp: Date.now() };
 
     expect(msg1.id).not.toBe(msg2.id);
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
-// BUG-7 (P2): Reclassify must clear stale God auto-decision state
-// ══════════════════════════════════════════════════════════════
-
-describe('BUG-7: Reclassify clears stale God decision', () => {
-  test('test_bug_7_handleReclassifySelect_clears_god_banner_state', () => {
-    // Simulate the state management that handleReclassifySelect performs.
-    // Before the fix, godDecision and showGodBanner were not cleared,
-    // causing a stale banner to appear after reclassification.
-    let showGodBanner = true;
-    let godDecision: any = { action: 'continue', reasoning: 'stale', confidenceScore: 0.8 };
-    let showReclassify = true;
-
-    // Simulate handleReclassifySelect (the fixed version)
-    showReclassify = false;
-    godDecision = null;       // BUG-7 fix
-    showGodBanner = false;    // BUG-7 fix
-
-    expect(showReclassify).toBe(false);
-    expect(godDecision).toBeNull();
-    expect(showGodBanner).toBe(false);
-  });
-
-  test('test_bug_7_rendering_priority_does_not_show_stale_banner_after_reclassify', () => {
-    // Simulate the rendering priority chain from App.tsx:
-    // showReclassify → showPhaseTransition → showGodBanner → MainLayout
-    // After reclassification completes, all overlay flags should be false.
-    const showReclassify = false;  // reclassify done
-    const showPhaseTransition = false;
-    const showGodBanner = false;   // BUG-7 fix clears this
-
-    // The GodDecisionBanner should NOT render
-    const wouldShowGodBanner = !showReclassify && !showPhaseTransition && showGodBanner;
-    expect(wouldShowGodBanner).toBe(false);
   });
 });
 

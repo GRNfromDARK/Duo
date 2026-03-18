@@ -40,13 +40,12 @@ import { initializeTask } from '../../god/task-init.js';
 import { buildGodSystemPrompt } from '../../god/god-system-prompt.js';
 import { GodAuditLogger, logEnvelopeDecision } from '../../god/god-audit.js';
 import { withRetry, isPaused } from '../god-fallback.js';
-import type { GodTaskAnalysis, GodAutoDecision } from '../../types/god-schemas.js';
+import type { GodTaskAnalysis } from '../../types/god-schemas.js';
 import type { GodDecisionEnvelope } from '../../types/god-envelope.js';
 import { TaskAnalysisCard } from './TaskAnalysisCard.js';
 import type { ConvergenceLogEntry } from '../../god/god-convergence.js';
 import { generateCoderPrompt, generateReviewerPrompt, extractBlockingIssues } from '../../god/god-prompt-generator.js';
 import type { PromptContext } from '../../god/god-prompt-generator.js';
-import { GodDecisionBanner } from './GodDecisionBanner.js';
 import { ReclassifyOverlay } from './ReclassifyOverlay.js';
 import { PhaseTransitionBanner } from './PhaseTransitionBanner.js';
 import { CompletionScreen } from './CompletionScreen.js';
@@ -334,14 +333,6 @@ function SessionRunner({
 
   // ── BUG-21 fix: reclassify trigger to re-run GOD_DECIDING auto-decision ──
   const [reclassifyTrigger, setReclassifyTrigger] = useState(0);
-
-  // ── God auto-decision state ──
-  // Currently unused since ESCAPE_WINDOW_MS=0 (instant execution bypasses the banner).
-  // Kept for future re-enablement of the escape window.
-  const [godDecision, setGodDecision] = useState<GodAutoDecision | null>(null);
-  const [showGodBanner, setShowGodBanner] = useState(false);
-  // Stores the pending envelope when GodDecisionBanner escape window is active
-  const pendingEnvelopeRef = useRef<GodDecisionEnvelope | null>(null);
 
   // ── Reclassify overlay state (Ctrl+R) — Card C.3 ──
   const [showReclassify, setShowReclassify] = useState(false);
@@ -1107,9 +1098,6 @@ function SessionRunner({
 
     if (showPhaseTransition) return;
 
-    setGodDecision(null);
-    setShowGodBanner(false);
-
     const manualWaitingMsg = 'Waiting for your decision. Type [c] to continue, [a] to accept, or enter new instructions.';
 
     if (!watchdogRef.current.isGodAvailable()) {
@@ -1233,10 +1221,6 @@ function SessionRunner({
           });
         }
 
-        // GodDecisionBanner is configured for instant execution (ESCAPE_WINDOW_MS=0),
-        // so we send DECISION_READY directly without routing through the visual banner.
-        // To re-enable the escape window, set ESCAPE_WINDOW_MS > 0 in god-decision-banner.ts
-        // and route through setShowGodBanner(true) + pendingEnvelopeRef here.
         send({ type: 'DECISION_READY', envelope });
       } catch (err) {
         clearTimeout(timeoutId);
@@ -1647,35 +1631,6 @@ function SessionRunner({
     addTimelineEvent('task_start', 'TaskAnalysisCard auto-confirmed (timeout)');
   }, [addTimelineEvent]);
 
-  // ── GodDecisionBanner handlers ──
-  // Currently unused: ESCAPE_WINDOW_MS=0 means decisions execute instantly
-  // without routing through the visual banner. Kept for future re-enablement
-  // of the escape window (set ESCAPE_WINDOW_MS > 0 in god-decision-banner.ts).
-  const handleGodDecisionExecute = useCallback(() => {
-    if (!godDecision) return;
-    setShowGodBanner(false);
-
-    const envelope = pendingEnvelopeRef.current;
-    if (envelope) {
-      pendingEnvelopeRef.current = null;
-      addTimelineEvent('task_start', `God decision executed: ${godDecision.action}`);
-      send({ type: 'DECISION_READY', envelope });
-    }
-  }, [godDecision, send, addTimelineEvent]);
-
-  const handleGodDecisionCancel = useCallback(() => {
-    setShowGodBanner(false);
-    setGodDecision(null);
-    pendingEnvelopeRef.current = null;
-    addMessage({
-      role: 'system',
-      content: 'God auto-decision cancelled. Waiting for your decision. Type [c] to continue, [a] to accept, or enter new instructions.',
-      timestamp: Date.now(),
-    });
-    addTimelineEvent('task_start', 'God auto-decision: cancelled by user');
-    send({ type: 'MANUAL_FALLBACK_REQUIRED' } as any);
-  }, [send, addMessage, addTimelineEvent]);
-
   // ── Ctrl+R reclassify handler — Card C.3 (AC-010) ──
   const handleReclassify = useCallback(() => {
     if (!canTriggerReclassify(stateValue)) return;
@@ -1704,10 +1659,6 @@ function SessionRunner({
   const handleReclassifySelect = useCallback(
     (newType: string) => {
       setShowReclassify(false);
-
-      // BUG-7 fix: Clear any stale God auto-decision from before reclassification
-      setGodDecision(null);
-      setShowGodBanner(false);
 
       if (!taskAnalysis) return;
 
@@ -1869,18 +1820,6 @@ function SessionRunner({
           previousPhaseSummary={pendingPhaseTransition.previousPhaseSummary}
           onConfirm={handlePhaseTransitionConfirm}
           onCancel={handlePhaseTransitionCancel}
-        />
-      </Box>
-    );
-  }
-
-  if (showGodBanner && godDecision && stateValue === 'GOD_DECIDING') {
-    return (
-      <Box flexDirection="column" width={columns} height={rows}>
-        <GodDecisionBanner
-          decision={godDecision}
-          onExecute={handleGodDecisionExecute}
-          onCancel={handleGodDecisionCancel}
         />
       </Box>
     );

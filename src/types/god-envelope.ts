@@ -4,9 +4,9 @@
  *         FR-004 (God Decision Envelope), FR-016 (State Changes Must Be Action-Backed)
  * Card: A.2
  *
- * This single Envelope replaces the 5 legacy schemas (GodTaskAnalysis /
- * GodPostCoderDecision / GodPostReviewerDecision / GodConvergenceJudgment /
- * GodAutoDecision). Those schemas are retained as deprecated in god-schemas.ts.
+ * This single Envelope replaces the legacy schemas (GodTaskAnalysis /
+ * GodPostCoderDecision / GodPostReviewerDecision / GodConvergenceJudgment).
+ * Those schemas are retained as deprecated in god-schemas.ts.
  */
 
 import { z } from 'zod';
