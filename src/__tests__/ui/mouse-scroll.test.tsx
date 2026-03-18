@@ -275,12 +275,12 @@ describe('enterAlternateScreen()', () => {
     enterAlternateScreen = mod.enterAlternateScreen;
   });
 
-  it('writes alternate screen and alternate scroll enable escapes on enter', () => {
+  it('writes alternate screen and capture-wheel enable escapes on enter', () => {
     const writes: string[] = [];
     const fakeStdout = { write: (s: string) => { writes.push(s); } };
 
     const cleanup = enterAlternateScreen(fakeStdout);
-    expect(writes).toEqual(['\x1b[?1049h', '\x1b[?1007h']);
+    expect(writes).toEqual(['\x1b[?1049h', '\x1b[?1000h', '\x1b[?1006h']);
 
     cleanup(); // prevent leaking signal handlers
   });
@@ -316,5 +316,16 @@ describe('enterAlternateScreen()', () => {
     expect(writes.filter((w) => w === '\x1b[?1000l')).toHaveLength(1);
     expect(writes.filter((w) => w === '\x1b[?1006l')).toHaveLength(1);
     expect(writes.filter((w) => w === '\x1b[?1049l')).toHaveLength(1);
+  });
+
+  it('never enables alternate scroll mode', () => {
+    const writes: string[] = [];
+    const fakeStdout = { write: (s: string) => { writes.push(s); } };
+
+    const cleanup = enterAlternateScreen(fakeStdout);
+    expect(writes).toEqual(['\x1b[?1049h', '\x1b[?1000h', '\x1b[?1006h']);
+    expect(writes.includes('\x1b[?1007h')).toBe(false);
+
+    cleanup();
   });
 });

@@ -55,7 +55,6 @@ interface I18nStrings {
   autoStart: (s: number) => string;
   task: string;
   confidence: string;
-  rounds: string;
   criteria: string;
   recommended: string;
   hints: (n: number) => string;
@@ -69,7 +68,6 @@ const EN: I18nStrings = {
   autoStart: (s) => `auto-start: ${s}s`,
   task: 'Task  ',
   confidence: 'Confidence',
-  rounds: 'Rounds',
   criteria: 'Criteria',
   recommended: '★ recommended',
   hints: (n) => `[↑↓] select  [Enter] confirm  [Space] use recommended  [1-${n}] quick select`,
@@ -83,7 +81,6 @@ const ZH: I18nStrings = {
   autoStart: (s) => `自动开始: ${s}s`,
   task: '任务  ',
   confidence: '置信度',
-  rounds: '轮次',
   criteria: '完成条件',
   recommended: '★ 推荐',
   hints: (n) => `[↑↓] 选择  [Enter] 确认  [Space] 使用推荐  [1-${n}] 快速选择`,
@@ -182,13 +179,9 @@ export function TaskAnalysisCard({
         })}
       </Box>
 
-      {/* Confidence + Rounds + criteria */}
+      {/* Confidence */}
       <Box marginTop={1}>
         <Text dimColor>{t.confidence}: {Math.round(analysis.confidence * 100)}%</Text>
-        <Text dimColor>  {t.rounds}: {analysis.suggestedMaxRounds}</Text>
-        {analysis.terminationCriteria.length > 0 && (
-          <Text dimColor>  {t.criteria}: {analysis.terminationCriteria.join(', ')}</Text>
-        )}
       </Box>
 
       {/* Keyboard hints */}

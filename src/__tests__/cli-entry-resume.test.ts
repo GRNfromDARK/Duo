@@ -6,6 +6,11 @@ const renderMock = vi.fn(() => ({
 }));
 const handleResumeMock = vi.fn();
 const detectInstalledCLIsMock = vi.fn();
+const enterAlternateScreenMock = vi.fn(() => vi.fn());
+const createTerminalInputMock = vi.fn(() => ({
+  stdin: process.stdin,
+  cleanup: vi.fn(),
+}));
 
 vi.mock('ink', () => ({
   render: renderMock,
@@ -18,6 +23,14 @@ vi.mock('../cli-commands.js', () => ({
 
 vi.mock('../adapters/detect.js', () => ({
   detectInstalledCLIs: detectInstalledCLIsMock,
+}));
+
+vi.mock('../ui/alternate-screen.js', () => ({
+  enterAlternateScreen: enterAlternateScreenMock,
+}));
+
+vi.mock('../ui/mouse-input.js', () => ({
+  createTerminalInput: createTerminalInputMock,
 }));
 
 vi.mock('../ui/components/App.js', () => ({
@@ -63,7 +76,6 @@ describe('cli resume entry', () => {
         updatedAt: 2,
       },
       state: {
-        round: 1,
         status: 'reviewing',
         currentRole: 'reviewer',
       },
@@ -123,7 +135,6 @@ describe('cli resume entry', () => {
         updatedAt: 2,
       },
       state: {
-        round: 1,
         status: 'reviewing',
         currentRole: 'reviewer',
       },

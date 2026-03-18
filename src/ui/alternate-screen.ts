@@ -2,10 +2,8 @@
  * Alternate screen buffer management.
  *
  * Entering the alternate screen buffer (\x1b[?1049h) provides a clean
- * full-screen canvas for the TUI. While in the alternate screen we also
- * enable alternate scroll mode (\x1b[?1007h), which lets terminals turn
- * mouse-wheel gestures into ordinary up/down cursor key input. This preserves
- * native text selection while keeping wheel scrolling available.
+ * full-screen canvas for the TUI. Duo always enables SGR mouse reporting
+ * (\x1b[?1000h + \x1b[?1006h) and normalizes wheel input in the stdin proxy.
  *
  * Signal handlers use the standard Unix re-raise pattern:
  *   1. Run cleanup (leave alternate screen)
@@ -16,7 +14,8 @@ export function enterAlternateScreen(
   stdout: { write: (s: string) => unknown } = process.stdout,
 ): () => void {
   stdout.write('\x1b[?1049h');
-  stdout.write('\x1b[?1007h');
+  stdout.write('\x1b[?1000h');
+  stdout.write('\x1b[?1006h');
 
   let cleaned = false;
   const cleanup = () => {

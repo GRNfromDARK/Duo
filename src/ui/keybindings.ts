@@ -7,7 +7,7 @@
  */
 import type { Key } from 'ink';
 
-export type OverlayType = 'help' | 'context' | 'timeline' | 'search' | 'god';
+export type OverlayType = 'help' | 'context' | 'timeline' | 'search';
 
 export type KeyAction =
   | { type: 'scroll_up'; amount: number }
@@ -64,10 +64,6 @@ export function processKeybinding(
           : { type: 'open_overlay', overlay: 'timeline' };
       case 'l':
         return { type: 'clear_screen' };
-      case 'g':
-        return ctx.overlayOpen === 'god'
-          ? { type: 'close_overlay' }
-          : { type: 'open_overlay', overlay: 'god' };
       case 'r':
         return { type: 'reclassify' };
     }
@@ -104,7 +100,7 @@ export function processKeybinding(
   }
 
   // Arrow/Page scroll — always active (not in overlay).
-  // Arrow keys double as mouse wheel input via alternate scroll mode (§1007).
+  // Mouse wheel is normalized into up/down arrows by the terminal backend.
   // InputArea already ignores upArrow/downArrow, so no conflict.
   if (!ctx.overlayOpen) {
     if (key.downArrow) {
@@ -148,10 +144,10 @@ export const KEYBINDING_LIST: KeybindingEntry[] = [
   { shortcut: 'Ctrl+I', description: 'Context summary overlay' },
   { shortcut: 'Ctrl+V', description: 'Toggle Minimal/Verbose mode' },
   { shortcut: 'Ctrl+T', description: 'Event timeline overlay' },
-  { shortcut: 'Ctrl+G', description: 'God control panel overlay' },
   { shortcut: 'Ctrl+R', description: 'Reclassify task type' },
   { shortcut: 'Ctrl+L', description: 'Clear screen (preserve history)' },
   { shortcut: 'j/k or ↑/↓ or wheel', description: 'Scroll messages' },
+  { shortcut: 'Shift+drag', description: 'Select/copy text' },
   { shortcut: 'G', description: 'Jump to latest message' },
   { shortcut: 'Enter', description: 'Expand/collapse code block' },
   { shortcut: 'Tab', description: 'Path autocomplete' },

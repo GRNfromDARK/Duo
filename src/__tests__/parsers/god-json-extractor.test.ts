@@ -3,9 +3,6 @@ import { z } from 'zod';
 import { extractGodJson, extractWithRetry } from '../../parsers/god-json-extractor.js';
 import {
   GodTaskAnalysisSchema,
-  GodPostCoderDecisionSchema,
-  GodPostReviewerDecisionSchema,
-  GodConvergenceJudgmentSchema,
 } from '../../types/god-schemas.js';
 
 // ── Valid mock data ──────────────────────────────────────────────
@@ -14,29 +11,6 @@ const validTaskAnalysis = {
   taskType: 'code',
   reasoning: 'User wants to implement a feature',
   confidence: 0.85,
-  suggestedMaxRounds: 5,
-  terminationCriteria: ['All tests pass', 'No linting errors'],
-};
-
-const validPostCoderDecision = {
-  action: 'continue_to_review',
-  reasoning: 'Coder completed the implementation',
-};
-
-const validPostReviewerDecision = {
-  action: 'converged',
-  reasoning: 'All issues resolved',
-  confidenceScore: 0.95,
-  progressTrend: 'improving',
-};
-
-const validConvergenceJudgment = {
-  classification: 'approved',
-  shouldTerminate: true,
-  reason: null,
-  blockingIssueCount: 0,
-  criteriaProgress: [{ criterion: 'Tests pass', satisfied: true }],
-  reviewerVerdict: 'All good',
 };
 
 // ── Helper ───────────────────────────────────────────────────────
@@ -61,7 +35,7 @@ describe('extractGodJson', () => {
   });
 
   it('extracts the LAST JSON block when multiple are present', () => {
-    const first = { taskType: 'explore', reasoning: 'wrong', confidence: 0.5, suggestedMaxRounds: 2, terminationCriteria: [] };
+    const first = { taskType: 'explore', reasoning: 'wrong', confidence: 0.5 };
     const last = validTaskAnalysis;
     const output = `Here is attempt 1:\n\`\`\`json\n${JSON.stringify(first)}\n\`\`\`\nRevised:\n\`\`\`json\n${JSON.stringify(last)}\n\`\`\`\nDone.`;
     const result = extractGodJson(output, GodTaskAnalysisSchema);
@@ -166,49 +140,6 @@ describe('Zod schemas', () => {
 
   it('GodTaskAnalysisSchema rejects invalid taskType', () => {
     const result = GodTaskAnalysisSchema.safeParse({ ...validTaskAnalysis, taskType: 'unknown' });
-    expect(result.success).toBe(false);
-  });
-
-  it('GodPostCoderDecisionSchema validates correct data', () => {
-    const result = GodPostCoderDecisionSchema.safeParse(validPostCoderDecision);
-    expect(result.success).toBe(true);
-  });
-
-  it('GodPostCoderDecisionSchema validates retry_coder with retryHint', () => {
-    const data = { action: 'retry_coder', reasoning: 'Failed', retryHint: 'Try again with X' };
-    const result = GodPostCoderDecisionSchema.safeParse(data);
-    expect(result.success).toBe(true);
-  });
-
-  it('GodPostCoderDecisionSchema rejects invalid action', () => {
-    const result = GodPostCoderDecisionSchema.safeParse({ action: 'invalid', reasoning: 'test' });
-    expect(result.success).toBe(false);
-  });
-
-  it('GodPostReviewerDecisionSchema validates correct data', () => {
-    const result = GodPostReviewerDecisionSchema.safeParse(validPostReviewerDecision);
-    expect(result.success).toBe(true);
-  });
-
-  it('GodPostReviewerDecisionSchema validates with unresolvedIssues', () => {
-    const data = {
-      action: 'route_to_coder',
-      reasoning: 'Issues found',
-      unresolvedIssues: ['Fix bug #1'],
-      confidenceScore: 0.6,
-      progressTrend: 'stagnant',
-    };
-    const result = GodPostReviewerDecisionSchema.safeParse(data);
-    expect(result.success).toBe(true);
-  });
-
-  it('GodConvergenceJudgmentSchema validates correct data', () => {
-    const result = GodConvergenceJudgmentSchema.safeParse(validConvergenceJudgment);
-    expect(result.success).toBe(true);
-  });
-
-  it('GodConvergenceJudgmentSchema rejects missing required fields', () => {
-    const result = GodConvergenceJudgmentSchema.safeParse({ classification: 'approved' });
     expect(result.success).toBe(false);
   });
 

@@ -1,6 +1,6 @@
 # 工作流引擎 (Workflow Engine)
 
-> 源码：`src/engine/workflow-machine.ts`、`src/engine/interrupt-handler.ts`
+> 源码：`src/engine/workflow-machine.ts`
 >
 > 类型定义：`src/types/session.ts`、`src/types/god-actions.ts`、`src/types/god-envelope.ts`、`src/types/observation.ts`
 >
@@ -531,7 +531,7 @@ EXECUTING ─────────────────────> CLARI
 
 #### 保存流程
 
-`InterruptHandler.saveAndExit()` 在 double Ctrl+C 时调用 `sessionManager.saveState()`，保存以下数据：
+Double Ctrl+C 时内联中断处理逻辑（`App.tsx`）调用 `sessionManager.saveState()`，保存以下数据：
 
 ```ts
 {
@@ -562,221 +562,9 @@ EXECUTING ─────────────────────> CLARI
 
 ---
 
-## 2 中断处理器（interrupt-handler.ts）
+## 2 Observation 与 GodAction 类型参考
 
-> 规格引用：FR-007、FR-011
->
-> 变更卡片：Card E.1 (Interrupt → Observation 归一化)
-
-### 2.1 模块职责
-
-`InterruptHandler` 类管理三种用户中断场景：单次 Ctrl+C、双击 Ctrl+C 退出、文本中断。
-
-**Card E.1 关键变更**：InterruptHandler 不再直接向 state machine actor 发送事件（如 `USER_INTERRUPT`、`USER_INPUT`）。所有中断和用户输入均通过 **observation pipeline**（`onObservation` 回调）路由。pipeline 负责将 observation 转化为 `INCIDENT_DETECTED` 或 `OBSERVATIONS_READY` 事件发送给 actor。
-
-### 2.2 InterruptedInfo 接口
-
-```ts
-interface InterruptedInfo {
-  bufferedOutput: string;       // 中断前 LLM 已产出的部分输出
-  interrupted: true;            // 固定标记
-  userInstruction?: string;     // 文本中断时用户输入的指令（可选）
-}
-```
-
-### 2.3 依赖接口（InterruptHandlerDeps）
-
-```ts
-interface InterruptHandlerDeps {
-  processManager: {
-    kill(): Promise<void>;        // 终止当前 LLM 进程
-    isRunning(): boolean;         // 进程是否在运行
-    getBufferedOutput(): string;  // 获取已缓冲的输出
-  };
-  sessionManager: {
-    saveState(sessionId: string, state: Record<string, unknown>): void;
-  };
-  /** Card E.1: 只读状态访问器 — InterruptHandler 不得直接发送事件给 actor */
-  actor: {
-    send(event: Record<string, unknown>): void;
-    getSnapshot(): {
-      value: string;
-      context: {
-        sessionId: string | null;
-        round: number;
-        activeProcess: string | null;
-      };
-    };
-  };
-  onExit: () => void;
-  onInterrupted: (info: InterruptedInfo) => void;
-  /** Card E.1: 必需 — observation pipeline 回调，用于将 observation 路由给 God */
-  onObservation: (obs: Observation) => void;
-}
-```
-
-> **注意**：虽然 `actor.send()` 存在于接口中，但 Card E.1 之后 InterruptHandler 内部不再调用它。所有 observation 通过 `onObservation` 回调路由。
-
-### 2.4 三种中断模式
-
-| 模式 | 触发方式 | 行为 |
-|------|----------|------|
-| **Single Ctrl+C** | 按一次 Ctrl+C | 终止 LLM 进程 → 保留缓冲输出 → 通过 `onObservation` 发出 `human_interrupt` observation → 由 pipeline 触发 `INCIDENT_DETECTED` |
-| **Double Ctrl+C** | 500ms 内按两次 Ctrl+C | 保存 session → 退出应用（**唯一绕过 God 的路径**） |
-| **Text Interrupt** | LLM 运行时用户键入文本并回车 | 终止进程 → 通过 `onObservation` 发出 `human_message` observation → 由 pipeline 触发 `INCIDENT_DETECTED` |
-
-### 2.5 单次 Ctrl+C 流程
-
-```
-用户按下 Ctrl+C
-       |
-       v
-  handleSigint()
-       |
-       +-- 检查 disposed → 是则直接返回
-       |
-       +-- 记录时间戳 lastSigintTime = Date.now()
-       |
-       +-- 双击检测：hasPendingSigint && timeSinceLast <= 500ms?
-       |   +-- 是 → saveAndExit()（见 2.6）
-       |
-       +-- hasPendingSigint = true
-       |
-       v
-  interruptCurrentProcess()  [private]
-       |
-       +-- 获取 actor snapshot
-       |
-       +-- 检查当前状态是否为 ACTIVE_STATES（CODING / REVIEWING）
-       |   +-- 不是 → 直接返回，忽略此次 Ctrl+C
-       |
-       +-- getBufferedOutput()：获取 LLM 已产出的部分输出
-       |
-       +-- 如果 isRunning() 为 true → kill() 终止进程
-       |   +-- catch：进程可能已退出，静默处理
-       |
-       +-- onObservation(createInterruptObservation(round))
-       |   Card E.1: 通过 observation pipeline 路由
-       |
-       +-- onInterrupted({ bufferedOutput, interrupted: true })
-```
-
-**关键点**：只在 `CODING` 或 `REVIEWING` 状态下生效，其他状态下的 Ctrl+C 被静默忽略。
-
-### 2.6 双击 Ctrl+C 流程（<500ms）
-
-```
-第一次 Ctrl+C
-       |
-       v
-  handleSigint()
-       +-- lastSigintTime = now, hasPendingSigint = true
-       +-- interruptCurrentProcess()（正常中断流程）
-
-第二次 Ctrl+C（间隔 <= 500ms）
-       |
-       v
-  handleSigint()
-       |
-       +-- timeSinceLast = now - lastSigintTime <= 500ms
-       +-- hasPendingSigint = true → 判定为双击
-       +-- hasPendingSigint = false（重置）
-       |
-       v
-  saveAndExit()  [private]
-       |
-       +-- 获取 actor snapshot
-       |
-       +-- 如果有 sessionId：
-       |   +-- sessionManager.saveState(sessionId, {
-       |        round,
-       |        status: 'interrupted',
-       |        currentRole: activeProcess ?? 'coder'
-       |      })
-       |   +-- catch：best-effort，保存失败也继续退出
-       |
-       +-- onExit()（退出应用）
-```
-
-**阈值常量**：`DOUBLE_CTRLC_THRESHOLD_MS = 500`
-
-> **重要**：Double Ctrl+C 是唯一绕过 God 决策循环的退出路径。其他所有中断和退出都必须经过 God 评估。
-
-### 2.7 文本中断流程
-
-```
-用户在 LLM 运行期间输入文本并回车
-       |
-       v
-  handleTextInterrupt(text, resumeAs)
-       |
-       +-- 检查 disposed → 是则直接返回
-       |
-       +-- isRunning() 为 false → 直接返回
-       +-- 当前状态不在 ACTIVE_STATES → 直接返回
-       |
-       +-- getBufferedOutput()：获取已缓冲输出
-       |
-       +-- kill()：终止 LLM 进程
-       |   +-- catch：进程可能已退出，静默处理
-       |
-       +-- onObservation(createTextInterruptObservation(text, round))
-       |   Card E.1: 通过 observation pipeline 路由
-       |
-       +-- onInterrupted({
-             bufferedOutput,
-             interrupted: true,
-             userInstruction: text
-           })
-```
-
-### 2.8 用户输入处理（handleUserInput）
-
-Card E.1 之后，`handleUserInput` 不再向 actor 发送 `USER_INPUT` 事件，而是通过 observation pipeline 发出 `clarification_answer` 类型的 observation：
-
-```ts
-handleUserInput(input, resumeAs) {
-  onObservation(createObservation('clarification_answer', 'human', input, {
-    round: snapshot.context.round,
-    severity: 'info',
-    rawRef: input,
-  }));
-}
-```
-
-这个 observation 会通过 pipeline 路由给 God，由 God 决定后续动作。`resumeAs` 参数不再被使用（保留签名以兼容调用方）。
-
-### 2.9 Buffer 保留机制
-
-无论哪种中断方式，都会在 kill 进程**之前**调用 `getBufferedOutput()` 获取 LLM 已经产出的部分输出。这些输出通过 `InterruptedInfo.bufferedOutput` 传递给上层，确保：
-
-- 用户可以看到中断前的部分结果
-- 恢复时可以利用已有输出作为上下文，避免完全重做
-
-### 2.10 内部状态
-
-| 字段 | 类型 | 初始值 | 说明 |
-|------|------|--------|------|
-| `lastSigintTime` | `number` | `0` | 上次 SIGINT 的时间戳（ms） |
-| `hasPendingSigint` | `boolean` | `false` | 是否有未决的单次 Ctrl+C |
-| `disposed` | `boolean` | `false` | 是否已销毁，调用 `dispose()` 后设为 true，所有后续方法调用直接返回 |
-
-### 2.11 方法总览
-
-| 方法 | 可见性 | 签名 | 说明 |
-|------|--------|------|------|
-| `handleSigint` | public | `() => Promise<void>` | 处理 SIGINT 信号。首次中断进程；500ms 内再按则保存并退出 |
-| `handleTextInterrupt` | public | `(text: string, resumeAs: 'coder' \| 'reviewer') => Promise<void>` | 处理文本中断，仅在 ACTIVE_STATES 且进程运行中时生效 |
-| `handleUserInput` | public | `(input: string, resumeAs: 'coder' \| 'reviewer' \| 'decision') => void` | Card E.1：通过 observation pipeline 发出 `clarification_answer` observation |
-| `dispose` | public | `() => void` | 标记 handler 为已销毁，后续调用全部跳过 |
-| `interruptCurrentProcess` | private | `() => Promise<void>` | 检查状态、终止进程、发出 interrupt observation |
-| `saveAndExit` | private | `() => void` | 保存 session 状态并调用 onExit() 退出 |
-
----
-
-## 3 Observation 与 GodAction 类型参考
-
-### 3.1 Observation 类型体系
+### 2.1 Observation 类型体系
 
 **定义文件**：`src/types/observation.ts`
 
@@ -816,7 +604,7 @@ handleUserInput(input, resumeAs) {
 
 **类型守卫**：`isWorkObservation(obs)` — 仅 `work_output` 和 `review_output` 返回 true。
 
-### 3.2 GodAction 类型（11 种）
+### 2.2 GodAction 类型（11 种）
 
 **定义文件**：`src/types/god-actions.ts`
 
@@ -838,11 +626,11 @@ handleUserInput(input, resumeAs) {
 
 > **路由 vs 非路由**：前 6 种 action 是**路由 action**（会改变状态机的下一个目标状态），后 5 种是**非路由 action**（执行后回到 GOD_DECIDING 重新评估）。`detectRoutingConflicts()` 正是检测一个 envelope 中是否包含多个路由 action。
 
-### 3.3 GodDecisionEnvelope 结构
+### 2.3 GodDecisionEnvelope 结构
 
 **定义文件**：`src/types/god-envelope.ts`
 
-GodDecisionEnvelope 是 God 决策的统一信封格式，替代了 5 种遗留 schema（`GodTaskAnalysis` / `GodPostCoderDecision` / `GodPostReviewerDecision` / `GodConvergenceJudgment` / `GodAutoDecision`）。
+GodDecisionEnvelope 是 God 决策的统一信封格式，替代了多种遗留 schema（`GodTaskAnalysis` / `GodPostCoderDecision` / `GodPostReviewerDecision` / `GodConvergenceJudgment` 等）。
 
 ```ts
 {
@@ -896,7 +684,7 @@ GodDecisionEnvelope 是 God 决策的统一信封格式，替代了 5 种遗留 
 
 ---
 
-## 4 Session 类型参考
+## 3 Session 类型参考
 
 **定义文件**：`src/types/session.ts`
 
@@ -959,5 +747,5 @@ interface StartResult {
 | BUG-22 | EXECUTING default transition | 当 execution 产生空 results 时保留现有 `currentObservations`，避免 observation 丢失导致的死循环 |
 | BUG-24 | `autonomousResolutions` 字段 | God 代理决策的结构化记录（question → choice → reflection → finalChoice） |
 | Card D.1 | 整体重构 | 引入 Observe → Decide → Act 循环，新增 OBSERVING / GOD_DECIDING / EXECUTING 状态 |
-| Card E.1 | InterruptHandler 重构 | 中断不再直接发送事件给 actor，统一走 observation pipeline |
+| Card E.1 | 中断处理重构 | 中断不再直接发送事件给 actor，统一走 observation pipeline（中断逻辑已内联到 App.tsx） |
 | Card E.2 | CLARIFYING 状态 | God 调解的多轮人机澄清，替代简单的 INTERRUPTED 模式 |

@@ -25,14 +25,12 @@ import {
   type WorkflowContext,
 } from '../../engine/workflow-machine.js';
 import type { CLIAdapter, ExecOptions, OutputChunk } from '../../types/adapter.js';
-import type { GodTaskAnalysis, GodPostReviewerDecision } from '../../types/god-schemas.js';
+import type { GodTaskAnalysis } from '../../types/god-schemas.js';
 import type { Observation } from '../../types/observation.js';
 import type { GodDecisionEnvelope } from '../../types/god-envelope.js';
 import { initializeTask } from '../../god/task-init.js';
-import { type ConvergenceLogEntry } from '../../god/god-convergence.js';
 import { withRetry, isPaused } from '../../ui/god-fallback.js';
 import { WatchdogService } from '../../god/watchdog.js';
-import { evaluatePhaseTransition, type Phase } from '../../god/phase-transition.js';
 import { restoreGodSession } from '../../god/god-session-persistence.js';
 import type { SessionState } from '../../session/session-manager.js';
 import * as godAudit from '../../god/god-audit.js';
@@ -63,7 +61,7 @@ afterEach(() => {
 
 /** Create a test Observation. */
 function makeObs(type: Observation['type'] = 'work_output', source: Observation['source'] = 'coder'): Observation {
-  return { source, type, summary: `test ${type}`, severity: 'info', timestamp: new Date().toISOString(), round: 0 };
+  return { source, type, summary: `test ${type}`, severity: 'info', timestamp: new Date().toISOString()};
 }
 
 /** Create a test GodDecisionEnvelope. */
@@ -186,18 +184,14 @@ describe('Scenario 1: Normal God workflow path (AC-1)', () => {
       taskType: 'code',
       reasoning: 'User wants login feature — coding task.',
       confidence: 0.9,
-      suggestedMaxRounds: 5,
-      terminationCriteria: ['Login form renders', 'Auth works', 'Tests pass'],
     } satisfies GodTaskAnalysis);
 
     const taskResult = await initializeTask(godAdapter, 'implement user login', 'You are God.', tmpDir);
     expect(taskResult).not.toBeNull();
     expect(taskResult!.analysis.taskType).toBe('code');
-    expect(taskResult!.analysis.suggestedMaxRounds).toBe(5);
 
-    actor.send({ type: 'TASK_INIT_COMPLETE', maxRounds: taskResult!.analysis.suggestedMaxRounds });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
     expect(actor.getSnapshot().value).toBe('CODING');
-    expect(actor.getSnapshot().context.maxRounds).toBe(5);
 
     // ── Step 2: Coder produces output → OBSERVING (not ROUTING_POST_CODE) ──
     actor.send({ type: 'CODE_COMPLETE', output: 'function login() { /* auth logic */ }' });
@@ -233,7 +227,6 @@ describe('Scenario 1: Normal God workflow path (AC-1)', () => {
     // EXECUTION_COMPLETE routes to CODING (round increments)
     actor.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
     expect(actor.getSnapshot().value).toBe('CODING');
-    expect(actor.getSnapshot().context.round).toBe(1);
 
     // ── Step 4: Round 2 — Coder fixes → Reviewer approves → DONE ──
     actor.send({ type: 'CODE_COMPLETE', output: 'function login() { validateInput(); /* auth */ }' });
@@ -404,153 +397,8 @@ describe('Scenario 2: God degradation path (AC-2)', () => {
   });
 });
 
-// ═══════════════════════════════════════════════════════════════════
-// Scenario 4: Compound task with phase transition
-// ═══════════════════════════════════════════════════════════════════
-
-describe('Scenario 4: Compound phase transition (AC-4)', () => {
-  const phases: Phase[] = [
-    { id: 'explore', name: 'Exploration', type: 'explore', description: 'Explore the codebase' },
-    { id: 'code', name: 'Implementation', type: 'code', description: 'Implement the feature' },
-    { id: 'review-final', name: 'Final Review', type: 'review', description: 'Final review' },
-  ];
-
-  it('TASK_INIT compound → phase transition via set_phase action → new phase CODING', async () => {
-    const actor = startActor();
-    actor.send({ type: 'START_TASK', prompt: 'compound task' });
-
-    // God identifies compound task
-    const taskAdapter = createMockAdapter({
-      taskType: 'compound',
-      reasoning: 'Multi-phase task: explore then code.',
-      confidence: 0.85,
-      suggestedMaxRounds: 10,
-      terminationCriteria: ['Exploration complete', 'Feature implemented'],
-      phases: phases.map(p => ({ id: p.id, name: p.name, type: p.type, description: p.description })),
-    } satisfies GodTaskAnalysis);
-
-    const taskResult = await initializeTask(taskAdapter, 'compound task', 'sys', tmpDir);
-    expect(taskResult).not.toBeNull();
-    expect(taskResult!.analysis.taskType).toBe('compound');
-    expect(taskResult!.analysis.phases).toHaveLength(3);
-
-    actor.send({ type: 'TASK_INIT_COMPLETE', maxRounds: 10 });
-    expect(actor.getSnapshot().value).toBe('CODING');
-
-    // ── Phase 1: explore ──
-    actor.send({ type: 'CODE_COMPLETE', output: 'explored codebase' });
-    expect(actor.getSnapshot().value).toBe('OBSERVING');
-
-    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('work_output', 'coder')] });
-    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
-
-    // God decides: send to reviewer
-    const envelopeToReview = makeEnvelope([{ type: 'send_to_reviewer', message: 'Review exploration' }]);
-    actor.send({ type: 'DECISION_READY', envelope: envelopeToReview });
-    expect(actor.getSnapshot().value).toBe('EXECUTING');
-
-    actor.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
-    expect(actor.getSnapshot().value).toBe('REVIEWING');
-
-    actor.send({ type: 'REVIEW_COMPLETE', output: 'exploration looks complete' });
-    expect(actor.getSnapshot().value).toBe('OBSERVING');
-
-    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('review_output', 'reviewer')] });
-    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
-
-    // Construct phase transition result directly (god-router module removed)
-    const postReviewResult = {
-      event: { type: 'PHASE_TRANSITION' as const },
-      decision: {
-        action: 'phase_transition' as const,
-        reasoning: 'Exploration complete, ready to implement.',
-        confidenceScore: 0.9,
-        progressTrend: 'improving' as const,
-        nextPhaseId: 'code',
-      } satisfies GodPostReviewerDecision,
-      rawOutput: '',
-    };
-
-    expect(postReviewResult.event.type).toBe('PHASE_TRANSITION');
-
-    // Evaluate phase transition via legacy module
-    const convergenceLog: ConvergenceLogEntry[] = [{
-      round: 0,
-      timestamp: new Date().toISOString(),
-      classification: 'approved',
-      shouldTerminate: false,
-      blockingIssueCount: 0,
-      criteriaProgress: [{ criterion: 'Exploration complete', satisfied: true }],
-      summary: 'Exploration phase complete',
-    }];
-
-    const currentPhase = phases[0];
-    const godDecision = postReviewResult.decision;
-
-    const transitionResult = evaluatePhaseTransition(currentPhase, phases, convergenceLog, godDecision);
-    expect(transitionResult.shouldTransition).toBe(true);
-    expect(transitionResult.nextPhaseId).toBe('code');
-    expect(transitionResult.previousPhaseSummary).toContain('explore');
-
-    // In Card D.1, phase transitions happen via set_phase action in the envelope.
-    // God produces DECISION_READY with set_phase + send_to_coder actions.
-    const envelopePhaseTransition = makeEnvelope([
-      { type: 'set_phase', phaseId: 'code', summary: 'Exploration complete, transitioning to implementation' },
-      { type: 'send_to_coder', message: 'Begin implementation phase' },
-    ]);
-
-    actor.send({ type: 'DECISION_READY', envelope: envelopePhaseTransition });
-    expect(actor.getSnapshot().value).toBe('EXECUTING');
-
-    // EXECUTION_COMPLETE routes to CODING (round increments since send_to_coder was in actions)
-    actor.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
-    expect(actor.getSnapshot().value).toBe('CODING');
-
-    actor.stop();
-  });
-
-  it('self-transition guard prevents hallucinated nextPhaseId', () => {
-    const convergenceLog: ConvergenceLogEntry[] = [];
-    const godDecision: GodPostReviewerDecision = {
-      action: 'phase_transition',
-      reasoning: 'Transition to same phase (hallucination).',
-      confidenceScore: 0.8,
-      progressTrend: 'improving',
-      nextPhaseId: 'explore', // same as current — hallucination
-    };
-
-    const result = evaluatePhaseTransition(phases[0], phases, convergenceLog, godDecision);
-    expect(result.shouldTransition).toBe(false);
-  });
-
-  it('sequential phase fallback when nextPhaseId not specified', () => {
-    const convergenceLog: ConvergenceLogEntry[] = [];
-    const godDecision: GodPostReviewerDecision = {
-      action: 'phase_transition',
-      reasoning: 'Done with current phase.',
-      confidenceScore: 0.8,
-      progressTrend: 'improving',
-      // no nextPhaseId — should use sequential next
-    };
-
-    const result = evaluatePhaseTransition(phases[0], phases, convergenceLog, godDecision);
-    expect(result.shouldTransition).toBe(true);
-    expect(result.nextPhaseId).toBe('code'); // sequential next after 'explore'
-  });
-
-  it('last phase cannot transition forward without explicit nextPhaseId', () => {
-    const convergenceLog: ConvergenceLogEntry[] = [];
-    const godDecision: GodPostReviewerDecision = {
-      action: 'phase_transition',
-      reasoning: 'Done.',
-      confidenceScore: 0.8,
-      progressTrend: 'improving',
-    };
-
-    const result = evaluatePhaseTransition(phases[2], phases, convergenceLog, godDecision);
-    expect(result.shouldTransition).toBe(false);
-  });
-});
+// Scenario 4 (Compound phase transition) removed — tested evaluatePhaseTransition
+// from the now-deleted phase-transition.ts module.
 
 // ═══════════════════════════════════════════════════════════════════
 // Scenario 5: duo resume — session restoration
@@ -559,7 +407,6 @@ describe('Scenario 4: Compound phase transition (AC-4)', () => {
 describe('Scenario 5: duo resume (AC-5)', () => {
   it('restoreGodSession returns null because God adapters are stateless', async () => {
     const state: SessionState = {
-      round: 3,
       status: 'CODING',
       currentRole: 'coder',
       godSessionId: 'god-session-abc',
@@ -574,7 +421,6 @@ describe('Scenario 5: duo resume (AC-5)', () => {
 
   it('restoreGodSession returns null when godSessionId missing (graceful degradation)', async () => {
     const state: SessionState = {
-      round: 3,
       status: 'CODING',
       currentRole: 'coder',
       // no godSessionId
@@ -586,7 +432,6 @@ describe('Scenario 5: duo resume (AC-5)', () => {
 
   it('restoreGodSession returns null when adapterFactory throws', async () => {
     const state: SessionState = {
-      round: 3,
       status: 'CODING',
       currentRole: 'coder',
       godSessionId: 'god-session-abc',
@@ -602,13 +447,10 @@ describe('Scenario 5: duo resume (AC-5)', () => {
       taskType: 'code',
       reasoning: 'Coding task.',
       confidence: 0.9,
-      suggestedMaxRounds: 5,
-      terminationCriteria: ['Tests pass'],
     };
 
     // Simulate save
     const state: SessionState = {
-      round: 2,
       status: 'CODING',
       currentRole: 'coder',
       godTaskAnalysis: taskAnalysis,
@@ -617,48 +459,16 @@ describe('Scenario 5: duo resume (AC-5)', () => {
     // Simulate restore
     expect(state.godTaskAnalysis).toEqual(taskAnalysis);
     expect(state.godTaskAnalysis!.taskType).toBe('code');
-    expect(state.godTaskAnalysis!.suggestedMaxRounds).toBe(5);
+    expect(state.godTaskAnalysis!.confidence).toBe(0.9);
   });
 
-  it('convergenceLog persisted and restored from SessionState', () => {
-    const convergenceLog: ConvergenceLogEntry[] = [
-      {
-        round: 0,
-        timestamp: '2026-03-12T00:00:00Z',
-        classification: 'changes_requested',
-        shouldTerminate: false,
-        blockingIssueCount: 2,
-        criteriaProgress: [{ criterion: 'Tests pass', satisfied: false }],
-        summary: 'Round 0: changes_requested, blocking=2',
-      },
-      {
-        round: 1,
-        timestamp: '2026-03-12T00:01:00Z',
-        classification: 'approved',
-        shouldTerminate: true,
-        blockingIssueCount: 0,
-        criteriaProgress: [{ criterion: 'Tests pass', satisfied: true }],
-        summary: 'Round 1: approved, blocking=0',
-      },
-    ];
-
-    const state: SessionState = {
-      round: 2,
-      status: 'god_deciding',
-      currentRole: 'coder',
-      godConvergenceLog: convergenceLog,
-    };
-
-    expect(state.godConvergenceLog).toHaveLength(2);
-    expect(state.godConvergenceLog![1].classification).toBe('approved');
-    expect(state.godConvergenceLog![1].shouldTerminate).toBe(true);
-  });
+  // convergenceLog test removed (round removal).
 
   it('full resume flow: RESUMING → CODING with restored God state', () => {
     // Step 1: Serialize workflow state using new event flow
-    const actor1 = startActor({ maxRounds: 5 });
+    const actor1 = startActor({});
     actor1.send({ type: 'START_TASK', prompt: 'original task' });
-    actor1.send({ type: 'TASK_INIT_COMPLETE', maxRounds: 5 });
+    actor1.send({ type: 'TASK_INIT_COMPLETE'});
     // CODING → OBSERVING → GOD_DECIDING → EXECUTING → REVIEWING
     actor1.send({ type: 'CODE_COMPLETE', output: 'v1' });
     actor1.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('work_output', 'coder')] });
@@ -674,7 +484,6 @@ describe('Scenario 5: duo resume (AC-5)', () => {
     actor1.send({ type: 'DECISION_READY', envelope: envelopeToCoder });
     actor1.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
     expect(actor1.getSnapshot().value).toBe('CODING');
-    expect(actor1.getSnapshot().context.round).toBe(1);
 
     const snapshot = actor1.getPersistedSnapshot();
     actor1.stop();
@@ -684,8 +493,6 @@ describe('Scenario 5: duo resume (AC-5)', () => {
     actor2.start();
 
     expect(actor2.getSnapshot().value).toBe('CODING');
-    expect(actor2.getSnapshot().context.round).toBe(1);
-    expect(actor2.getSnapshot().context.maxRounds).toBe(5);
     expect(actor2.getSnapshot().context.taskPrompt).toBe('original task');
 
     // Step 3: Continue workflow from restored state → DONE

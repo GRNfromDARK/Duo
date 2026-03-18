@@ -1,6 +1,6 @@
 /**
- * Tests for Card A.3: TASK_INIT + Task Classification + Dynamic Rounds + Audit Log
- * Source: FR-001 (AC-001, AC-002, AC-003), FR-002 (AC-008, AC-009), FR-007 (AC-023, AC-024)
+ * Tests for Card A.3: TASK_INIT + Task Classification + Audit Log
+ * Source: FR-001 (AC-001, AC-002, AC-003), FR-002 (AC-008, AC-009)
  */
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -55,9 +55,7 @@ describe('initializeTask', () => {
 {
   "taskType": "code",
   "reasoning": "User wants to implement a login feature, which is a coding task.",
-  "confidence": 0.85,
-  "suggestedMaxRounds": 5,
-  "terminationCriteria": ["Login form renders", "Auth logic works", "Tests pass"]
+  "confidence": 0.85
 }
 \`\`\``;
 
@@ -66,8 +64,7 @@ describe('initializeTask', () => {
 
     expect(result).not.toBeNull();
     expect(result!.analysis.taskType).toBe('code');
-    expect(result!.analysis.suggestedMaxRounds).toBe(5);
-    expect(result!.analysis.terminationCriteria).toHaveLength(3);
+    expect(result!.analysis.confidence).toBe(0.85);
     expect(result!.rawOutput).toBe(godOutput);
   });
 
@@ -124,9 +121,7 @@ describe('initializeTask', () => {
 {
   "taskType": "code",
   "reasoning": "Test projectDir pass-through",
-  "confidence": 0.8,
-  "suggestedMaxRounds": 3,
-  "terminationCriteria": ["done"]
+  "confidence": 0.8
 }
 \`\`\``;
 
@@ -175,9 +170,7 @@ describe('initializeTask', () => {
   "taskType": "explore",
   "reasoning": "Simple exploratory classification.",
   "phases": null,
-  "confidence": 0.9,
-  "suggestedMaxRounds": 2,
-  "terminationCriteria": ["done"]
+  "confidence": 0.9
 }
 \`\`\``;
 
@@ -200,9 +193,7 @@ describe('rawOutput tracking', () => {
 {
   "taskType": "code",
   "reasoning": "First attempt succeeded",
-  "confidence": 0.8,
-  "suggestedMaxRounds": 3,
-  "terminationCriteria": ["done"]
+  "confidence": 0.8
 }
 \`\`\``;
 
@@ -226,9 +217,7 @@ describe('test_regression_bug_r12_1: collectAdapterOutput includes error chunks'
 {
   "taskType": "code",
   "reasoning": "User wants to fix a bug.",
-  "confidence": 0.8,
-  "suggestedMaxRounds": 4,
-  "terminationCriteria": ["Bug is fixed", "Tests pass"]
+  "confidence": 0.8
 }
 \`\`\``;
 
@@ -243,7 +232,7 @@ describe('test_regression_bug_r12_1: collectAdapterOutput includes error chunks'
       execute(_prompt: string, _opts: GodExecOptions): AsyncIterable<OutputChunk> {
         const chunks: OutputChunk[] = [
           { type: 'error', content: 'Error: the task analysis shows this is a coding task.\n', timestamp: Date.now() },
-          { type: 'code', content: '```json\n{\n  "taskType": "code",\n  "reasoning": "User wants to fix a bug.",\n  "confidence": 0.8,\n  "suggestedMaxRounds": 4,\n  "terminationCriteria": ["Bug is fixed", "Tests pass"]\n}\n```', timestamp: Date.now() },
+          { type: 'code', content: '```json\n{\n  "taskType": "code",\n  "reasoning": "User wants to fix a bug.",\n  "confidence": 0.8\n}\n```', timestamp: Date.now() },
         ];
         return {
           [Symbol.asyncIterator]() {
@@ -287,9 +276,7 @@ describe('task type classification', () => {
   "taskType": "${taskType}",
   "reasoning": "Test classification for ${taskType}",
   ${phases}
-  "confidence": 0.8,
-  "suggestedMaxRounds": 3,
-  "terminationCriteria": ["done"]
+  "confidence": 0.8
 }
 \`\`\``;
 
@@ -316,9 +303,7 @@ describe('compound type phases', () => {
     {"id": "p2", "name": "Implement", "type": "code", "description": "Write the code"},
     {"id": "p3", "name": "Review", "type": "review", "description": "Review the implementation"}
   ],
-  "confidence": 0.9,
-  "suggestedMaxRounds": 8,
-  "terminationCriteria": ["All phases complete"]
+  "confidence": 0.9
 }
 \`\`\``;
 
@@ -330,67 +315,6 @@ describe('compound type phases', () => {
     expect(result!.analysis.phases).toHaveLength(3);
     expect(result!.analysis.phases![0].type).toBe('explore');
     expect(result!.analysis.phases![1].type).toBe('code');
-  });
-});
-
-// ── AC-4: suggestedMaxRounds in valid range per task type ──
-
-describe('suggestedMaxRounds range validation', () => {
-  test.each([
-    ['explore', 2, 5],
-    ['code', 3, 10],
-    ['review', 1, 3],
-    ['debug', 2, 6],
-    ['discuss', 2, 5],
-  ] as const)('validateRoundsForType("%s") accepts range [%d, %d]', async (taskType, min, max) => {
-    const { validateRoundsForType } = await import('../../god/task-init.js');
-
-    // In range
-    expect(validateRoundsForType(taskType, min)).toBe(min);
-    expect(validateRoundsForType(taskType, max)).toBe(max);
-    expect(validateRoundsForType(taskType, Math.floor((min + max) / 2))).toBe(Math.floor((min + max) / 2));
-
-    // Below range → clamp to min
-    expect(validateRoundsForType(taskType, min - 1)).toBe(min);
-
-    // Above range → clamp to max
-    expect(validateRoundsForType(taskType, max + 1)).toBe(max);
-  });
-
-  test('compound type does not clamp (passes through)', async () => {
-    const { validateRoundsForType } = await import('../../god/task-init.js');
-    expect(validateRoundsForType('compound', 15)).toBe(15);
-  });
-});
-
-// ── AC-5: dynamic rounds adjustment ──
-
-describe('applyDynamicRounds', () => {
-  test('adjusts maxRounds within type bounds', async () => {
-    const { applyDynamicRounds } = await import('../../god/task-init.js');
-
-    // code type: 3-10
-    expect(applyDynamicRounds(5, 8, 'code')).toBe(8);
-  });
-
-  test('clamps to type max when suggested exceeds bounds', async () => {
-    const { applyDynamicRounds } = await import('../../god/task-init.js');
-
-    // explore: max 5
-    expect(applyDynamicRounds(3, 10, 'explore')).toBe(5);
-  });
-
-  test('clamps to type min when suggested is below bounds', async () => {
-    const { applyDynamicRounds } = await import('../../god/task-init.js');
-
-    // debug: min 2
-    expect(applyDynamicRounds(4, 1, 'debug')).toBe(2);
-  });
-
-  test('compound type passes through without clamping', async () => {
-    const { applyDynamicRounds } = await import('../../god/task-init.js');
-
-    expect(applyDynamicRounds(5, 15, 'compound')).toBe(15);
   });
 });
 
@@ -414,11 +338,10 @@ describe('God audit log', () => {
     const entry: GodAuditEntry = {
       seq: 1,
       timestamp: new Date().toISOString(),
-      round: 0,
       decisionType: 'TASK_INIT',
       inputSummary: 'User wants to implement login',
-      outputSummary: 'Classified as code task, 5 rounds',
-      decision: { taskType: 'code', suggestedMaxRounds: 5 },
+      outputSummary: 'Classified as code task',
+      decision: { taskType: 'code' },
     };
 
     appendAuditLog(tempDir, entry);
@@ -438,7 +361,6 @@ describe('God audit log', () => {
     appendAuditLog(tempDir, {
       seq: 1,
       timestamp: new Date().toISOString(),
-      round: 0,
       decisionType: 'TASK_INIT',
       inputSummary: 'first',
       outputSummary: 'first output',
@@ -448,7 +370,6 @@ describe('God audit log', () => {
     appendAuditLog(tempDir, {
       seq: 2,
       timestamp: new Date().toISOString(),
-      round: 1,
       decisionType: 'DYNAMIC_ROUNDS',
       inputSummary: 'second',
       outputSummary: 'adjusted rounds',
@@ -469,7 +390,6 @@ describe('God audit log', () => {
     appendAuditLog(tempDir, {
       seq: 1,
       timestamp: new Date().toISOString(),
-      round: 0,
       decisionType: 'TASK_INIT',
       inputSummary: longString,
       outputSummary: longString,
@@ -488,7 +408,6 @@ describe('God audit log', () => {
     appendAuditLog(tempDir, {
       seq: 1,
       timestamp: new Date().toISOString(),
-      round: 0,
       decisionType: 'TASK_INIT',
       inputSummary: 'test',
       outputSummary: 'test',

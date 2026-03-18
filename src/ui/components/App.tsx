@@ -14,14 +14,12 @@ import type { WorkflowContext } from '../../engine/workflow-machine.js';
 import { createAdapter } from '../../adapters/factory.js';
 import { createGodAdapter } from '../../god/god-adapter-factory.js';
 import { OutputStreamManager } from '../../adapters/output-stream-manager.js';
-import type { RoundRecord } from '../../types/session.js';
 import { SessionManager } from '../../session/session-manager.js';
 import type { LoadedSession } from '../../session/session-manager.js';
 import { MainLayout } from './MainLayout.js';
 import type { WorkflowStateHint } from './MainLayout.js';
 import type { WorkflowStatus } from './StatusBar.js';
 import { SetupWizard } from './SetupWizard.js';
-import { createRoundSummaryMessage } from '../round-summary.js';
 import type { SessionConfig } from '../../types/session.js';
 import type { DetectedCLI } from '../../adapters/detect.js';
 import type { CLIAdapter, OutputChunk } from '../../types/adapter.js';
@@ -43,7 +41,6 @@ import { withRetry, isPaused } from '../god-fallback.js';
 import type { GodTaskAnalysis } from '../../types/god-schemas.js';
 import type { GodDecisionEnvelope } from '../../types/god-envelope.js';
 import { TaskAnalysisCard } from './TaskAnalysisCard.js';
-import type { ConvergenceLogEntry } from '../../god/god-convergence.js';
 import { generateCoderPrompt, generateReviewerPrompt, extractBlockingIssues } from '../../god/god-prompt-generator.js';
 import type { PromptContext } from '../../god/god-prompt-generator.js';
 import { ReclassifyOverlay } from './ReclassifyOverlay.js';
@@ -271,7 +268,6 @@ function SessionRunner({
   onCreateNewTask,
 }: SessionRunnerProps): React.ReactElement {
   const { exit } = useApp();
-  const MAX_ROUNDS = 20;
   const restoredRuntime = resumeSession
     ? buildRestoredSessionRuntime(resumeSession, config)
     : null;
@@ -279,7 +275,6 @@ function SessionRunner({
   // ── xstate actor ──
   const [snapshot, send] = useMachine(workflowMachine, {
     input: {
-      maxRounds: MAX_ROUNDS,
       ...(restoredRuntime?.workflowInput ?? {}),
     },
   });
@@ -298,7 +293,6 @@ function SessionRunner({
   const godAuditLoggerRef = useRef<GodAuditLogger | null>(null);
 
   // ── Mutable orchestration state ──
-  const roundsRef = useRef<RoundRecord[]>(restoredRuntime?.rounds ?? []);
   const sessionIdRef = useRef<string | null>(
     (restoredRuntime?.workflowInput.sessionId as string | null) ?? null,
   );
@@ -310,7 +304,6 @@ function SessionRunner({
       ? (resumeSession.state.currentRole as 'coder' | 'reviewer' | null)
       : null,
   );
-  const convergenceLogRef = useRef<ConvergenceLogEntry[]>(restoredRuntime?.godConvergenceLog ?? []);
   const lastUnresolvedIssuesRef = useRef<string[]>([]);
   const initializedRef = useRef(false);
   const auditSeqRef = useRef(0);
@@ -549,23 +542,21 @@ function SessionRunner({
         if (godAuditLoggerRef.current) {
           godAuditLoggerRef.current.append({
             timestamp: new Date().toISOString(),
-            round: 0,
             decisionType: 'TASK_INIT',
             inputSummary: config.task,
-            outputSummary: `taskType=${result.analysis.taskType}, suggestedMaxRounds=${result.analysis.suggestedMaxRounds}`,
+            outputSummary: `taskType=${result.analysis.taskType}`,
             latencyMs: latency,
             decision: result.analysis,
           }, result.analysis);
         }
 
-        addTimelineEvent('task_start', `God TASK_INIT: ${result.analysis.taskType}, ${result.analysis.suggestedMaxRounds} rounds`);
+        addTimelineEvent('task_start', `God TASK_INIT: ${result.analysis.taskType}`);
         setShowTaskAnalysisCard(true);
       } else {
         // Paused — log failure to God audit
         if (godAuditLoggerRef.current) {
           godAuditLoggerRef.current.append({
             timestamp: new Date().toISOString(),
-            round: 0,
             decisionType: 'TASK_INIT_FAILURE',
             inputSummary: config.task,
             outputSummary: `Paused: watchdog failures=${watchdogRef.current.getConsecutiveFailures()}`,
@@ -596,7 +587,6 @@ function SessionRunner({
       const coderAdapter = coderAdapterRef.current;
       const reviewerAdapter = reviewerAdapterRef.current;
       sessionManagerRef.current.saveState(sessionIdRef.current, {
-        round: ctx.round,
         status: stateValue.toLowerCase(),
         currentRole: ctx.activeProcess ?? 'coder',
         ...(isSessionCapable(coderAdapter) && coderAdapter.getLastSessionId()
@@ -609,7 +599,6 @@ function SessionRunner({
           ? { godSessionId: godAdapterRef.current.getLastSessionId()! }
           : {}),
         ...(taskAnalysisRef.current ? { godTaskAnalysis: taskAnalysisRef.current } : {}),
-        godConvergenceLog: convergenceLogRef.current,
         currentPhaseId,
         // Card E.2: persist clarification context for duo resume
         ...(stateValue === 'CLARIFYING' ? {
@@ -622,7 +611,7 @@ function SessionRunner({
     } catch {
       // Best-effort persistence
     }
-  }, [stateValue, ctx.round]);
+  }, [stateValue]);
 
   // ── CODING state: run coder adapter ──
   useEffect(() => {
@@ -646,7 +635,7 @@ function SessionRunner({
       },
     ]);
 
-    addTimelineEvent('coding', `Coder started: Round ${ctx.round + 1}, ${getDisplayName(config.coder)}`);
+    addTimelineEvent('coding', `Coder started: ${getDisplayName(config.coder)}`);
 
     (async () => {
       try {
@@ -658,12 +647,9 @@ function SessionRunner({
         if (!taskAnalysis) throw new Error('No taskAnalysis available');
         const prompt = generateCoderPrompt({
           taskType: taskAnalysis.taskType as PromptContext['taskType'],
-          round: ctx.round,
-          maxRounds: ctx.maxRounds,
           taskGoal: config.task,
           lastReviewerOutput: ctx.lastReviewerOutput ?? undefined,
           unresolvedIssues: lastUnresolvedIssuesRef.current,
-          convergenceLog: convergenceLogRef.current,
           instruction: interruptInstruction,
           phaseId: currentPhaseId ?? undefined,
           phaseType: currentPhaseId
@@ -682,10 +668,9 @@ function SessionRunner({
         if (sessionIdRef.current) {
           try {
             appendPromptLog(getSessionDir(), {
-              round: ctx.round,
               agent: 'coder',
               adapter: config.coder,
-              kind: 'coder_round',
+              kind: 'coder_iteration',
               prompt,
               systemPrompt: null,
               meta: {
@@ -760,7 +745,6 @@ function SessionRunner({
             if (sessionIdRef.current) {
               try {
                 sessionManagerRef.current.addHistoryEntry(sessionIdRef.current, {
-                  round: ctx.round,
                   role: 'coder',
                   content: outcome.fullText,
                   timestamp: Date.now(),
@@ -770,17 +754,18 @@ function SessionRunner({
 
             // Card B.2: classify output through observation pipeline
             // Non-work outputs (quota_exhausted, auth_failed, etc.) must NOT trigger CODE_COMPLETE
+            // Use llmText (pure LLM output) for classification — fullText is only for history logs.
             const { isWork, observation } = processWorkerOutput(
-              outcome.fullText,
+              outcome.llmText,
               'coder',
-              { round: ctx.round, adapter: config.coder },
+              { adapter: config.coder },
             );
 
             if (isWork) {
               lastWorkerRoleRef.current = 'coder';
               reviewerFeedbackPendingRef.current = false;
               addTimelineEvent('coding', `Coder completed: ${tokens} tokens`);
-              send({ type: 'CODE_COMPLETE', output: outcome.fullText });
+              send({ type: 'CODE_COMPLETE', output: outcome.llmText });
             } else {
               // Card D.1: Non-work output → route as incident through OBSERVING pipeline
               addTimelineEvent('error', `Coder non-work output: ${observation.type}`);
@@ -798,8 +783,8 @@ function SessionRunner({
           const errorMsg = err instanceof Error ? err.message : String(err);
           // BUG-9 fix: capture observation return value and route via INCIDENT_DETECTED
           const observation = err instanceof ProcessTimeoutError
-            ? createTimeoutObservation(ctx.round, { adapter: config.coder })
-            : createProcessErrorObservation(errorMsg, ctx.round, { adapter: config.coder });
+            ? createTimeoutObservation({ adapter: config.coder })
+            : createProcessErrorObservation(errorMsg, { adapter: config.coder });
           addMessage({
             role: 'system',
             content: `Coder error: ${errorMsg}`,
@@ -814,7 +799,7 @@ function SessionRunner({
       cancelled = true;
       osm.interrupt();
     };
-  }, [stateValue === 'CODING' ? `CODING-${ctx.round}` : stateValue, config.task]);
+  }, [stateValue, config.task]);
 
   // ── OBSERVING: classify output, collect observations, send OBSERVATIONS_READY ──
   // Card D.1: replaces ROUTING_POST_CODE + ROUTING_POST_REVIEW + EVALUATING
@@ -842,33 +827,10 @@ function SessionRunner({
       output,
       source === 'reviewer' ? 'reviewer' : 'coder',
       {
-        round: ctx.round,
         phaseId: currentPhaseId ?? undefined,
         adapter: source === 'reviewer' ? config.reviewer : config.coder,
       },
     );
-
-    // Record round summary after reviewer output (preserves old EVALUATING behavior)
-    if (source === 'reviewer') {
-      const summaryText = output.length <= 800 ? output : output.slice(0, 797) + '...';
-      roundsRef.current.push({
-        index: ctx.round + 1,
-        coderOutput: ctx.lastCoderOutput ?? '',
-        reviewerOutput: output,
-        summary: summaryText,
-        timestamp: Date.now(),
-      });
-
-      const summaryMsg = createRoundSummaryMessage(
-        ctx.round + 1,
-        ctx.round + 2,
-        summaryText.slice(0, 100),
-      );
-      setMessages((prev) => [...prev, summaryMsg]);
-
-      // Track reviewer outputs for loop detection
-      // (already pushed in REVIEWING hook, but convergence log needs update)
-    }
 
     addTimelineEvent('coding', `Observation: ${observation.type} from ${source}`);
     send({ type: 'OBSERVATIONS_READY', observations: [observation] });
@@ -896,7 +858,7 @@ function SessionRunner({
       },
     ]);
 
-    addTimelineEvent('reviewing', `Reviewer started: Round ${ctx.round + 1}, ${getDisplayName(config.reviewer)}`);
+    addTimelineEvent('reviewing', `Reviewer started: ${getDisplayName(config.reviewer)}`);
 
     (async () => {
       try {
@@ -905,7 +867,7 @@ function SessionRunner({
         pendingReviewerInstructionRef.current = null;
         pendingInstructionRef.current = null;
         const shouldSkipHistory = isSessionCapable(adapter) && adapter.hasActiveSession();
-        // Get the last reviewer output for feedback checklist (round 2+)
+        // Get the last reviewer output for feedback checklist (subsequent iterations)
         const lastReviewerOut = reviewerOutputsRef.current.length > 0
           ? reviewerOutputsRef.current[reviewerOutputsRef.current.length - 1]
           : undefined;
@@ -914,8 +876,6 @@ function SessionRunner({
         if (!taskAnalysis) throw new Error('No taskAnalysis available');
         const prompt = generateReviewerPrompt({
           taskType: taskAnalysis.taskType,
-          round: ctx.round,
-          maxRounds: ctx.maxRounds,
           taskGoal: config.task,
           lastCoderOutput: ctx.lastCoderOutput ?? undefined,
           instruction: interruptInstruction,
@@ -929,10 +889,9 @@ function SessionRunner({
         if (sessionIdRef.current) {
           try {
             appendPromptLog(getSessionDir(), {
-              round: ctx.round,
               agent: 'reviewer',
               adapter: config.reviewer,
-              kind: 'reviewer_round',
+              kind: 'reviewer_iteration',
               prompt,
               systemPrompt: null,
               meta: {
@@ -1005,7 +964,6 @@ function SessionRunner({
             if (sessionIdRef.current) {
               try {
                 sessionManagerRef.current.addHistoryEntry(sessionIdRef.current, {
-                  round: ctx.round,
                   role: 'reviewer',
                   content: outcome.fullText,
                   timestamp: Date.now(),
@@ -1013,22 +971,23 @@ function SessionRunner({
               } catch { /* best-effort */ }
             }
 
-            // Track reviewer outputs for loop detection
-            reviewerOutputsRef.current.push(outcome.fullText);
+            // Track reviewer outputs for loop detection (use clean LLM text for comparison)
+            reviewerOutputsRef.current.push(outcome.llmText);
 
             // Card B.2: classify output through observation pipeline
             // Non-work outputs (quota_exhausted, auth_failed, etc.) must NOT trigger REVIEW_COMPLETE
+            // Use llmText (pure LLM output) for classification — fullText is only for history logs.
             const { isWork, observation } = processWorkerOutput(
-              outcome.fullText,
+              outcome.llmText,
               'reviewer',
-              { round: ctx.round, adapter: config.reviewer },
+              { adapter: config.reviewer },
             );
 
             if (isWork) {
               lastWorkerRoleRef.current = 'reviewer';
               reviewerFeedbackPendingRef.current = true;
               addTimelineEvent('reviewing', `Reviewer completed: ${tokens} tokens`);
-              send({ type: 'REVIEW_COMPLETE', output: outcome.fullText });
+              send({ type: 'REVIEW_COMPLETE', output: outcome.llmText });
             } else {
               // Card D.1: Non-work output → route as incident through OBSERVING pipeline
               addTimelineEvent('error', `Reviewer non-work output: ${observation.type}`);
@@ -1046,8 +1005,8 @@ function SessionRunner({
           const errorMsg = err instanceof Error ? err.message : String(err);
           // BUG-9 fix: capture observation return value and route via INCIDENT_DETECTED
           const observation = err instanceof ProcessTimeoutError
-            ? createTimeoutObservation(ctx.round, { adapter: config.reviewer })
-            : createProcessErrorObservation(errorMsg, ctx.round, { adapter: config.reviewer });
+            ? createTimeoutObservation({ adapter: config.reviewer })
+            : createProcessErrorObservation(errorMsg, { adapter: config.reviewer });
           addMessage({
             role: 'system',
             content: `Reviewer error: ${errorMsg}`,
@@ -1062,7 +1021,7 @@ function SessionRunner({
       cancelled = true;
       osm.interrupt();
     };
-  }, [stateValue === 'REVIEWING' ? `REVIEWING-${ctx.round}` : stateValue, config.task]);
+  }, [stateValue, config.task]);
 
   // ── DONE state ──
   useEffect(() => {
@@ -1142,8 +1101,6 @@ function SessionRunner({
           currentPhaseId: currentPhaseId ?? 'default',
           currentPhaseType,
           phases: taskAnalysisRef.current?.phases ?? undefined,
-          round: ctx.round,
-          maxRounds: ctx.maxRounds,
           previousDecisions: ctx.lastDecision ? [ctx.lastDecision] : [],
           availableAdapters: [config.coder, config.reviewer],
           activeRole: ctx.activeProcess,
@@ -1155,7 +1112,7 @@ function SessionRunner({
           && godAdapterRef.current.hasActiveSession();
 
         // Merge clarification history with current observations, deduplicating
-        // since clarificationObservations already includes current-round observations
+        // since clarificationObservations already includes current observations
         const allObservations = deduplicateObservations([
           ...ctx.clarificationObservations,
           ...ctx.currentObservations,
@@ -1185,7 +1142,6 @@ function SessionRunner({
             addMessage({ role: 'system', content: message, timestamp: Date.now() });
           },
           auditLogger: godAuditLoggerRef.current!,
-          round: ctx.round,
         });
 
         // Apply dispatched pending messages
@@ -1201,7 +1157,7 @@ function SessionRunner({
         const nlViolations = checkNLInvariantViolations(
           envelope.messages,
           envelope.actions,
-          { round: ctx.round, phaseId: envelope.diagnosis.currentPhaseId },
+          { phaseId: envelope.diagnosis.currentPhaseId },
         );
         for (const violation of nlViolations) {
           addMessage({
@@ -1214,7 +1170,6 @@ function SessionRunner({
         // BUG-7/8 fix: Log complete envelope decision audit (Card F.2)
         if (godAuditLoggerRef.current) {
           logEnvelopeDecision(godAuditLoggerRef.current, {
-            round: ctx.round,
             observations: ctx.currentObservations,
             envelope,
             executionResults: [],
@@ -1271,7 +1226,6 @@ function SessionRunner({
             ['coder', config.coder],
             ['reviewer', config.reviewer],
           ]),
-          round: ctx.round,
           sessionDir: getSessionDir(),
           cwd: config.projectDir,
           // BUG-15 fix: pass envelope messages so accept_task D.3 validation runs
@@ -1345,7 +1299,6 @@ function SessionRunner({
             summary: `Multiple routing actions in single envelope: [${routingConflicts.join(', ')}]. Only first will be used for routing.`,
             severity: 'warning',
             timestamp: new Date().toISOString(),
-            round: ctx.round,
             phaseId: currentPhaseId ?? 'default',
           };
           results.push(conflictObs);
@@ -1447,7 +1400,6 @@ function SessionRunner({
         const interruptContext = {
           userInput: text,
           taskGoal: config.task,
-          round: ctx.round,
           currentPhaseId: currentPhaseId ?? undefined,
           lastCoderOutput: ctx.lastCoderOutput?.slice(0, 1000) ?? undefined,
           lastReviewerOutput: ctx.lastReviewerOutput?.slice(0, 1000) ?? undefined,
@@ -1486,7 +1438,7 @@ function SessionRunner({
                   content: `God: restarting current attempt - ${classification.instruction}`,
                   timestamp: Date.now(),
                 });
-                send({ type: 'OBSERVATIONS_READY', observations: [createObservation('clarification_answer', 'human', classification.instruction, { round: ctx.round, severity: 'info', rawRef: classification.instruction })] });
+                send({ type: 'OBSERVATIONS_READY', observations: [createObservation('clarification_answer', 'human', classification.instruction, { severity: 'info', rawRef: classification.instruction })] });
                 return;
               }
 
@@ -1495,17 +1447,17 @@ function SessionRunner({
                 content: `God: ${classification.intent} - ${classification.instruction}`,
                 timestamp: Date.now(),
               });
-              send({ type: 'OBSERVATIONS_READY', observations: [createObservation('clarification_answer', 'human', classification.instruction, { round: ctx.round, severity: 'info', rawRef: classification.instruction })] });
+              send({ type: 'OBSERVATIONS_READY', observations: [createObservation('clarification_answer', 'human', classification.instruction, { severity: 'info', rawRef: classification.instruction })] });
             } catch {
               pendingInstructionRef.current = text;
-              send({ type: 'OBSERVATIONS_READY', observations: [createObservation('clarification_answer', 'human', text, { round: ctx.round, severity: 'info', rawRef: text })] });
+              send({ type: 'OBSERVATIONS_READY', observations: [createObservation('clarification_answer', 'human', text, { severity: 'info', rawRef: text })] });
             } finally {
               setIsClassifyingIntent(false);
             }
           })();
         } else {
           pendingInstructionRef.current = text;
-          send({ type: 'OBSERVATIONS_READY', observations: [createObservation('clarification_answer', 'human', text, { round: ctx.round, severity: 'info', rawRef: text })] });
+          send({ type: 'OBSERVATIONS_READY', observations: [createObservation('clarification_answer', 'human', text, { severity: 'info', rawRef: text })] });
         }
         return;
       }
@@ -1513,7 +1465,6 @@ function SessionRunner({
       // Card E.2: CLARIFYING — user answers God's clarification question
       if (stateValue === 'CLARIFYING') {
         const obs = createObservation('clarification_answer', 'human', text, {
-          round: ctx.round,
           severity: 'info',
           rawRef: text,
         });
@@ -1555,7 +1506,6 @@ function SessionRunner({
       const ca = coderAdapterRef.current;
       const ra = reviewerAdapterRef.current;
       sessionManagerRef.current.saveState(sessionIdRef.current, {
-        round: ctx.round,
         status: stateValue === 'DONE' ? 'done' : 'interrupted',
         currentRole: ctx.activeProcess ?? 'coder',
         ...(isSessionCapable(ca) && ca.getLastSessionId()
@@ -1571,13 +1521,12 @@ function SessionRunner({
             : {};
         })(),
         ...(taskAnalysisRef.current ? { godTaskAnalysis: taskAnalysisRef.current } : {}),
-        godConvergenceLog: convergenceLogRef.current,
         currentPhaseId,
       });
     } catch {
       // Best-effort persistence before exit.
     }
-  }, [ctx.round, ctx.activeProcess, stateValue, currentPhaseId]);
+  }, [ctx.activeProcess, stateValue, currentPhaseId]);
 
   const handleSafeExit = useCallback(async () => {
     await performSafeShutdown({
@@ -1607,8 +1556,6 @@ function SessionRunner({
   const handleTaskAnalysisConfirm = useCallback(
     (taskType: string) => {
       setShowTaskAnalysisCard(false);
-      const maxRounds = taskAnalysis?.suggestedMaxRounds;
-
       // BUG-8 fix: Update taskAnalysis state with user-selected taskType
       setTaskAnalysis(prev => prev ? { ...prev, taskType: taskType as GodTaskAnalysis['taskType'] } : prev);
 
@@ -1619,10 +1566,10 @@ function SessionRunner({
 
       addMessage({
         role: 'system',
-        content: `Task analysis confirmed: type=${taskType}, rounds=${maxRounds ?? 'default'}.`,
+        content: `Task analysis confirmed: type=${taskType}.`,
         timestamp: Date.now(),
       });
-      send({ type: 'TASK_INIT_COMPLETE', maxRounds });
+      send({ type: 'TASK_INIT_COMPLETE' });
     },
     [taskAnalysis, send, addMessage, setTaskAnalysis],
   );
@@ -1677,7 +1624,6 @@ function SessionRunner({
         : config.projectDir;
       writeReclassifyAudit(sessionDir, {
         seq: ++auditSeqRef.current,
-        round: ctx.round,
         fromType: oldType as any,
         toType: newType as any,
       });
@@ -1697,7 +1643,7 @@ function SessionRunner({
         send({ type: 'USER_INPUT', input: `Reclassified to ${newType}`, resumeAs: 'decision' });
       }
     },
-    [taskAnalysis, config, ctx.round, stateValue, send, addMessage, addTimelineEvent],
+    [taskAnalysis, config, stateValue, send, addMessage, addTimelineEvent],
   );
 
   const handleReclassifyCancel = useCallback(() => {
@@ -1787,7 +1733,6 @@ function SessionRunner({
 
   // ── Context data for overlay ──
   const contextData = {
-    roundNumber: ctx.round + 1,
     coderName: getDisplayName(config.coder),
     reviewerName: getDisplayName(config.reviewer),
     taskSummary: config.task,
@@ -1800,7 +1745,6 @@ function SessionRunner({
       <Box flexDirection="column" width={columns} height={rows}>
         <ReclassifyOverlay
           currentType={taskAnalysis.taskType}
-          currentRound={ctx.round + 1}
           onSelect={handleReclassifySelect}
           onCancel={handleReclassifyCancel}
         />
@@ -1853,8 +1797,6 @@ function SessionRunner({
       onReclassify={handleReclassify}
       statusBarProps={{
         projectPath: config.projectDir,
-        round: ctx.round + 1,
-        maxRounds: ctx.maxRounds,
         status,
         activeAgent,
         tokenCount,

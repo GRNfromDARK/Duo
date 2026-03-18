@@ -20,8 +20,6 @@ const sampleAnalysis: GodTaskAnalysis = {
     { id: 'p2', name: 'Testing', type: 'review', description: 'Review the code' },
   ],
   confidence: 0.85,
-  suggestedMaxRounds: 5,
-  terminationCriteria: ['All tests pass', 'No blocking issues'],
 };
 
 describe('createTaskAnalysisCardState', () => {

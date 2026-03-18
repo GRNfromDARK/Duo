@@ -18,15 +18,11 @@ import { validateCLIChoices } from '../../session/session-starter.js';
 import { cleanupOldDecisions } from '../../god/god-audit.js';
 import {
   GodTaskAnalysisSchema,
-  GodPostReviewerDecisionSchema,
 } from '../../types/god-schemas.js';
 import { workflowMachine } from '../../engine/workflow-machine.js';
-import type { ConvergenceLogEntry } from '../../god/god-convergence.js';
 import { parseMarkdown } from '../../ui/markdown-parser.js';
 import { OutputStreamManager } from '../../adapters/output-stream-manager.js';
 import { ProcessTimeoutError } from '../../adapters/process-manager.js';
-import { checkConsistency } from '../../god/consistency-checker.js';
-import type { GodConvergenceJudgment, GodPostReviewerDecision } from '../../types/god-schemas.js';
 import type { OutputChunk } from '../../types/adapter.js';
 import type { Message } from '../../types/ui.js';
 import type { Observation } from '../../types/observation.js';
@@ -35,7 +31,7 @@ import type { GodDecisionEnvelope } from '../../types/god-envelope.js';
 // ── Card D.1 helpers: build observations and decision envelopes for the new topology ──
 
 function makeObs(type: Observation['type'] = 'work_output', source: Observation['source'] = 'coder'): Observation {
-  return { source, type, summary: `test ${type}`, severity: 'info', timestamp: new Date().toISOString(), round: 0 };
+  return { source, type, summary: `test ${type}`, severity: 'info', timestamp: new Date().toISOString()};
 }
 
 function makeEnvelope(actions: GodDecisionEnvelope['actions'] = []): GodDecisionEnvelope {
@@ -51,65 +47,7 @@ function makeEnvelope(actions: GodDecisionEnvelope['actions'] = []): GodDecision
 // BUG-1 (P0): ConvergenceLogEntry type — no duplicate definition
 // ══════════════════════════════════════════════════════════════
 
-describe('BUG-1: ConvergenceLogEntry type consistency', () => {
-  test('test_bug_1_convergenceLogEntry_uses_canonical_fields', () => {
-    // Use the canonical ConvergenceLogEntry shape from god-convergence.
-    // If the old duplicate type were still in use, accessing blockingIssueCount
-    // would produce 'undefined' in the prompt.
-    const prompt = generateCoderPrompt({
-      taskType: 'code',
-      round: 3,
-      maxRounds: 5,
-      taskGoal: 'Test task',
-      convergenceLog: [
-        {
-          round: 1,
-          timestamp: '2026-01-01T00:00:00Z',
-          classification: 'changes_requested',
-          shouldTerminate: false,
-          blockingIssueCount: 3,
-          criteriaProgress: [{ criterion: 'tests pass', satisfied: false }],
-          summary: 'classification=changes_requested, blocking=3',
-        },
-        {
-          round: 2,
-          timestamp: '2026-01-01T00:01:00Z',
-          classification: 'approved',
-          shouldTerminate: true,
-          blockingIssueCount: 0,
-          criteriaProgress: [{ criterion: 'tests pass', satisfied: true }],
-          summary: 'classification=approved, blocking=0',
-        },
-      ],
-    });
-
-    expect(prompt).toContain('blocking');
-    expect(prompt).not.toContain('undefined');
-  });
-
-  test('test_bug_1_generateCoderPrompt_with_real_convergenceLog', () => {
-    const prompt = generateCoderPrompt({
-      taskType: 'code',
-      round: 3,
-      maxRounds: 5,
-      taskGoal: 'Implement feature',
-      convergenceLog: [
-        {
-          round: 1,
-          timestamp: '2026-01-01T00:00:00Z',
-          classification: 'changes_requested',
-          shouldTerminate: false,
-          blockingIssueCount: 5,
-          criteriaProgress: [],
-          summary: 'blocking=5',
-        },
-      ],
-    });
-
-    expect(prompt).not.toContain('undefined');
-    expect(prompt).toContain('blocking');
-  });
-});
+// BUG-1 tests removed: ConvergenceLogEntry type no longer exists (round removal).
 
 // ══════════════════════════════════════════════════════════════
 // BUG-3 (P1): auto-decision rule engine uses proper ActionContext
@@ -143,70 +81,7 @@ describe('BUG-3: auto-decision rule engine check', () => {
   });
 });
 
-// ══════════════════════════════════════════════════════════════
-// BUG-5 (P1): GOD_DECIDING→CODING round increment
-// ══════════════════════════════════════════════════════════════
-
-describe('BUG-5: EXECUTING→CODING round increment (Card D.1)', () => {
-  test('test_bug_5_execution_complete_to_coding_increments_round', () => {
-    const actor = createActor(workflowMachine, { input: { round: 0, maxRounds: 10 } });
-    actor.start();
-
-    // Navigate: IDLE → TASK_INIT → CODING → OBSERVING → GOD_DECIDING → EXECUTING
-    actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_COMPLETE' });
-    actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-    // Now in OBSERVING
-    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
-    // Now in GOD_DECIDING
-    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
-    const roundBefore = actor.getSnapshot().context.round;
-
-    // Decision: send_to_coder → EXECUTING → CODING with round increment
-    actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'retry' }]) });
-    expect(actor.getSnapshot().value).toBe('EXECUTING');
-    actor.send({ type: 'EXECUTION_COMPLETE', results: [] });
-    expect(actor.getSnapshot().value).toBe('CODING');
-    expect(actor.getSnapshot().context.round).toBe(roundBefore + 1);
-
-    actor.stop();
-  });
-
-  test('test_regression_5_round_increment_consistent_across_paths_to_coding', () => {
-    // Path 1: CODING → OBSERVING → GOD_DECIDING → EXECUTING(send_to_coder) → CODING
-    const actor1 = createActor(workflowMachine, { input: { round: 0, maxRounds: 10 } });
-    actor1.start();
-    actor1.send({ type: 'START_TASK', prompt: 'test' });
-    actor1.send({ type: 'TASK_INIT_COMPLETE' });
-    actor1.send({ type: 'CODE_COMPLETE', output: 'done' });
-    actor1.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
-    actor1.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'retry' }]) });
-    actor1.send({ type: 'EXECUTION_COMPLETE', results: [] });
-    const round1 = actor1.getSnapshot().context.round;
-    actor1.stop();
-
-    // Path 2: CODING → OBSERVING → GOD_DECIDING → EXECUTING(send_to_reviewer) → REVIEWING
-    //       → OBSERVING → GOD_DECIDING → EXECUTING(send_to_coder) → CODING
-    const actor2 = createActor(workflowMachine, { input: { round: 0, maxRounds: 10 } });
-    actor2.start();
-    actor2.send({ type: 'START_TASK', prompt: 'test' });
-    actor2.send({ type: 'TASK_INIT_COMPLETE' });
-    actor2.send({ type: 'CODE_COMPLETE', output: 'done' });
-    actor2.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
-    actor2.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_reviewer', message: 'review' }]) });
-    actor2.send({ type: 'EXECUTION_COMPLETE', results: [] });
-    expect(actor2.getSnapshot().value).toBe('REVIEWING');
-    actor2.send({ type: 'REVIEW_COMPLETE', output: 'changes needed' });
-    actor2.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('review_output', 'reviewer')] });
-    actor2.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'fix issues' }]) });
-    actor2.send({ type: 'EXECUTION_COMPLETE', results: [] });
-    const round2 = actor2.getSnapshot().context.round;
-    actor2.stop();
-
-    // Both paths should increment round by 1 when going to CODING
-    expect(round1).toBe(round2);
-  });
-});
+// BUG-5 round increment tests removed (round removal).
 
 // ══════════════════════════════════════════════════════════════
 // BUG-6 (P1): Rule engine symlink escape
@@ -335,8 +210,6 @@ describe('BUG-11: Zod schema refine constraints', () => {
       taskType: 'compound',
       reasoning: 'Complex task',
       confidence: 0.8,
-      suggestedMaxRounds: 5,
-      terminationCriteria: ['all phases done'],
     });
     expect(result.success).toBe(false);
   });
@@ -347,8 +220,6 @@ describe('BUG-11: Zod schema refine constraints', () => {
       reasoning: 'Complex task',
       phases: [],
       confidence: 0.8,
-      suggestedMaxRounds: 5,
-      terminationCriteria: ['all phases done'],
     });
     expect(result.success).toBe(false);
   });
@@ -359,31 +230,8 @@ describe('BUG-11: Zod schema refine constraints', () => {
       reasoning: 'Complex task',
       phases: [{ id: 'p1', name: 'Phase 1', type: 'code', description: 'Code it' }],
       confidence: 0.8,
-      suggestedMaxRounds: 5,
-      terminationCriteria: ['all phases done'],
     });
     expect(result.success).toBe(true);
-  });
-
-  test('test_bug_11_route_to_coder_without_unresolvedIssues_rejected', () => {
-    const result = GodPostReviewerDecisionSchema.safeParse({
-      action: 'route_to_coder',
-      reasoning: 'Issues found',
-      confidenceScore: 0.7,
-      progressTrend: 'improving',
-    });
-    expect(result.success).toBe(false);
-  });
-
-  test('test_bug_11_route_to_coder_with_empty_unresolvedIssues_rejected', () => {
-    const result = GodPostReviewerDecisionSchema.safeParse({
-      action: 'route_to_coder',
-      reasoning: 'Issues found',
-      unresolvedIssues: [],
-      confidenceScore: 0.7,
-      progressTrend: 'improving',
-    });
-    expect(result.success).toBe(false);
   });
 
   test('test_regression_11_non_compound_without_phases_accepted', () => {
@@ -391,18 +239,6 @@ describe('BUG-11: Zod schema refine constraints', () => {
       taskType: 'code',
       reasoning: 'Simple task',
       confidence: 0.9,
-      suggestedMaxRounds: 5,
-      terminationCriteria: ['done'],
-    });
-    expect(result.success).toBe(true);
-  });
-
-  test('test_regression_11_converged_without_unresolvedIssues_accepted', () => {
-    const result = GodPostReviewerDecisionSchema.safeParse({
-      action: 'converged',
-      reasoning: 'All good',
-      confidenceScore: 0.95,
-      progressTrend: 'improving',
     });
     expect(result.success).toBe(true);
   });
@@ -427,7 +263,6 @@ describe('Round2 BUG-2: God session ID in RestoredSessionRuntime', () => {
         updatedAt: 2,
       },
       state: {
-        round: 2,
         status: 'coding',
         currentRole: 'coder',
         coderSessionId: 'ses_coder',
@@ -435,7 +270,7 @@ describe('Round2 BUG-2: God session ID in RestoredSessionRuntime', () => {
         godSessionId: 'ses_god_123',
       },
       history: [
-        { round: 0, role: 'coder' as const, content: 'code', timestamp: 10 },
+        { role: 'coder' as const, content: 'code', timestamp: 10 },
       ],
     };
 
@@ -464,7 +299,6 @@ describe('Round2 BUG-2: God session ID in RestoredSessionRuntime', () => {
         updatedAt: 2,
       },
       state: {
-        round: 0,
         status: 'coding',
         currentRole: 'coder',
       },
@@ -483,280 +317,13 @@ describe('Round2 BUG-2: God session ID in RestoredSessionRuntime', () => {
   });
 });
 
-// ══════════════════════════════════════════════════════════════
-// Round 2 BUG-3 (P1): Zod schema preserves nextPhaseId
-// ══════════════════════════════════════════════════════════════
+// Round2 BUG-3 tests removed — tested GodPostReviewerDecisionSchema which has been deleted.
 
-describe('Round2 BUG-3: nextPhaseId preserved by Zod schema', () => {
-  test('test_regression_r2_bug3_nextPhaseId_survives_zod_parse', () => {
-    const input = {
-      action: 'phase_transition',
-      reasoning: 'Phase 1 complete',
-      confidenceScore: 0.9,
-      progressTrend: 'improving',
-      nextPhaseId: 'phase-2',
-    };
+// Round3 BUG-2 tests removed — tested evaluatePhaseTransition from the now-deleted phase-transition.ts module.
 
-    const result = GodPostReviewerDecisionSchema.safeParse(input);
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.nextPhaseId).toBe('phase-2');
-    }
-  });
+// Round3 BUG-5 tests removed — tested evaluateConvergence from the now-deleted god-convergence.ts module.
 
-  test('test_regression_r2_bug3_nextPhaseId_optional_still_parses', () => {
-    const input = {
-      action: 'phase_transition',
-      reasoning: 'Moving on',
-      confidenceScore: 0.85,
-      progressTrend: 'improving',
-    };
-
-    const result = GodPostReviewerDecisionSchema.safeParse(input);
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.nextPhaseId).toBeUndefined();
-    }
-  });
-
-});
-
-// ══════════════════════════════════════════════════════════════
-// Round 3 BUG-2 (P1): evaluatePhaseTransition respects nextPhaseId
-// ══════════════════════════════════════════════════════════════
-
-describe('Round3 BUG-2: evaluatePhaseTransition uses God nextPhaseId', () => {
-  test('test_bug_r3_2_nextPhaseId_skips_phases', async () => {
-    const { evaluatePhaseTransition } = await import('../../god/phase-transition.js');
-
-    const phases = [
-      { id: 'explore', name: 'Explore', type: 'explore' as const, description: 'R' },
-      { id: 'code', name: 'Code', type: 'code' as const, description: 'C' },
-      { id: 'review', name: 'Review', type: 'review' as const, description: 'T' },
-    ];
-
-    const decision = {
-      action: 'phase_transition' as const,
-      reasoning: 'Skip to review',
-      confidenceScore: 0.9,
-      progressTrend: 'improving' as const,
-      nextPhaseId: 'review', // Skip code phase
-    };
-
-    const result = evaluatePhaseTransition(phases[0], phases, [], decision);
-
-    expect(result.shouldTransition).toBe(true);
-    // Should jump to 'review', NOT 'code' (sequential next)
-    expect(result.nextPhaseId).toBe('review');
-  });
-
-  test('test_regression_r3_2_fallback_to_sequential_when_no_nextPhaseId', async () => {
-    const { evaluatePhaseTransition } = await import('../../god/phase-transition.js');
-
-    const phases = [
-      { id: 'explore', name: 'Explore', type: 'explore' as const, description: 'R' },
-      { id: 'code', name: 'Code', type: 'code' as const, description: 'C' },
-    ];
-
-    const decision = {
-      action: 'phase_transition' as const,
-      reasoning: 'Moving on',
-      confidenceScore: 0.9,
-      progressTrend: 'improving' as const,
-      // No nextPhaseId → sequential fallback
-    };
-
-    const result = evaluatePhaseTransition(phases[0], phases, [], decision);
-
-    expect(result.shouldTransition).toBe(true);
-    expect(result.nextPhaseId).toBe('code');
-  });
-
-  test('test_regression_r3_2_invalid_nextPhaseId_returns_no_transition', async () => {
-    const { evaluatePhaseTransition } = await import('../../god/phase-transition.js');
-
-    const phases = [
-      { id: 'explore', name: 'Explore', type: 'explore' as const, description: 'R' },
-    ];
-
-    const decision = {
-      action: 'phase_transition' as const,
-      reasoning: 'Go to nonexistent',
-      confidenceScore: 0.9,
-      progressTrend: 'improving' as const,
-      nextPhaseId: 'nonexistent',
-    };
-
-    const result = evaluatePhaseTransition(phases[0], phases, [], decision);
-
-    // Only one phase, nextPhaseId doesn't exist, sequential also doesn't exist
-    expect(result.shouldTransition).toBe(false);
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
-// Round 3 BUG-5 (P2): god-convergence no double consistency check
-// ══════════════════════════════════════════════════════════════
-
-describe('Round3 BUG-5: god-convergence skips redundant consistency check', () => {
-  test('test_bug_r3_5_corrected_judgment_not_overridden_by_second_check', async () => {
-    const { evaluateConvergence } = await import('../../god/god-convergence.js');
-
-    // God returns approved with blockingIssueCount > 0 (inconsistent)
-    // checkConsistency will auto-correct classification to changes_requested
-    // The second validateConvergenceConsistency should NOT re-check and override
-    const inconsistentOutput = `\`\`\`json
-{
-  "classification": "approved",
-  "shouldTerminate": true,
-  "reason": "approved",
-  "blockingIssueCount": 2,
-  "criteriaProgress": [{ "criterion": "A", "satisfied": true }],
-  "reviewerVerdict": "Approved"
-}
-\`\`\``;
-
-    const mockAdapter = {
-      name: 'mock-god',
-      displayName: 'Mock God',
-      version: '1.0.0',
-      isInstalled: async () => true,
-      getVersion: async () => '1.0.0',
-      execute(_prompt: string, _opts: any) {
-        const chunks = [{ type: 'text' as const, content: inconsistentOutput, timestamp: Date.now() }];
-        return {
-          [Symbol.asyncIterator]() {
-            let i = 0;
-            return {
-              async next() {
-                if (i < chunks.length) return { value: chunks[i++], done: false };
-                return { value: undefined as any, done: true };
-              },
-            };
-          },
-        };
-      },
-      kill: async () => {},
-      isRunning: () => false,
-    };
-
-    const tempDir = mkdtempSync(join(tmpdir(), 'bug-r3-5-'));
-    try {
-      const result = await evaluateConvergence(mockAdapter, 'Reviewer found issues', {
-        round: 3,
-        maxRounds: 10,
-        taskGoal: 'test',
-        terminationCriteria: ['A'],
-        convergenceLog: [],
-        sessionDir: tempDir,
-        seq: 1,
-      });
-
-      // Should NOT terminate (inconsistent judgment was auto-corrected)
-      expect(result.shouldTerminate).toBe(false);
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
-    }
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
-// Round 4 BUG-1 (P1): hasNoImprovement should not flag converged tasks
-// ══════════════════════════════════════════════════════════════
-
-describe('Round4 BUG-1: hasNoImprovement excludes all-zero counts', () => {
-  test('test_bug_r4_1_all_zero_blocking_counts_not_flagged_as_no_improvement', async () => {
-    const { evaluateConvergence } = await import('../../god/god-convergence.js');
-
-    // Simulate 3 rounds of 0 blocking issues (converged task)
-    const convergenceLog: ConvergenceLogEntry[] = [
-      { round: 1, timestamp: '2026-01-01T00:00:00Z', classification: 'approved', shouldTerminate: false, blockingIssueCount: 0, criteriaProgress: [], summary: 'blocking=0' },
-      { round: 2, timestamp: '2026-01-01T00:01:00Z', classification: 'approved', shouldTerminate: false, blockingIssueCount: 0, criteriaProgress: [], summary: 'blocking=0' },
-      { round: 3, timestamp: '2026-01-01T00:02:00Z', classification: 'approved', shouldTerminate: false, blockingIssueCount: 0, criteriaProgress: [], summary: 'blocking=0' },
-    ];
-
-    // God says loop_detected but blocking issues are 0 — should NOT force terminate
-    const godOutput = `\`\`\`json
-{
-  "classification": "approved",
-  "shouldTerminate": false,
-  "reason": "loop_detected",
-  "blockingIssueCount": 0,
-  "criteriaProgress": [{ "criterion": "A", "satisfied": true }],
-  "reviewerVerdict": "All good"
-}
-\`\`\``;
-
-    const mockAdapter = {
-      name: 'mock-god', displayName: 'Mock God', version: '1.0.0',
-      isInstalled: async () => true, getVersion: async () => '1.0.0',
-      execute() {
-        const chunks = [{ type: 'text' as const, content: godOutput, timestamp: Date.now() }];
-        return { [Symbol.asyncIterator]() { let i = 0; return { async next() { if (i < chunks.length) return { value: chunks[i++], done: false }; return { value: undefined as any, done: true }; } }; } };
-      },
-      kill: async () => {}, isRunning: () => false,
-    };
-
-    const tempDir = mkdtempSync(join(tmpdir(), 'bug-r4-1-'));
-    try {
-      const result = await evaluateConvergence(mockAdapter, 'Reviewer says all good', {
-        round: 4, maxRounds: 10, taskGoal: 'test',
-        terminationCriteria: ['A'], convergenceLog, sessionDir: tempDir, seq: 1,
-      });
-
-      // Should NOT force terminate — all-zero counts means converged, not stagnant
-      expect(result.terminationReason).not.toBe('loop_detected');
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
-    }
-  });
-
-  test('test_regression_r4_1_stagnant_nonzero_counts_still_detected', async () => {
-    // hasNoImprovement should still return true when counts are stagnant at a non-zero value
-    const { evaluateConvergence } = await import('../../god/god-convergence.js');
-
-    const convergenceLog: ConvergenceLogEntry[] = [
-      { round: 1, timestamp: '2026-01-01T00:00:00Z', classification: 'changes_requested', shouldTerminate: false, blockingIssueCount: 3, criteriaProgress: [], summary: 'blocking=3' },
-      { round: 2, timestamp: '2026-01-01T00:01:00Z', classification: 'changes_requested', shouldTerminate: false, blockingIssueCount: 3, criteriaProgress: [], summary: 'blocking=3' },
-      { round: 3, timestamp: '2026-01-01T00:02:00Z', classification: 'changes_requested', shouldTerminate: false, blockingIssueCount: 3, criteriaProgress: [], summary: 'blocking=3' },
-    ];
-
-    const godOutput = `\`\`\`json
-{
-  "classification": "changes_requested",
-  "shouldTerminate": false,
-  "reason": "loop_detected",
-  "blockingIssueCount": 3,
-  "criteriaProgress": [],
-  "reviewerVerdict": "Still stuck"
-}
-\`\`\``;
-
-    const mockAdapter = {
-      name: 'mock-god', displayName: 'Mock God', version: '1.0.0',
-      isInstalled: async () => true, getVersion: async () => '1.0.0',
-      execute() {
-        const chunks = [{ type: 'text' as const, content: godOutput, timestamp: Date.now() }];
-        return { [Symbol.asyncIterator]() { let i = 0; return { async next() { if (i < chunks.length) return { value: chunks[i++], done: false }; return { value: undefined as any, done: true }; } }; } };
-      },
-      kill: async () => {}, isRunning: () => false,
-    };
-
-    const tempDir = mkdtempSync(join(tmpdir(), 'bug-r4-1b-'));
-    try {
-      const result = await evaluateConvergence(mockAdapter, 'Reviewer says issues remain', {
-        round: 4, maxRounds: 10, taskGoal: 'test',
-        terminationCriteria: [], convergenceLog, sessionDir: tempDir, seq: 1,
-      });
-
-      // Should force terminate — stagnant at non-zero count
-      expect(result.shouldTerminate).toBe(true);
-      expect(result.terminationReason).toBe('loop_detected');
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
-    }
-  });
-});
+// Round4 BUG-1 tests removed — tested evaluateConvergence from the now-deleted god-convergence.ts module.
 
 // ══════════════════════════════════════════════════════════════
 // Round 4 BUG-5 (P1): markdown-parser empty code block
@@ -856,69 +423,7 @@ describe('Round4 BUG-6: late consumer receives buffered chunks', () => {
   });
 });
 
-// ══════════════════════════════════════════════════════════════
-// Round 4 BUG-7 (P2): consistency-checker mutually exclusive branches
-// ══════════════════════════════════════════════════════════════
-
-describe('Round4 BUG-7: consistency-checker uses else-if for mutual exclusion', () => {
-  test('test_bug_r4_7_superset_object_only_matches_first_branch', () => {
-    // Object that satisfies both type guards (has fields from both schemas)
-    const supersetObj = {
-      classification: 'approved',
-      shouldTerminate: true,
-      reason: null,
-      blockingIssueCount: 2,
-      criteriaProgress: [],
-      reviewerVerdict: 'ok',
-      // Also PostReviewer fields:
-      action: 'converged',
-      confidenceScore: 0.3,
-      progressTrend: 'declining',
-      reasoning: 'done',
-    };
-
-    const result = checkConsistency(supersetObj as any);
-
-    // Should only apply convergence corrections (first branch),
-    // NOT PostReviewer corrections which would overwrite.
-    if (result.corrected) {
-      const corrected = result.corrected as Record<string, unknown>;
-      // Convergence correction: classification approved + blockingIssueCount > 0
-      // → classification should be changed to changes_requested
-      expect(corrected.classification).toBe('changes_requested');
-      // Should NOT have action changed to route_to_coder (that would be PostReviewer correction)
-      expect(corrected.action).toBe('converged');
-    }
-  });
-
-  test('test_regression_r4_7_pure_convergence_judgment_still_checked', () => {
-    const judgment: GodConvergenceJudgment = {
-      classification: 'approved',
-      shouldTerminate: false,
-      reason: null,
-      blockingIssueCount: 3,
-      criteriaProgress: [],
-      reviewerVerdict: 'approved',
-    };
-
-    const result = checkConsistency(judgment);
-    expect(result.valid).toBe(false);
-    expect(result.violations.length).toBeGreaterThan(0);
-  });
-
-  test('test_regression_r4_7_pure_post_reviewer_still_checked', () => {
-    const decision: GodPostReviewerDecision = {
-      action: 'converged',
-      reasoning: 'done',
-      confidenceScore: 0.3,
-      progressTrend: 'declining',
-    };
-
-    const result = checkConsistency(decision);
-    expect(result.valid).toBe(false);
-    expect(result.violations.some(v => v.type === 'low_confidence')).toBe(true);
-  });
-});
+// Round4 BUG-7 tests removed — tested checkConsistency from the now-deleted consistency-checker.ts module.
 
 // ══════════════════════════════════════════════════════════════
 // Round 6 BUG-2 (P1): R-002 command_exec false positive on path fragments
@@ -1035,87 +540,7 @@ describe('Round7 BUG-1: controller.enqueue try-catch in adapter streams', () => 
 });
 
 // ══════════════════════════════════════════════════════════════
-// ROUND 7: BUG-2 (P1) — seq uniqueness across audit writes
-// ══════════════════════════════════════════════════════════════
-
-describe('Round7 BUG-2: seq uniqueness in convergence/router audit writes', () => {
-  let sessionDir: string;
-
-  beforeEach(() => {
-    sessionDir = join(mkdtempSync(join(tmpdir(), 'r7bug2-')), '');
-  });
-
-  afterEach(() => {
-    if (existsSync(sessionDir)) {
-      rmSync(sessionDir, { recursive: true, force: true });
-    }
-  });
-
-  test('test_bug_r7_2_convergence_hallucination_and_convergence_audit_have_different_seq', async () => {
-    const { readFileSync } = await import('node:fs');
-    const { evaluateConvergence } = await import('../../god/god-convergence.js');
-
-    // Create an adapter that returns an inconsistent judgment (will trigger hallucination audit)
-    const inconsistentOutput = `\`\`\`json
-{
-  "classification": "approved",
-  "shouldTerminate": true,
-  "reason": "approved",
-  "blockingIssueCount": 5,
-  "criteriaProgress": [{ "criterion": "A", "satisfied": true }],
-  "reviewerVerdict": "Approved with issues"
-}
-\`\`\``;
-
-    const mockAdapter = {
-      name: 'mock-god',
-      displayName: 'Mock God',
-      version: '1.0.0',
-      isInstalled: async () => true,
-      getVersion: async () => '1.0.0',
-      execute(): AsyncIterable<OutputChunk> {
-        return {
-          [Symbol.asyncIterator]() {
-            let done = false;
-            return {
-              async next() {
-                if (!done) {
-                  done = true;
-                  return { value: { type: 'text' as const, content: inconsistentOutput, timestamp: Date.now() }, done: false };
-                }
-                return { value: undefined as any, done: true };
-              },
-            };
-          },
-        };
-      },
-      kill: async () => {},
-      isRunning: () => false,
-    };
-
-    await evaluateConvergence(mockAdapter, 'Reviewer output here', {
-      round: 3,
-      maxRounds: 10,
-      taskGoal: 'Test',
-      terminationCriteria: ['A'],
-      convergenceLog: [],
-      sessionDir,
-      seq: 100,
-    });
-
-    const logPath = join(sessionDir, 'god-audit.jsonl');
-    const lines = readFileSync(logPath, 'utf-8').trim().split('\n');
-    const entries = lines.map(l => JSON.parse(l));
-
-    // Should have 2 entries: HALLUCINATION_DETECTED + CONVERGENCE
-    const hallucination = entries.find((e: any) => e.decisionType === 'HALLUCINATION_DETECTED');
-    const convergence = entries.find((e: any) => e.decisionType === 'CONVERGENCE');
-    expect(hallucination).toBeDefined();
-    expect(convergence).toBeDefined();
-    // Their seq values must be different
-    expect(hallucination.seq).not.toBe(convergence.seq);
-  });
-});
+// Round7 BUG-2 tests removed — tested evaluateConvergence from the now-deleted god-convergence.ts module.
 
 // ══════════════════════════════════════════════════════════════
 // ROUND 7: BUG-3 (P2) — stderr error handler in adapters
@@ -1228,7 +653,6 @@ describe('Round 8 BUG-1: saveState merges partial state', () => {
 
     // Save full state with session IDs
     mgr.saveState(id, {
-      round: 1,
       status: 'running',
       currentRole: 'coder',
       coderSessionId: 'coder-123',
@@ -1238,14 +662,12 @@ describe('Round 8 BUG-1: saveState merges partial state', () => {
 
     // Now save partial state (as interrupt save-and-exit does)
     mgr.saveState(id, {
-      round: 2,
       status: 'interrupted',
       currentRole: 'coder',
     } as Partial<SessionState>);
 
     // Verify session IDs are preserved
     const loaded = mgr.loadSession(id);
-    expect(loaded.state.round).toBe(2);
     expect(loaded.state.status).toBe('interrupted');
     expect(loaded.state.coderSessionId).toBe('coder-123');
     expect(loaded.state.reviewerSessionId).toBe('reviewer-456');
@@ -1264,32 +686,17 @@ describe('Round 8 BUG-1: saveState merges partial state', () => {
 
     // Save state with God analysis data
     mgr.saveState(id, {
-      round: 3,
       status: 'running',
       currentRole: 'reviewer',
       godTaskAnalysis: {
         taskType: 'code',
         reasoning: 'test',
         confidence: 0.8,
-        suggestedMaxRounds: 3,
-        terminationCriteria: ['tests pass'],
       },
-      godConvergenceLog: [
-        {
-          round: 1,
-          timestamp: new Date().toISOString(),
-          classification: 'changes_requested',
-          shouldTerminate: false,
-          blockingIssueCount: 2,
-          criteriaProgress: [],
-          summary: 'test',
-        },
-      ],
     });
 
     // Partial save (like double Ctrl+C)
     mgr.saveState(id, {
-      round: 3,
       status: 'interrupted',
       currentRole: 'reviewer',
     } as Partial<SessionState>);
@@ -1297,7 +704,6 @@ describe('Round 8 BUG-1: saveState merges partial state', () => {
     const loaded = mgr.loadSession(id);
     expect(loaded.state.godTaskAnalysis).toBeDefined();
     expect(loaded.state.godTaskAnalysis?.taskType).toBe('code');
-    expect(loaded.state.godConvergenceLog).toHaveLength(1);
   });
 });
 
@@ -1382,292 +788,7 @@ describe('Round 8 BUG-5: God message box CJK visual width', () => {
   });
 });
 
-// ══════════════════════════════════════════════════════════════
-// Round 9 BUG-1 (P1): EXECUTING → CODING (send_to_coder) must increment round (Card D.1)
-// ══════════════════════════════════════════════════════════════
-
-describe('Round9 BUG-1: EXECUTING→CODING (send_to_coder) increments round (Card D.1)', () => {
-  test('test_bug_r9_1_send_to_coder_via_executing_increments_round', () => {
-    const actor = createActor(workflowMachine, { input: { maxRounds: 3 } });
-    actor.start();
-
-    // IDLE → TASK_INIT → CODING → OBSERVING → GOD_DECIDING → EXECUTING
-    actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_COMPLETE' });
-    actor.send({ type: 'CODE_COMPLETE', output: 'empty output' });
-    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
-    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
-    expect(actor.getSnapshot().context.round).toBe(0);
-
-    // GOD_DECIDING → EXECUTING → CODING via send_to_coder (retry)
-    actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'retry' }]) });
-    actor.send({ type: 'EXECUTION_COMPLETE', results: [] });
-    expect(actor.getSnapshot().value).toBe('CODING');
-    // Round MUST have incremented to prevent infinite loop
-    expect(actor.getSnapshot().context.round).toBe(1);
-
-    actor.stop();
-  });
-
-  test('test_bug_r9_1_repeated_send_to_coder_increments_round_each_time', () => {
-    const actor = createActor(workflowMachine, { input: { maxRounds: 5 } });
-    actor.start();
-
-    actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_COMPLETE' });
-
-    // Simulate 2 repeated send_to_coder cycles (within circuit breaker limit of 3),
-    // each should increment round
-    for (let i = 0; i < 2; i++) {
-      actor.send({ type: 'CODE_COMPLETE', output: 'bad output' });
-      actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
-      actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'retry' }]) });
-      actor.send({ type: 'EXECUTION_COMPLETE', results: [] });
-      expect(actor.getSnapshot().value).toBe('CODING');
-      expect(actor.getSnapshot().context.round).toBe(i + 1);
-    }
-
-    // 3rd consecutive route-to-coder trips circuit breaker → PAUSED
-    actor.send({ type: 'CODE_COMPLETE', output: 'bad output again' });
-    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
-    actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'retry' }]) });
-    actor.send({ type: 'EXECUTION_COMPLETE', results: [] });
-    expect(actor.getSnapshot().value).toBe('PAUSED');
-    expect(actor.getSnapshot().context.lastError).toContain('Circuit breaker');
-
-    actor.stop();
-  });
-
-  test('test_bug_r9_1_send_to_coder_after_review_still_increments_round', () => {
-    // Navigate: CODING → OBSERVING → GOD_DECIDING → EXECUTING(send_to_reviewer) → REVIEWING
-    //         → OBSERVING → GOD_DECIDING → EXECUTING(send_to_coder) → CODING
-    const actor = createActor(workflowMachine, { input: {} });
-    actor.start();
-
-    actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_COMPLETE' });
-    actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
-    actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_reviewer', message: 'review' }]) });
-    actor.send({ type: 'EXECUTION_COMPLETE', results: [] });
-    expect(actor.getSnapshot().value).toBe('REVIEWING');
-
-    actor.send({ type: 'REVIEW_COMPLETE', output: 'fix this' });
-    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('review_output', 'reviewer')] });
-    actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'fix issues' }]) });
-    actor.send({ type: 'EXECUTION_COMPLETE', results: [] });
-
-    expect(actor.getSnapshot().value).toBe('CODING');
-    expect(actor.getSnapshot().context.round).toBe(1);
-
-    actor.stop();
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
-// Round 9 BUG-2 (P2): phase-transition allows backward transition from last phase
-// ══════════════════════════════════════════════════════════════
-
-describe('Round9 BUG-2: phase-transition backward from last phase', () => {
-  test('test_bug_r9_2_last_phase_can_transition_backward_via_nextPhaseId', async () => {
-    const { evaluatePhaseTransition } = await import('../../god/phase-transition.js');
-    const phases = [
-      { id: 'explore', name: 'Explore', type: 'explore' as const, description: 'Explore' },
-      { id: 'code', name: 'Code', type: 'code' as const, description: 'Code' },
-      { id: 'debug', name: 'Debug', type: 'debug' as const, description: 'Debug' },
-    ];
-
-    // Current phase is the LAST phase ('debug')
-    const result = evaluatePhaseTransition(
-      phases[2], // last phase
-      phases,
-      [], // empty convergence log
-      {
-        action: 'phase_transition',
-        reasoning: 'Need to go back to coding phase',
-        nextPhaseId: 'code', // God specifies backward transition
-        confidenceScore: 0.8,
-        progressTrend: 'stagnant',
-      },
-    );
-
-    expect(result.shouldTransition).toBe(true);
-    expect(result.nextPhaseId).toBe('code');
-  });
-
-  test('test_bug_r9_2_last_phase_without_nextPhaseId_returns_false', async () => {
-    const { evaluatePhaseTransition } = await import('../../god/phase-transition.js');
-    const phases = [
-      { id: 'explore', name: 'Explore', type: 'explore' as const, description: 'Explore' },
-      { id: 'code', name: 'Code', type: 'code' as const, description: 'Code' },
-    ];
-
-    // Last phase without nextPhaseId — no sequential next, should return false
-    const result = evaluatePhaseTransition(
-      phases[1], // last phase
-      phases,
-      [],
-      {
-        action: 'phase_transition',
-        reasoning: 'Phase complete',
-        confidenceScore: 0.9,
-        progressTrend: 'improving',
-      },
-    );
-
-    expect(result.shouldTransition).toBe(false);
-  });
-
-  test('test_bug_r9_2_forward_transition_still_works', async () => {
-    const { evaluatePhaseTransition } = await import('../../god/phase-transition.js');
-    const phases = [
-      { id: 'explore', name: 'Explore', type: 'explore' as const, description: 'Explore' },
-      { id: 'code', name: 'Code', type: 'code' as const, description: 'Code' },
-      { id: 'review', name: 'Review', type: 'review' as const, description: 'Review' },
-    ];
-
-    // Normal forward transition from first phase still works
-    const result = evaluatePhaseTransition(
-      phases[0],
-      phases,
-      [],
-      {
-        action: 'phase_transition',
-        reasoning: 'Moving to code',
-        confidenceScore: 0.9,
-        progressTrend: 'improving',
-      },
-    );
-
-    expect(result.shouldTransition).toBe(true);
-    expect(result.nextPhaseId).toBe('code');
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
-// Round 9 BUG-3 (P2): collectAdapterOutput collects error-type chunks
-// ══════════════════════════════════════════════════════════════
-
-describe('Round9 BUG-3: collectAdapterOutput includes error chunks', () => {
-  function createMockAdapterWithChunks(chunks: OutputChunk[]): {
-    name: string;
-    displayName: string;
-    version: string;
-    isInstalled: () => Promise<boolean>;
-    getVersion: () => Promise<string>;
-    execute: (_prompt: string, _opts: import('../../types/adapter.js').ExecOptions) => AsyncIterable<OutputChunk>;
-    kill: () => Promise<void>;
-    isRunning: () => boolean;
-  } {
-    return {
-      name: 'mock-god',
-      displayName: 'Mock God',
-      version: '1.0.0',
-      isInstalled: async () => true,
-      getVersion: async () => '1.0.0',
-      execute(_prompt: string, _opts: import('../../types/adapter.js').ExecOptions): AsyncIterable<OutputChunk> {
-        return {
-          [Symbol.asyncIterator]() {
-            let i = 0;
-            return {
-              async next() {
-                if (i < chunks.length) return { value: chunks[i++], done: false };
-                return { value: undefined as unknown as OutputChunk, done: true };
-              },
-            };
-          },
-        };
-      },
-      kill: async () => {},
-      isRunning: () => false,
-    };
-  }
-
-  test('test_bug_r9_3_convergence_collects_error_chunks', async () => {
-    const { evaluateConvergence } = await import('../../god/god-convergence.js');
-
-    const adapter = createMockAdapterWithChunks([
-      { type: 'text', content: 'Convergence check: ', timestamp: Date.now() },
-      { type: 'error', content: 'Error: potential regression found. ', timestamp: Date.now() },
-      {
-        type: 'code',
-        content: '```json\n{"classification":"changes_requested","shouldTerminate":false,"reason":null,"blockingIssueCount":1,"criteriaProgress":[],"reviewerVerdict":"issues found"}\n```',
-        timestamp: Date.now(),
-      },
-    ]);
-
-    const tmpDir = mkdtempSync(join(tmpdir(), 'r9-bug3-conv-'));
-    try {
-      const result = await evaluateConvergence(
-        adapter as any,
-        'reviewer output with issues',
-        {
-          round: 0,
-          maxRounds: 10,
-          taskGoal: 'test',
-          terminationCriteria: ['tests pass'],
-          convergenceLog: [],
-          sessionDir: tmpDir,
-          seq: 0,
-          projectDir: tmpDir,
-        },
-      );
-
-      // Should not terminate since there are blocking issues
-      expect(result.shouldTerminate).toBe(false);
-      expect(result.judgment).toBeDefined();
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-});
-
-// ── BUG-3 (R10-P1): EXECUTING→CODING (send_to_coder) increments round correctly (Card D.1) ──
-
-describe('R10-BUG-3: EXECUTING→CODING respects round increment (Card D.1)', () => {
-  test('test_bug_r10_3_send_to_coder_increments_round_from_high_value', () => {
-    // Start with round already near maxRounds
-    const actor = createActor(workflowMachine, {
-      input: { round: 4, maxRounds: 5 },
-    });
-    actor.start();
-
-    actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_COMPLETE' });
-    actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
-    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
-
-    // DECISION_READY with send_to_coder → EXECUTING → CODING
-    // Round should increment from 4 to 5
-    actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'retry' }]) });
-    actor.send({ type: 'EXECUTION_COMPLETE', results: [] });
-    expect(actor.getSnapshot().value).toBe('CODING');
-    expect(actor.getSnapshot().context.round).toBe(5);
-
-    actor.stop();
-  });
-
-  test('test_bug_r10_3_send_to_coder_under_max_rounds_goes_to_coding', () => {
-    const actor = createActor(workflowMachine, {
-      input: { round: 3, maxRounds: 5 },
-    });
-    actor.start();
-
-    actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_COMPLETE' });
-    actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
-
-    // DECISION_READY with send_to_coder → EXECUTING → CODING
-    actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'retry' }]) });
-    actor.send({ type: 'EXECUTION_COMPLETE', results: [] });
-    expect(actor.getSnapshot().value).toBe('CODING');
-    expect(actor.getSnapshot().context.round).toBe(4);
-
-    actor.stop();
-  });
-});
+// Round9 BUG-1, BUG-2, BUG-3 and R10-BUG-3 tests removed (round removal).
 
 // ══════════════════════════════════════════════════════════════
 // R13-BUG-1 (P1): ProcessTimeoutError dispatches TIMEOUT to state machine
@@ -1690,7 +811,7 @@ describe('R13-BUG-1: ProcessTimeoutError enables TIMEOUT dispatch to state machi
 
   test('test_regression_r13_bug1_orchestration_can_dispatch_TIMEOUT_on_ProcessTimeoutError', () => {
     // Simulate the orchestration layer catching ProcessTimeoutError and dispatching TIMEOUT
-    const actor = createActor(workflowMachine, { input: { round: 0, maxRounds: 10 } });
+    const actor = createActor(workflowMachine, { input: {} });
     actor.start();
     actor.send({ type: 'START_TASK', prompt: 'test task' });
     actor.send({ type: 'TASK_INIT_COMPLETE' });
@@ -1709,7 +830,7 @@ describe('R13-BUG-1: ProcessTimeoutError enables TIMEOUT dispatch to state machi
   });
 
   test('test_regression_r13_bug1_REVIEWING_state_also_handles_TIMEOUT', () => {
-    const actor = createActor(workflowMachine, { input: { round: 0, maxRounds: 10 } });
+    const actor = createActor(workflowMachine, { input: {} });
     actor.start();
     actor.send({ type: 'START_TASK', prompt: 'test' });
     actor.send({ type: 'TASK_INIT_COMPLETE' });
@@ -1844,10 +965,10 @@ describe('BUG-5: Message objects must include id field', () => {
 describe('BUG-8: handleTaskAnalysisConfirm updates taskAnalysis.taskType', () => {
   test('test_bug_8_user_selected_taskType_updates_state', () => {
     // Simulate the state update logic from handleTaskAnalysisConfirm
-    type GodTaskAnalysis = { taskType: string; suggestedMaxRounds?: number; phases?: { id: string }[] };
+    type GodTaskAnalysis = { taskType: string; confidence?: number; phases?: { id: string }[] };
     let taskAnalysis: GodTaskAnalysis | null = {
       taskType: 'code',       // God recommended 'code'
-      suggestedMaxRounds: 5,
+      confidence: 0.9,
       phases: [],
     };
 
@@ -1858,7 +979,7 @@ describe('BUG-8: handleTaskAnalysisConfirm updates taskAnalysis.taskType', () =>
     taskAnalysis = taskAnalysis ? { ...taskAnalysis, taskType: userSelectedType } : taskAnalysis;
 
     expect(taskAnalysis!.taskType).toBe('discuss');
-    expect(taskAnalysis!.suggestedMaxRounds).toBe(5); // other fields preserved
+    expect(taskAnalysis!.confidence).toBe(0.9); // other fields preserved
   });
 
   test('test_bug_8_compound_check_uses_param_not_stale_state', () => {
@@ -1910,8 +1031,6 @@ describe('BUG-9: God instruction passed to generateCoderPrompt', () => {
     // PromptContext now has an optional instruction field
     const ctx: PromptContext = {
       taskType: 'code',
-      round: 2,
-      maxRounds: 5,
       taskGoal: 'Fix login bug',
       instruction: 'focus on error handling edge cases',
     };
@@ -1922,8 +1041,6 @@ describe('BUG-9: God instruction passed to generateCoderPrompt', () => {
   test('test_bug_9_instruction_appears_in_generated_prompt', () => {
     const ctx: PromptContext = {
       taskType: 'code',
-      round: 2,
-      maxRounds: 5,
       taskGoal: 'Fix login bug',
       instruction: 'focus on error handling edge cases',
     };
@@ -1938,8 +1055,6 @@ describe('BUG-9: God instruction passed to generateCoderPrompt', () => {
   test('test_bug_9_instruction_appears_before_unresolved_issues', () => {
     const ctx: PromptContext = {
       taskType: 'code',
-      round: 2,
-      maxRounds: 5,
       taskGoal: 'Fix login bug',
       instruction: 'focus on error handling',
       unresolvedIssues: ['Missing null check in auth handler'],
@@ -1959,8 +1074,6 @@ describe('BUG-9: God instruction passed to generateCoderPrompt', () => {
   test('test_bug_9_no_instruction_section_when_undefined', () => {
     const ctx: PromptContext = {
       taskType: 'code',
-      round: 1,
-      maxRounds: 5,
       taskGoal: 'Build feature',
     };
 
@@ -1981,8 +1094,6 @@ describe('BUG-9: God instruction passed to generateCoderPrompt', () => {
     // Step 2: CODING useEffect God path passes it to generateCoderPrompt
     const ctx: PromptContext = {
       taskType: 'code',
-      round: 2,
-      maxRounds: 5,
       taskGoal: 'Fix login bug',
       instruction: pendingInstruction ?? undefined,
     };
@@ -2077,8 +1188,6 @@ describe('BUG-11: generateCoderPrompt receives instruction from local variable, 
     // God prompt path should use interruptInstruction (local variable), NOT clearedRef
     const prompt = generateCoderPrompt({
       taskType: 'code',
-      round: 1,
-      maxRounds: 20,
       taskGoal: 'Fix login bug',
       instruction: interruptInstruction, // correct: local variable
     });
@@ -2089,8 +1198,6 @@ describe('BUG-11: generateCoderPrompt receives instruction from local variable, 
     // Verify that using the cleared ref would lose the instruction
     const brokenPrompt = generateCoderPrompt({
       taskType: 'code',
-      round: 1,
-      maxRounds: 20,
       taskGoal: 'Fix login bug',
       instruction: clearedRef ?? undefined, // broken: cleared ref
     });
@@ -2103,8 +1210,6 @@ describe('BUG-11: generateCoderPrompt receives instruction from local variable, 
     // When there's no pending instruction, both paths should produce the same result
     const prompt = generateCoderPrompt({
       taskType: 'code',
-      round: 0,
-      maxRounds: 20,
       taskGoal: 'Initial task',
       instruction: undefined,
     });
@@ -2113,56 +1218,7 @@ describe('BUG-11: generateCoderPrompt receives instruction from local variable, 
   });
 });
 
-// ══════════════════════════════════════════════════════════════
-// BUG-12 (P1): convergenceLogRef — evaluateConvergence already appends internally
-// NOTE: This bug is a FALSE POSITIVE. evaluateConvergence() calls
-// appendConvergenceLog() which pushes to context.convergenceLog (the array
-// reference). No additional push in the GOD_DECIDING handler is needed.
-// This regression test proves the existing behavior is correct.
-// ══════════════════════════════════════════════════════════════
-
-describe('BUG-12: convergenceLog is appended by evaluateConvergence internally', () => {
-  test('test_bug_12_evaluateConvergence_appends_to_convergenceLog', async () => {
-    const { evaluateConvergence } = await import('../../god/god-convergence.js');
-    const { appendAuditLog } = await import('../../god/god-audit.js');
-    vi.spyOn(await import('../../god/god-audit.js'), 'appendAuditLog').mockImplementation(() => {});
-
-    const jsonBlock = '```json\n' + JSON.stringify({
-      classification: 'changes_requested',
-      shouldTerminate: false,
-      reason: null,
-      blockingIssueCount: 2,
-      criteriaProgress: [{ criterion: 'Tests pass', satisfied: false }],
-      reviewerVerdict: 'Issues remain',
-    }) + '\n```';
-
-    const adapter = {
-      execute: vi.fn(async function* () {
-        yield { type: 'text' as const, content: jsonBlock, timestamp: Date.now() };
-      }),
-      kill: vi.fn(async () => {}),
-    } as any;
-
-    // Simulate convergenceLogRef.current as an empty array
-    const convergenceLog: ConvergenceLogEntry[] = [];
-
-    await evaluateConvergence(adapter, 'Review: issues found', {
-      round: 1,
-      maxRounds: 20,
-      taskGoal: 'Fix bug',
-      terminationCriteria: ['Tests pass'],
-      convergenceLog, // passed by reference
-      sessionDir: '/tmp/test',
-      seq: 2,
-    });
-
-    // evaluateConvergence internally calls appendConvergenceLog which pushes to the array
-    expect(convergenceLog).toHaveLength(1);
-    expect(convergenceLog[0].round).toBe(1);
-    expect(convergenceLog[0].classification).toBe('changes_requested');
-    expect(convergenceLog[0].blockingIssueCount).toBe(2);
-  });
-});
+// BUG-12 tests removed — tested evaluateConvergence from the now-deleted god-convergence.ts module.
 
 // ══════════════════════════════════════════════════════════════
 // BUG-7/8 (P1): App.tsx must integrate dispatchMessages, checkNLInvariantViolations, logEnvelopeDecision
@@ -2218,7 +1274,6 @@ describe('BUG-7/8: GOD_DECIDING integrates message dispatcher + NL invariant che
       pendingReviewerMessage: null,
       displayToUser: (msg: string) => displayCalls.push(msg),
       auditLogger: new Logger(tmpDir),
-      round: 1,
     };
 
     const messages: import('../../types/god-envelope.js').EnvelopeMessage[] = [
@@ -2251,7 +1306,6 @@ describe('BUG-7/8: GOD_DECIDING integrates message dispatcher + NL invariant che
     const actions: any[] = []; // No accept_task action
 
     const violations = checkNLInvariantViolations(messages, actions, {
-      round: 1,
       phaseId: 'p1',
     });
 
@@ -2270,7 +1324,6 @@ describe('BUG-7/8: GOD_DECIDING integrates message dispatcher + NL invariant che
     const obs = [makeObs('work_output', 'coder')];
 
     logEnvelopeDecision(logger, {
-      round: 1,
       observations: obs,
       envelope,
       executionResults: [],
@@ -2353,14 +1406,13 @@ describe('BUG-9: error observations captured and routed via INCIDENT_DETECTED', 
     const { createTimeoutObservation } = await import('../../god/observation-integration.js');
     const { ObservationSchema } = await import('../../types/observation.js');
 
-    const obs = createTimeoutObservation(3, { adapter: 'claude-code' });
+    const obs = createTimeoutObservation({ adapter: 'claude-code' });
 
     // Must be a valid Observation
     expect(() => ObservationSchema.parse(obs)).not.toThrow();
     expect(obs.type).toBe('tool_failure');
     expect(obs.source).toBe('runtime');
     expect(obs.severity).toBe('error');
-    expect(obs.round).toBe(3);
   });
 
   test('test_bug_9_createProcessErrorObservation_returns_valid_observation_for_pipeline', async () => {
@@ -2368,7 +1420,7 @@ describe('BUG-9: error observations captured and routed via INCIDENT_DETECTED', 
     const { createProcessErrorObservation } = await import('../../god/observation-integration.js');
     const { ObservationSchema } = await import('../../types/observation.js');
 
-    const obs = createProcessErrorObservation('Process exited with code 1', 2, {
+    const obs = createProcessErrorObservation('Process exited with code 1', {
       adapter: 'codex',
     });
 
@@ -2377,7 +1429,6 @@ describe('BUG-9: error observations captured and routed via INCIDENT_DETECTED', 
     expect(obs.type).toBe('tool_failure');
     expect(obs.source).toBe('runtime');
     expect(obs.severity).toBe('error');
-    expect(obs.round).toBe(2);
     expect(obs.summary).toBe('Process exited with code 1');
   });
 

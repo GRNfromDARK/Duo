@@ -1,32 +1,26 @@
 /**
- * God Prompt Generator — dynamic prompt generation for Coder/Reviewer per round.
+ * God Prompt Generator — dynamic prompt generation for Coder/Reviewer per iteration.
  * Replaces ContextManager's prompt building for God-orchestrated sessions.
  * Source: FR-003 (AC-013, AC-014, AC-015), FR-003a, FR-003b, FR-003c
  */
 
 import type { GodAuditEntry } from './god-audit.js';
 import { appendAuditLog } from './god-audit.js';
-import type { ConvergenceLogEntry } from './god-convergence.js';
 import { stripToolMarkers } from './god-decision-service.js';
 
 // ── Types ──
 
-export type { ConvergenceLogEntry };
-
 export interface PromptContext {
   taskType: 'explore' | 'code' | 'discuss' | 'review' | 'debug' | 'compound';
-  round: number;
-  maxRounds: number;
   taskGoal: string;
   phaseId?: string;
   /** For compound type: the current phase's effective type */
   phaseType?: 'explore' | 'code' | 'discuss' | 'review' | 'debug';
   lastReviewerOutput?: string;
   unresolvedIssues?: string[];
-  /** Whether this round is a post-reviewer routing (God forwarding reviewer conclusions to coder) */
+  /** Whether this is a post-reviewer routing (God forwarding reviewer conclusions to coder) */
   isPostReviewerRouting?: boolean;
   suggestions?: string[];
-  convergenceLog?: ConvergenceLogEntry[];
   lastCoderOutput?: string;
   /** God auto-decision instruction (highest priority) */
   instruction?: string;
@@ -159,8 +153,8 @@ Focus on producing high-quality work output. Do not make management decisions.`)
   if (ctx.isPostReviewerRouting && ctx.lastReviewerOutput) {
     const cleaned = stripToolMarkers(ctx.lastReviewerOutput);
     sections.push(
-      `## Reviewer Feedback (Round ${ctx.round})\n` +
-      `The following is the Reviewer's original analysis from the previous round. ` +
+      `## Reviewer Feedback\n` +
+      `The following is the Reviewer's original analysis. ` +
       `Read it carefully — it contains specific findings, code references, and root cause analysis.\n\n` +
       cleaned
     );
@@ -182,24 +176,10 @@ Focus on producing high-quality work output. Do not make management decisions.`)
     sections.push(`## Suggestions (non-blocking, consider but not required)\n${suggestionList}`);
   }
 
-  // Priority 3: convergenceLog trend
-  if (ctx.convergenceLog && ctx.convergenceLog.length > 0) {
-    const latest = ctx.convergenceLog[ctx.convergenceLog.length - 1];
-    const trendDesc = latest.classification === 'approved'
-      ? 'Progress is improving — reviewer approved.'
-      : latest.shouldTerminate
-        ? 'Progress is converging — termination recommended.'
-        : 'Progress is ongoing — unresolved issues remain.';
-    sections.push(`## Convergence Trend\n${trendDesc} (${latest.blockingIssueCount} blocking in round ${latest.round})`);
-  }
-
   // Strategy instructions based on task type (FR-003a)
-  // First round without reviewer feedback → propose only (no file modifications)
+  // First iteration without reviewer feedback → propose only (no file modifications)
   const proposeOnly = !ctx.isPostReviewerRouting && !ctx.instruction;
   sections.push(getStrategyInstructions(effectiveType, proposeOnly));
-
-  // Priority 4: round info
-  sections.push(`## Round Info\nRound ${ctx.round} of ${ctx.maxRounds}`);
 
   let prompt = sections.join('\n\n');
 
@@ -208,9 +188,8 @@ Focus on producing high-quality work output. Do not make management decisions.`)
     const entry: GodAuditEntry = {
       seq: audit.seq,
       timestamp: new Date().toISOString(),
-      round: ctx.round,
       decisionType: 'PROMPT_GENERATION',
-      inputSummary: `taskType=${ctx.taskType}, round=${ctx.round}/${ctx.maxRounds}`,
+      inputSummary: `taskType=${ctx.taskType}`,
       outputSummary: prompt,
       decision: { promptType: 'coder', taskType: ctx.taskType, effectiveType },
     };
@@ -221,12 +200,10 @@ Focus on producing high-quality work output. Do not make management decisions.`)
 }
 
 /**
- * Generate a Reviewer prompt for the current round.
+ * Generate a Reviewer prompt for the current iteration.
  */
 export function generateReviewerPrompt(ctx: {
   taskType: string;
-  round: number;
-  maxRounds: number;
   taskGoal: string;
   lastCoderOutput?: string;
   phaseId?: string;
@@ -259,7 +236,7 @@ Focus on thorough, honest review. Your observations help God make the best decis
   }
 
   if (ctx.lastCoderOutput) {
-    sections.push(`## Coder Output (Round ${ctx.round})\n${ctx.lastCoderOutput}`);
+    sections.push(`## Coder Output\n${ctx.lastCoderOutput}`);
   }
 
   // Phase-aware review instructions
@@ -294,8 +271,6 @@ Focus on thorough, honest review. Your observations help God make the best decis
   sections.push(`## Verdict Rules
 - If there are ZERO blocking issues, you MUST use [APPROVED] — do not withhold approval for non-blocking suggestions.
 - Approve when the work meets the task requirements. Do not block on style or preferences.`);
-
-  sections.push(`## Round Info\nRound ${ctx.round} of ${ctx.maxRounds}`);
 
   return sections.join('\n\n');
 }
