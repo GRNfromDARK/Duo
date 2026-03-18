@@ -167,7 +167,7 @@ export function resolveUserDecision(
   const trimmed = text.trim();
   const lower = trimmed.toLowerCase();
 
-  if (stateValue === 'WAITING_USER' || stateValue === 'MANUAL_FALLBACK') {
+  if (stateValue === 'WAITING_USER' || stateValue === 'PAUSED') {
     if (lower === 'a' || lower === 'accept') {
       return { type: 'confirm', action: 'accept' };
     }

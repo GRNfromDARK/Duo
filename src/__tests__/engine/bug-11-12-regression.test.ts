@@ -162,7 +162,7 @@ describe('BUG-11 regression: pendingReviewerMessage propagation', () => {
     it('send_to_reviewer routes from EXECUTING to REVIEWING', () => {
       const actor = startActor();
       actor.send({ type: 'START_TASK', prompt: 'test' });
-      actor.send({ type: 'TASK_INIT_SKIP' });
+      actor.send({ type: 'TASK_INIT_COMPLETE' });
 
       // Advance to EXECUTING with send_to_reviewer
       actor.send({ type: 'CODE_COMPLETE', output: 'done' });
@@ -279,7 +279,7 @@ describe('BUG-12 regression: multiple routing action conflict detection', () => 
     it('send_to_coder takes priority over send_to_reviewer when first', () => {
       const actor = startActor();
       actor.send({ type: 'START_TASK', prompt: 'test' });
-      actor.send({ type: 'TASK_INIT_SKIP' });
+      actor.send({ type: 'TASK_INIT_COMPLETE' });
       actor.send({ type: 'CODE_COMPLETE', output: 'done' });
       actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
       actor.send({
@@ -305,7 +305,7 @@ describe('BUG-12 regression: multiple routing action conflict detection', () => 
     it('send_to_reviewer takes priority when it comes first', () => {
       const actor = startActor();
       actor.send({ type: 'START_TASK', prompt: 'test' });
-      actor.send({ type: 'TASK_INIT_SKIP' });
+      actor.send({ type: 'TASK_INIT_COMPLETE' });
       actor.send({ type: 'CODE_COMPLETE', output: 'done' });
       actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
       actor.send({

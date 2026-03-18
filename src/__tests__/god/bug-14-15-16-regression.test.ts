@@ -3,7 +3,7 @@
  *
  * BUG-14 [P1]: compound task phaseId/phaseType not passed to God prompt generation
  * BUG-15 [P1]: GOD_DECIDING auto-decision auditSeqRef uses post-increment
- * BUG-16 [P2]: confirmContinueWithPhase overwrites taskPrompt with God reasoning
+ * BUG-16 [P2]: confirmContinueWithPhase removed in v2 — PAUSED simplified to retry/quit
  *
  * Card D.1 adaptation:
  *   - ROUTING_POST_CODE, ROUTING_POST_REVIEW, EVALUATING states removed
@@ -11,9 +11,8 @@
  *   - CODE_COMPLETE → OBSERVING (not ROUTING_POST_CODE)
  *   - REVIEW_COMPLETE → OBSERVING (not ROUTING_POST_REVIEW)
  *   - GOD_DECIDING uses DECISION_READY (not USER_CONFIRM for accept/continue)
- *   - MANUAL_FALLBACK retains USER_CONFIRM with confirmContinueWithPhase guard
- *   - PHASE_TRANSITION, CONVERGED events removed from state machine
- *   - pendingPhaseId set via input context, consumed in MANUAL_FALLBACK via USER_CONFIRM
+ *   - PAUSED uses confirmContinue → GOD_DECIDING (retry) and confirmAccept → DONE (quit)
+ *   - Phase transitions handled by Hand executor set_phase actions
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createActor } from 'xstate';
@@ -275,13 +274,10 @@ describe('BUG-15 regression: audit seq pre-increment consistency', () => {
 });
 
 // ══════════════════════════════════════════════════════════════════
-// BUG-16: confirmContinueWithPhase preserves original taskPrompt
+// BUG-16: PAUSED simplified in v2 — confirmContinueWithPhase removed
 //
-// Card D.1 adaptation:
-//   Old flow: CODE_COMPLETE → ROUTE_TO_REVIEW → REVIEW_COMPLETE → PHASE_TRANSITION → GOD_DECIDING → USER_CONFIRM
-//   New flow: CODING → OBSERVING → GOD_DECIDING → MANUAL_FALLBACK → USER_CONFIRM
-//   pendingPhaseId is set via input context (PHASE_TRANSITION event removed).
-//   MANUAL_FALLBACK retains USER_CONFIRM with confirmContinueWithPhase guard.
+// In v2, PAUSED only supports retry (GOD_DECIDING) and quit (DONE).
+// Phase transitions are handled by the Hand executor's set_phase action.
 // ══════════════════════════════════════════════════════════════════
 
 function startActor(context?: Partial<WorkflowContext>) {
@@ -291,106 +287,52 @@ function startActor(context?: Partial<WorkflowContext>) {
 }
 
 /**
- * Navigate actor to MANUAL_FALLBACK with a pendingPhaseId already in context.
- *
- * Card D.1 flow:
- *   START_TASK → TASK_INIT → TASK_INIT_SKIP → CODING
- *   → CODE_COMPLETE → OBSERVING
- *   → OBSERVATIONS_READY → GOD_DECIDING
- *   → MANUAL_FALLBACK_REQUIRED → MANUAL_FALLBACK (waiting for USER_CONFIRM)
- *
- * pendingPhaseId is provided via input context to the actor.
+ * Navigate actor to PAUSED state.
  */
-function advanceToManualFallback(
+function advanceToPaused(
   prompt = 'implement user login with OAuth',
-  pendingPhaseId = 'implement-phase',
 ) {
-  const actor = startActor({ pendingPhaseId });
+  const actor = startActor();
   actor.send({ type: 'START_TASK', prompt });
-  actor.send({ type: 'TASK_INIT_SKIP' });
+  actor.send({ type: 'TASK_INIT_COMPLETE' });
   actor.send({ type: 'CODE_COMPLETE', output: 'done phase 1' });
   actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('work_output', 'coder')] });
-  actor.send({ type: 'MANUAL_FALLBACK_REQUIRED' });
+  actor.send({ type: 'PAUSE_REQUIRED' });
   return actor;
 }
 
-describe('BUG-16 regression: confirmContinueWithPhase taskPrompt preservation', () => {
-  it('taskPrompt preserves original task description after phase transition via MANUAL_FALLBACK', () => {
-    const originalTask = 'implement user login with OAuth';
-    const actor = advanceToManualFallback(originalTask, 'implement-phase');
+describe('BUG-16 regression: PAUSED simplified transitions', () => {
+  it('PAUSED → GOD_DECIDING on USER_CONFIRM continue (retry)', () => {
+    const actor = advanceToPaused('implement user login with OAuth');
+    expect(actor.getSnapshot().value).toBe('PAUSED');
 
-    // Verify we're in MANUAL_FALLBACK with pending phase
-    expect(actor.getSnapshot().value).toBe('MANUAL_FALLBACK');
-    expect(actor.getSnapshot().context.pendingPhaseId).toBe('implement-phase');
-
-    // Confirm phase transition via USER_CONFIRM (backward compat path)
     actor.send({ type: 'USER_CONFIRM', action: 'continue' });
-
-    // BUG-16 fix: taskPrompt should contain original task, not God's reasoning
-    const taskPrompt = actor.getSnapshot().context.taskPrompt!;
-    expect(taskPrompt).toContain(originalTask);
-    expect(taskPrompt).toContain('implement-phase');
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
+    // taskPrompt preserved
+    expect(actor.getSnapshot().context.taskPrompt).toBe('implement user login with OAuth');
     actor.stop();
   });
 
-  it('taskPrompt format is [Phase: phaseId] originalTask', () => {
-    const actor = advanceToManualFallback('build REST API', 'implement-phase');
+  it('PAUSED → DONE on USER_CONFIRM accept (quit)', () => {
+    const actor = advanceToPaused('build REST API');
+    expect(actor.getSnapshot().value).toBe('PAUSED');
 
-    actor.send({ type: 'USER_CONFIRM', action: 'continue' });
-
-    expect(actor.getSnapshot().context.taskPrompt).toBe(
-      '[Phase: implement-phase] build REST API',
-    );
+    actor.send({ type: 'USER_CONFIRM', action: 'accept' });
+    expect(actor.getSnapshot().value).toBe('DONE');
     actor.stop();
   });
 
-  it('taskPrompt unchanged when USER_CONFIRM without pending phase', () => {
-    // Create actor without pendingPhaseId, navigate to MANUAL_FALLBACK
+  it('taskPrompt unchanged after PAUSED → GOD_DECIDING retry', () => {
     const actor = startActor();
     actor.send({ type: 'START_TASK', prompt: 'simple task' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('work_output', 'coder')] });
-    actor.send({ type: 'MANUAL_FALLBACK_REQUIRED' });
+    actor.send({ type: 'PAUSE_REQUIRED' });
 
-    expect(actor.getSnapshot().value).toBe('MANUAL_FALLBACK');
-    expect(actor.getSnapshot().context.pendingPhaseId).toBeNull();
-
+    expect(actor.getSnapshot().value).toBe('PAUSED');
     actor.send({ type: 'USER_CONFIRM', action: 'continue' });
     expect(actor.getSnapshot().context.taskPrompt).toBe('simple task');
     actor.stop();
-  });
-
-  it('multiple phase transitions accumulate phase prefix correctly', () => {
-    // First phase transition: pendingPhaseId = 'phase-2'
-    const actor1 = advanceToManualFallback('multi-phase project', 'phase-2');
-    actor1.send({ type: 'USER_CONFIRM', action: 'continue' });
-
-    // After first transition: taskPrompt = "[Phase: phase-2] multi-phase project"
-    const afterFirst = actor1.getSnapshot().context.taskPrompt!;
-    expect(afterFirst).toBe('[Phase: phase-2] multi-phase project');
-    expect(afterFirst).toContain('phase-2');
-    actor1.stop();
-
-    // Second phase transition: start a new actor with updated taskPrompt and new pendingPhaseId
-    // This simulates the runtime re-injecting pendingPhaseId via set_phase action
-    const actor2 = startActor({
-      pendingPhaseId: 'phase-3',
-      taskPrompt: afterFirst,
-    });
-    actor2.send({ type: 'START_TASK', prompt: afterFirst });
-    actor2.send({ type: 'TASK_INIT_SKIP' });
-    actor2.send({ type: 'CODE_COMPLETE', output: 'done' });
-    actor2.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('work_output', 'coder')] });
-    actor2.send({ type: 'MANUAL_FALLBACK_REQUIRED' });
-    actor2.send({ type: 'USER_CONFIRM', action: 'continue' });
-
-    // After second transition: phase prefix updated (old prefix replaced)
-    const afterSecond = actor2.getSnapshot().context.taskPrompt!;
-    expect(afterSecond).toContain('phase-3');
-    // The old phase-2 prefix should be replaced, not accumulated
-    expect(afterSecond).not.toMatch(/\[Phase: phase-2\]/);
-    expect(afterSecond).toBe('[Phase: phase-3] multi-phase project');
-    actor2.stop();
   });
 });

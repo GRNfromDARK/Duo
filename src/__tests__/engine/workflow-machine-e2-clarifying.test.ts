@@ -30,7 +30,7 @@ function startActor(context?: Partial<WorkflowContext>) {
 /** Helper: send START_TASK and skip TASK_INIT */
 function sendStartAndSkipInit(actor: ReturnType<typeof startActor>, prompt: string) {
   actor.send({ type: 'START_TASK', prompt });
-  actor.send({ type: 'TASK_INIT_SKIP' });
+  actor.send({ type: 'TASK_INIT_COMPLETE' });
 }
 
 function makeObs(type: Observation['type'] = 'work_output', source: Observation['source'] = 'coder'): Observation {

@@ -154,7 +154,7 @@ describe('BUG-5: EXECUTING→CODING round increment (Card D.1)', () => {
 
     // Navigate: IDLE → TASK_INIT → CODING → OBSERVING → GOD_DECIDING → EXECUTING
     actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
     // Now in OBSERVING
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
@@ -177,7 +177,7 @@ describe('BUG-5: EXECUTING→CODING round increment (Card D.1)', () => {
     const actor1 = createActor(workflowMachine, { input: { round: 0, maxRounds: 10 } });
     actor1.start();
     actor1.send({ type: 'START_TASK', prompt: 'test' });
-    actor1.send({ type: 'TASK_INIT_SKIP' });
+    actor1.send({ type: 'TASK_INIT_COMPLETE' });
     actor1.send({ type: 'CODE_COMPLETE', output: 'done' });
     actor1.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
     actor1.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'retry' }]) });
@@ -190,7 +190,7 @@ describe('BUG-5: EXECUTING→CODING round increment (Card D.1)', () => {
     const actor2 = createActor(workflowMachine, { input: { round: 0, maxRounds: 10 } });
     actor2.start();
     actor2.send({ type: 'START_TASK', prompt: 'test' });
-    actor2.send({ type: 'TASK_INIT_SKIP' });
+    actor2.send({ type: 'TASK_INIT_COMPLETE' });
     actor2.send({ type: 'CODE_COMPLETE', output: 'done' });
     actor2.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
     actor2.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_reviewer', message: 'review' }]) });
@@ -1393,7 +1393,7 @@ describe('Round9 BUG-1: EXECUTING→CODING (send_to_coder) increments round (Car
 
     // IDLE → TASK_INIT → CODING → OBSERVING → GOD_DECIDING → EXECUTING
     actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
     actor.send({ type: 'CODE_COMPLETE', output: 'empty output' });
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
     expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
@@ -1414,7 +1414,7 @@ describe('Round9 BUG-1: EXECUTING→CODING (send_to_coder) increments round (Car
     actor.start();
 
     actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
 
     // Simulate 2 repeated send_to_coder cycles (within circuit breaker limit of 3),
     // each should increment round
@@ -1427,12 +1427,12 @@ describe('Round9 BUG-1: EXECUTING→CODING (send_to_coder) increments round (Car
       expect(actor.getSnapshot().context.round).toBe(i + 1);
     }
 
-    // 3rd consecutive route-to-coder trips circuit breaker → MANUAL_FALLBACK
+    // 3rd consecutive route-to-coder trips circuit breaker → PAUSED
     actor.send({ type: 'CODE_COMPLETE', output: 'bad output again' });
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
     actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'retry' }]) });
     actor.send({ type: 'EXECUTION_COMPLETE', results: [] });
-    expect(actor.getSnapshot().value).toBe('MANUAL_FALLBACK');
+    expect(actor.getSnapshot().value).toBe('PAUSED');
     expect(actor.getSnapshot().context.lastError).toContain('Circuit breaker');
 
     actor.stop();
@@ -1445,7 +1445,7 @@ describe('Round9 BUG-1: EXECUTING→CODING (send_to_coder) increments round (Car
     actor.start();
 
     actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
     actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_reviewer', message: 'review' }]) });
@@ -1633,7 +1633,7 @@ describe('R10-BUG-3: EXECUTING→CODING respects round increment (Card D.1)', ()
     actor.start();
 
     actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
     expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
@@ -1655,7 +1655,7 @@ describe('R10-BUG-3: EXECUTING→CODING respects round increment (Card D.1)', ()
     actor.start();
 
     actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
 
@@ -1693,7 +1693,7 @@ describe('R13-BUG-1: ProcessTimeoutError enables TIMEOUT dispatch to state machi
     const actor = createActor(workflowMachine, { input: { round: 0, maxRounds: 10 } });
     actor.start();
     actor.send({ type: 'START_TASK', prompt: 'test task' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
     expect(actor.getSnapshot().value).toBe('CODING');
 
     // Simulate: adapter throws ProcessTimeoutError → orchestration catches → dispatches TIMEOUT
@@ -1712,7 +1712,7 @@ describe('R13-BUG-1: ProcessTimeoutError enables TIMEOUT dispatch to state machi
     const actor = createActor(workflowMachine, { input: { round: 0, maxRounds: 10 } });
     actor.start();
     actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
     // Card D.1: navigate to REVIEWING via OBSERVING → GOD_DECIDING → EXECUTING(send_to_reviewer)
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });

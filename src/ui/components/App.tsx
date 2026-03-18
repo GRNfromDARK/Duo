@@ -112,7 +112,7 @@ function mapStateToStatus(stateValue: string): WorkflowStatus {
     case 'OBSERVING':
     case 'EXECUTING':
       return 'routing';
-    case 'MANUAL_FALLBACK':
+    case 'PAUSED':
       return 'interrupted';
     case 'INTERRUPTED':
       return 'interrupted';
@@ -486,14 +486,14 @@ function SessionRunner({
       godAuditLoggerRef.current = new GodAuditLogger(sessionDir);
     }
 
-    // God paused → skip immediately
+    // God paused → error immediately, auto-recovery will handle retry
     if (!watchdogRef.current.isGodAvailable()) {
       addMessage({
         role: 'system',
-        content: 'God orchestrator disabled. Skipping task analysis.',
+        content: 'God orchestrator unavailable. System paused.',
         timestamp: Date.now(),
       });
-      send({ type: 'TASK_INIT_SKIP' });
+      send({ type: 'PROCESS_ERROR', error: 'God orchestrator unavailable during task init' } as any);
       return;
     }
 
@@ -580,7 +580,7 @@ function SessionRunner({
           timestamp: Date.now(),
         });
         addTimelineEvent('error', 'God TASK_INIT failed, system paused');
-        send({ type: 'TASK_INIT_SKIP' });
+        send({ type: 'PROCESS_ERROR', error: 'God TASK_INIT failed after retries' } as any);
       }
     })();
 
@@ -1087,7 +1087,7 @@ function SessionRunner({
     });
     addTimelineEvent('error', `Error: ${ctx.lastError ?? 'Unknown'}`);
 
-    // Auto-recover to GOD_DECIDING / MANUAL_FALLBACK handling
+    // Auto-recover to GOD_DECIDING / PAUSED handling
     send({ type: 'RECOVERY' });
   }, [stateValue]);
 
@@ -1101,7 +1101,7 @@ function SessionRunner({
     const manualWaitingMsg = 'Waiting for your decision. Type [c] to continue, [a] to accept, or enter new instructions.';
 
     if (!watchdogRef.current.isGodAvailable()) {
-      send({ type: 'MANUAL_FALLBACK_REQUIRED' } as any);
+      send({ type: 'PAUSE_REQUIRED' } as any);
       addMessage({
         role: 'system',
         content: `God unavailable. ${manualWaitingMsg}`,
@@ -1112,7 +1112,7 @@ function SessionRunner({
 
     let cancelled = false;
 
-    // Bug 4 fix: GOD_DECIDING timeout — fallback to MANUAL_FALLBACK if God hangs
+    // Bug 4 fix: GOD_DECIDING timeout — fallback to PAUSED if God hangs
     const GOD_DECIDING_TIMEOUT_MS = 610_000; // ~10 minutes, must exceed adapter GOD_TIMEOUT_MS (600s)
     const timeoutId = setTimeout(() => {
       if (cancelled) return;
@@ -1124,7 +1124,7 @@ function SessionRunner({
       });
       // Record timeout in Watchdog state
       watchdogRef.current.shouldRetry();
-      send({ type: 'MANUAL_FALLBACK_REQUIRED' } as any);
+      send({ type: 'PAUSE_REQUIRED' } as any);
     }, GOD_DECIDING_TIMEOUT_MS);
 
     (async () => {
@@ -1231,7 +1231,7 @@ function SessionRunner({
           content: `God decision failed: ${err instanceof Error ? err.message : String(err)}. ${manualWaitingMsg}`,
           timestamp: Date.now(),
         });
-        send({ type: 'MANUAL_FALLBACK_REQUIRED' } as any);
+        send({ type: 'PAUSE_REQUIRED' } as any);
       }
     })();
 
@@ -1428,7 +1428,7 @@ function SessionRunner({
         return;
       }
 
-      if (stateValue === 'MANUAL_FALLBACK') {
+      if (stateValue === 'PAUSED') {
         const decision = resolveUserDecision(
           stateValue,
           text,
@@ -1811,7 +1811,7 @@ function SessionRunner({
   if (
     showPhaseTransition
     && pendingPhaseTransition
-    && (stateValue === 'GOD_DECIDING' || stateValue === 'MANUAL_FALLBACK')
+    && (stateValue === 'GOD_DECIDING' || stateValue === 'PAUSED')
   ) {
     return (
       <Box flexDirection="column" width={columns} height={rows}>
@@ -1864,7 +1864,7 @@ function SessionRunner({
         reviewerAdapter: config.reviewer,
         coderModel: config.coderModel,
         reviewerModel: config.reviewerModel,
-        degradationLevel: watchdogRef.current.isPaused() ? 'L4' : 'L1',
+        // degradationLevel removed — StatusBar no longer shows degradation indicators
         godLatency,
       }}
       contextData={contextData}

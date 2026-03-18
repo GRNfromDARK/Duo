@@ -3,7 +3,7 @@
  * Source: FR-018 (AC-061, AC-062, AC-063, AC-064)
  *
  * Layout: Left [ Duo  <project>  [████░░] N/Max  Agent ◆ Active  [type]  φ:phase ]
- *         Right [ God:X  ↓L3  800ms  5.0ktok ]
+ *         Right [ God:X  800ms  5.0ktok ]
  *
  * Items are hidden progressively when terminal is too narrow.
  */
@@ -27,7 +27,6 @@ export interface StatusBarProps {
   reviewerModel?: string;
   taskType?: string;
   currentPhase?: string;
-  degradationLevel?: string; // L1/L2/L3/L4
   godLatency?: number;       // latest God decision latency (ms)
 }
 
@@ -82,7 +81,6 @@ export function StatusBar({
   reviewerModel,
   taskType,
   currentPhase,
-  degradationLevel,
   godLatency,
 }: StatusBarProps): React.ReactElement {
   const cfg = STATUS_CONFIG[status];
@@ -102,12 +100,6 @@ export function StatusBar({
   const godStr = showGod ? `God:${godAdapter}` : '';
   const taskTypeStr = taskType ? `[${taskType}]` : '';
   const phaseStr = currentPhase ? `φ:${currentPhase}` : '';
-  // Degradation: L4 → "God:disabled", L2/L3 → "↓L2"/"↓L3", L1 → hide
-  const degradStr = degradationLevel === 'L4'
-    ? 'God:disabled'
-    : degradationLevel && degradationLevel !== 'L1'
-      ? `↓${degradationLevel}`
-      : '';
   const latencyStr = godLatency !== undefined ? `${godLatency}ms` : '';
 
   // Build segments with priorities (1=must show, 5=nice to have)
@@ -123,11 +115,6 @@ export function StatusBar({
 
   const rightSegments: Segment[] = [];
   if (godStr) rightSegments.push({ text: godStr, color: 'magenta', priority: 4 });
-  if (degradStr) rightSegments.push({
-    text: degradStr,
-    color: degradationLevel === 'L4' ? 'red' : 'yellow',
-    priority: 3,
-  });
   if (latencyStr) rightSegments.push({ text: latencyStr, dimColor: true, priority: 5 });
   rightSegments.push({ text: tokenStr, dimColor: true, priority: 2 });
 
@@ -155,17 +142,14 @@ export function StatusBar({
   const leftOffset = leftSegments.length;
   const visibleRight = rightSegments.filter((_, i) => !removedIndices.has(i + leftOffset));
 
-  // Determine if L4 degradation — use red background
-  const isL4 = degradationLevel === 'L4';
-
   return (
     <Box height={1} width={columns}>
-      <Text inverse={!isL4} bold backgroundColor={isL4 ? 'red' : undefined} color={isL4 ? 'white' : undefined}>
+      <Text inverse bold>
         {' '}
         {visibleLeft.map((seg, i) => (
           <React.Fragment key={i}>
             {seg.color ? (
-              <Text color={isL4 ? 'white' : seg.color}>{seg.text}</Text>
+              <Text color={seg.color}>{seg.text}</Text>
             ) : seg.dimColor ? (
               <Text dimColor>{seg.text}</Text>
             ) : (
@@ -178,7 +162,7 @@ export function StatusBar({
         {visibleRight.length > 0 && visibleRight.map((seg, i) => (
           <React.Fragment key={`r${i}`}>
             {seg.color ? (
-              <Text color={isL4 ? 'white' : seg.color}>{seg.text}</Text>
+              <Text color={seg.color}>{seg.text}</Text>
             ) : seg.dimColor ? (
               <Text dimColor>{seg.text}</Text>
             ) : (

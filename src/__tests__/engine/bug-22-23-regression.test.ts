@@ -106,7 +106,7 @@ describe('BUG-22 regression: fallback envelope must not lose observations', () =
     it('observations are preserved when EXECUTION_COMPLETE has empty results', () => {
       const actor = startActor();
       actor.send({ type: 'START_TASK', prompt: 'test' });
-      actor.send({ type: 'TASK_INIT_SKIP' });
+      actor.send({ type: 'TASK_INIT_COMPLETE' });
 
       // Coder completes
       actor.send({ type: 'CODE_COMPLETE', output: 'done' });
@@ -138,7 +138,7 @@ describe('BUG-22 regression: fallback envelope must not lose observations', () =
     it('observations are replaced normally when execution produces new results', () => {
       const actor = startActor();
       actor.send({ type: 'START_TASK', prompt: 'test' });
-      actor.send({ type: 'TASK_INIT_SKIP' });
+      actor.send({ type: 'TASK_INIT_COMPLETE' });
 
       actor.send({ type: 'CODE_COMPLETE', output: 'done' });
 

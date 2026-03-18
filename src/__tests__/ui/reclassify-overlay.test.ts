@@ -41,7 +41,7 @@ describe('createReclassifyState', () => {
   });
 });
 
-describe('canTriggerReclassify — AC-1: Ctrl+R in CODING/REVIEWING/GOD_DECIDING/MANUAL_FALLBACK', () => {
+describe('canTriggerReclassify — AC-1: Ctrl+R in CODING/REVIEWING/GOD_DECIDING/PAUSED', () => {
   it('should allow in CODING state', () => {
     expect(canTriggerReclassify('CODING')).toBe(true);
   });
@@ -54,8 +54,8 @@ describe('canTriggerReclassify — AC-1: Ctrl+R in CODING/REVIEWING/GOD_DECIDING
     expect(canTriggerReclassify('GOD_DECIDING')).toBe(true);
   });
 
-  it('should allow in MANUAL_FALLBACK state', () => {
-    expect(canTriggerReclassify('MANUAL_FALLBACK')).toBe(true);
+  it('should allow in PAUSED state', () => {
+    expect(canTriggerReclassify('PAUSED')).toBe(true);
   });
 
   it('should not allow in IDLE state', () => {
@@ -75,7 +75,7 @@ describe('canTriggerReclassify — AC-1: Ctrl+R in CODING/REVIEWING/GOD_DECIDING
       'CODING',
       'REVIEWING',
       'GOD_DECIDING',
-      'MANUAL_FALLBACK',
+      'PAUSED',
     ]);
   });
 });

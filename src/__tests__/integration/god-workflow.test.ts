@@ -271,7 +271,7 @@ describe('Scenario 1: Normal God workflow path (AC-1)', () => {
   it('state machine drives through Observe → Decide → Act flow', () => {
     const actor = startActor();
     actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
     expect(actor.getSnapshot().value).toBe('OBSERVING');
 
@@ -294,7 +294,7 @@ describe('Scenario 1: Normal God workflow path (AC-1)', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('Scenario 2: God degradation path (AC-2)', () => {
-  it('TASK_INIT God failure → paused, falls back to CODING via TASK_INIT_SKIP', async () => {
+  it('TASK_INIT God failure → paused, falls back to CODING via TASK_INIT_COMPLETE', async () => {
     vi.useFakeTimers();
     try {
       const actor = startActor();
@@ -317,8 +317,8 @@ describe('Scenario 2: God degradation path (AC-2)', () => {
 
       expect(isPaused(result)).toBe(true);
 
-      // State machine falls back: TASK_INIT_SKIP
-      actor.send({ type: 'TASK_INIT_SKIP' });
+      // State machine falls back: TASK_INIT_COMPLETE
+      actor.send({ type: 'TASK_INIT_COMPLETE' });
       expect(actor.getSnapshot().value).toBe('CODING');
       actor.stop();
     } finally {
@@ -381,7 +381,7 @@ describe('Scenario 2: God degradation path (AC-2)', () => {
 
     // Step 1: TASK_INIT fails → skip
     actor.send({ type: 'START_TASK', prompt: 'task' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
     expect(actor.getSnapshot().value).toBe('CODING');
 
     // Step 2: CODING completes → OBSERVING
@@ -392,11 +392,11 @@ describe('Scenario 2: God degradation path (AC-2)', () => {
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('work_output', 'coder')] });
     expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
 
-    // Step 4: God fails → MANUAL_FALLBACK for user confirmation
-    actor.send({ type: 'MANUAL_FALLBACK_REQUIRED' });
-    expect(actor.getSnapshot().value).toBe('MANUAL_FALLBACK');
+    // Step 4: God fails → PAUSED for user confirmation
+    actor.send({ type: 'PAUSE_REQUIRED' });
+    expect(actor.getSnapshot().value).toBe('PAUSED');
 
-    // Step 5: User accepts in MANUAL_FALLBACK → DONE
+    // Step 5: User accepts in PAUSED → DONE
     actor.send({ type: 'USER_CONFIRM', action: 'accept' });
     expect(actor.getSnapshot().value).toBe('DONE');
 
