@@ -24,82 +24,88 @@ export const VERSION = '1.0.0';
 
 ---
 
-## cli.ts — 主入口
+## cli.ts — Node.js 侧主入口
 
-`cli.ts` 是 `#!/usr/bin/env node` 入口文件，负责解析 `process.argv` 并分发到对应命令。
+`cli.ts` 是 `#!/usr/bin/env node` 入口文件，负责解析 `process.argv` 并分发命令。迁移至 Bun OpenTUI 后，`cli.ts` 成为轻量分发器：简单命令在 Node.js 中直接处理，TUI 命令交接给 Bun OpenTUI 运行时。
+
+### 双进程架构
+
+```
+┌──────────────────────────────────┐     ┌──────────────────────────────────┐
+│  Node.js 进程 (cli.ts)           │     │  Bun 进程 (tui/cli.tsx)          │
+│                                  │     │                                  │
+│  处理:                            │     │  处理:                            │
+│  - --version / -v                │     │  - start (TUI 渲染)              │
+│  - help / --help / -h            │────>│  - resume <id> (TUI 渲染)        │
+│  - resume (列表，无 id)           │     │  - --smoke-test                  │
+│  - log <id>                      │     │                                  │
+│                                  │     │  使用 @opentui/core +            │
+│  交接方式: spawnSync(bun,        │     │  @opentui/react 渲染             │
+│    ['run', 'tui/cli.tsx', ...])  │     │                                  │
+└──────────────────────────────────┘     └──────────────────────────────────┘
+```
 
 ### 命令体系
 
-| 命令 | 用法 | 说明 |
-|------|------|------|
-| `duo start` | `duo start [--dir <path>] [--coder <cli>] [--reviewer <cli>] [--task <desc>] [--god <adapter>] [--coder-model <model>] [--reviewer-model <model>] [--god-model <model>]` | 启动新的协作会话 |
-| `duo resume` | `duo resume` | 列出所有可恢复的会话 |
-| `duo resume <id>` | `duo resume <session-id>` | 恢复指定会话 |
-| `duo log` | `duo log <session-id> [--type <type>]` | 查看 God audit log |
-| `duo help` | `duo help` / `duo --help` / `duo -h` | 打印帮助信息 |
-| `duo --version` | `duo -v` / `duo --version` | 打印版本号并退出 |
-| (无子命令) | `duo [options]` | 等同于 `duo start`，进入交互式模式或带参数启动 |
+| 命令 | 用法 | 处理位置 | 说明 |
+|------|------|----------|------|
+| `duo start` | `duo start [--dir <path>] [--coder <cli>] [--reviewer <cli>] [--task <desc>] [--god <adapter>] [--coder-model <model>] [--reviewer-model <model>] [--god-model <model>]` | Bun OpenTUI | 启动新的协作会话 |
+| `duo resume` | `duo resume` | Node.js | 列出所有可恢复的会话 |
+| `duo resume <id>` | `duo resume <session-id>` | Bun OpenTUI | 恢复指定会话 |
+| `duo log` | `duo log <session-id> [--type <type>]` | Node.js | 查看 God audit log |
+| `duo help` | `duo help` / `duo --help` / `duo -h` | Node.js | 打印帮助信息 |
+| `duo --version` | `duo -v` / `duo --version` | Node.js | 打印版本号并退出 |
+| (无子命令) | `duo [options]` | Bun OpenTUI | 等同于 `duo start`，进入交互式模式或带参数启动 |
 
 ### 启动流程
 
 ```
 process.argv
   │
-  ├── --version / -v  →  打印 VERSION，退出
-  │
-  ├── start
+  ├── shouldHandleInNode(argv)?
   │     │
-  │     ├── detectInstalledCLIs()         检测已安装的 CLI 工具
-  │     ├── parseStartArgs(args)          解析全部参数
+  │     ├── YES (轻量命令，Node.js 直接处理)
+  │     │     ├── --version / -v  →  打印 VERSION，退出
+  │     │     ├── help / --help / -h  →  打印帮助信息
+  │     │     ├── resume (无 id)  →  handleResumeList(sessionsDir, console.log)
+  │     │     └── log <id>  →  handleLog(sessionId, { type }, sessionsDir, console.log)
   │     │
-  │     ├── [参数完整?]  (coder + reviewer + task 三项齐全)
-  │     │     ├── YES → createSessionConfig(parsed, detected)
-  │     │     │         ├── 验证失败 → 输出错误，exit(1)
-  │     │     │         ├── 有警告 → 打印警告（不阻止启动）
-  │     │     │         └── 验证通过 → config = result.config
-  │     │     └── NO  → config = undefined（交互式模式）
-  │     │
-  │     └── runInkApp({ initialConfig: config, detected })
-  │           └── waitUntilExit()
-  │
-  ├── resume
-  │     ├── sessionsDir = cwd/.duo/sessions/
-  │     ├── [有 session-id?]
-  │     │     ├── YES → Resume 流程（见下方）
-  │     │     └── NO  → handleResumeList(sessionsDir, console.log)
-  │
-  ├── log
-  │     ├── [有 session-id?]
-  │     │     ├── NO  → 打印 usage，exit(1)
-  │     │     └── YES → 解析 --type 参数，调用 handleLog(sessionId, { type }, sessionsDir, console.log)
-  │
-  ├── help / --help / -h  →  打印帮助信息（版本、用法、选项、示例）
-  │
-  └── (default，无子命令)  →  等同于 start，检测 CLI 并尝试启动
-        │
-        ├── detectInstalledCLIs()
-        ├── parseStartArgs(['start', ...args])   将现有参数注入 start 解析器
-        ├── [参数完整?]
-        │     ├── YES → createSessionConfig → 验证 → config
-        │     └── NO  → config = undefined（交互式模式）
-        └── runInkApp({ initialConfig: config, detected })
+  │     └── NO (TUI 命令，交接给 Bun OpenTUI)
+  │           │
+  │           └── handOffToOpenTui(argv)
+  │                 ├── resolveBunBinary({ cwd, env })
+  │                 │     ├── DUO_BUN_BINARY 环境变量  (优先)
+  │                 │     ├── .local/bun/bin/bun      (项目内 bundled)
+  │                 │     └── which bun               (系统 PATH)
+  │                 │
+  │                 ├── buildOpenTuiLaunchSpec({ bunBinary, cwd, argv })
+  │                 │     └── { command: bunBinary, args: ['run', 'tui/cli.tsx', ...argv] }
+  │                 │
+  │                 └── spawnSync(command, args, { stdio: 'inherit' })
+  │                       └── process.exit(result.status)
 ```
 
-### `runInkApp` — TUI 渲染辅助函数
+### `handOffToOpenTui` — Bun 进程交接
 
-`cli.ts` 中的内部辅助函数，封装了 Ink 渲染的完整生命周期：
+`cli.ts` 中的核心分发函数，替代旧版 `runInkApp`：
 
-1. 调用 `createTerminalInput(process.stdin)` 创建自定义终端输入（支持鼠标事件）
-2. 调用 `enterAlternateScreen(process.stdout)` 进入备用屏幕缓冲区（TUI 退出后恢复原终端内容）
-3. 调用 `render(React.createElement(App, props), { exitOnCtrlC: false, stdin })` 渲染 App 组件
-4. `waitUntilExit()` 等待 App 退出
-5. `finally` 块中执行 `cleanupInput()` 和 `cleanupScreen()` 清理资源
+1. 调用 `resolveBunBinary()` 定位 Bun 二进制（支持 bundled / 环境变量 / 系统 PATH）
+2. 调用 `buildOpenTuiLaunchSpec()` 构建启动参数
+3. 通过 `spawnSync` 启动 Bun 进程运行 `tui/cli.tsx`，`stdio: 'inherit'` 直接透传终端 I/O
+4. 进程退出后将 exit code 传播回 Node.js
 
-```ts
-async function runInkApp(props: Record<string, unknown>): Promise<void>
-```
+Bun 未安装时输出错误提示：`'Bun is required for the OpenTUI runtime. Set DUO_BUN_BINARY or install Bun.'`
 
-`exitOnCtrlC: false` 表示 Ctrl+C 不直接退出进程，由 `App` 组件自行处理退出逻辑。
+### `tui/cli.tsx` — Bun 侧 TUI 入口
+
+Bun 进程中的主入口，使用 OpenTUI 渲染 React 组件树：
+
+1. 调用 `createCliRenderer({ exitOnCtrlC: false, useAlternateScreen: true })` 创建 OpenTUI 渲染器
+2. 调用 `createRoot(renderer)` 创建 React root
+3. `root.render(React.createElement(App, props))` 渲染 App 组件
+4. 等待 `renderer` 的 `'destroy'` 事件（App 退出时触发）
+
+OpenTUI 内置处理 alternate screen buffer 和鼠标输入，无需手动管理。`exitOnCtrlC: false` 表示 Ctrl+C 不直接退出进程，由 `App` 组件自行处理退出逻辑。
 
 ### `duo start` 详解
 
@@ -135,16 +141,17 @@ async function runInkApp(props: Record<string, unknown>): Promise<void>
 
 ### 默认命令行为
 
-当用户不指定子命令（直接执行 `duo` 或 `duo --coder ... --task ...`）时，CLI 将其视为 `start` 命令处理：
-1. 将 `args` 前置 `'start'` 后传入 `parseStartArgs()`
-2. 后续流程与 `duo start` 完全一致
-3. 支持无参数进入交互式模式，也支持带完整参数直接启动
+当用户不指定子命令（直接执行 `duo` 或 `duo --coder ... --task ...`）时，CLI 将其视为 `start` 命令处理，直接交接给 Bun OpenTUI 运行时。`tui/cli.tsx` 在 Bun 侧将 args 前置 `'start'` 后解析，后续流程与 `duo start` 完全一致。
 
 ### `duo resume <id>` — Resume 流程
 
+Resume 流程完全在 Bun OpenTUI 侧（`tui/cli.tsx` 的 `runResume` 函数）执行：
+
 ```
-duo resume <id>
-  │
+cli.ts (Node.js) ──> handOffToOpenTui(['resume', id])
+                          │
+                    tui/cli.tsx (Bun)
+                          │
   ├── handleResume(sessionId, sessionsDir, log)
   │     ├── SessionManager.loadSession()  →  加载 session 数据
   │     │     ├── SessionCorruptedError  →  提示数据损坏，exit(1)
@@ -153,21 +160,13 @@ duo resume <id>
   │
   ├── detectInstalledCLIs()  →  重新检测 CLI
   │
-  ├── sanitizeGodAdapterForResume(reviewer, detected, god)
-  │     └── 校验 God adapter 是否仍可用，返回 { god, warnings }
+  ├── buildResumeConfig(session, detected)
+  │     ├── sanitizeGodAdapterForResume(reviewer, detected, god)
+  │     │     └── 校验 God adapter 是否仍可用，返回 { god, warnings }
+  │     └── 构建 SessionConfig（所有字段从 session metadata 恢复）
   │
-  ├── 构建 SessionConfig
-  │     ├── projectDir    ← session metadata
-  │     ├── coder         ← session metadata
-  │     ├── reviewer      ← session metadata
-  │     ├── god           ← sanitizeGodAdapterForResume 结果
-  │     ├── task          ← session metadata
-  │     ├── coderModel    ← session metadata
-  │     ├── reviewerModel ← session metadata
-  │     └── godModel      ← session metadata
-  │
-  └── runInkApp({ initialConfig, detected, resumeSession })
-        └── waitUntilExit()
+  └── renderNode(React.createElement(App, { initialConfig, detected, resumeSession }))
+        └── 等待 renderer 'destroy' 事件
 ```
 
 Resume 流程的关键特点：
@@ -285,16 +284,23 @@ Resume 流程的关键特点：
 ## 依赖关系
 
 ```
-cli.ts
+cli.ts (Node.js 侧)
   ├── index.ts (VERSION)
-  ├── cli-commands.ts (handleResumeList, handleResume, handleLog)
-  ├── session/session-starter.ts (parseStartArgs, createSessionConfig)
+  ├── cli-commands.ts (handleResumeList, handleLog, handleResume)
+  └── tui/runtime/bun-launcher.ts (resolveBunBinary, buildOpenTuiLaunchSpec)
+
+tui/cli.tsx (Bun 侧)
+  ├── @opentui/core (createCliRenderer)
+  ├── @opentui/react (createRoot)
   ├── adapters/detect.ts (detectInstalledCLIs)
+  ├── cli-commands.ts (handleResume)
   ├── god/god-adapter-config.ts (sanitizeGodAdapterForResume)
-  ├── ui/components/App.ts (App 组件)
-  ├── ui/alternate-screen.ts (enterAlternateScreen)
-  ├── ui/mouse-input.ts (createTerminalInput)
-  └── types/session.ts (SessionConfig)
+  ├── session/session-starter.ts (parseStartArgs, createSessionConfig)
+  ├── ui/components/App.tsx (App 组件)
+  └── tui/app.tsx (TuiApp，smoke test 用)
+
+tui/runtime/bun-launcher.ts
+  └── (无外部依赖，纯 Node.js fs/path)
 
 cli-commands.ts
   ├── adapters/detect.ts (detectInstalledCLIs)

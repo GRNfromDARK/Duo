@@ -12,113 +12,53 @@ Duo 的 UI 状态层遵循 **纯函数提取** 原则：
 
 这一设计与 `InputArea.processInput`、`DirectoryPicker.processPickerInput` 等组件级纯函数保持一致，形成统一的 "state -> pure fn -> new state" 模式。
 
-整个 UI 状态层共 **19 个模块**，分为三组：
-- **Core UI 状态**（10 个）— 通用 UI 逻辑：Alternate Screen、滚动、显示模式、快捷键、Overlay、Markdown 解析、鼠标输入、流式聚合、消息行计算
+整个 UI 状态层共 **16 个模块**，分为三组：
+- **Core UI 状态**（7 个）— 通用 UI 逻辑：显示模式、目录选择器、快捷键、Overlay、Markdown 解析、Git diff 统计、流式聚合、消息行计算
 - **God LLM UI 状态**（6 个）— God 决策层的 UI 状态：retry 包装、消息样式、阶段切换、重分类、任务分析
 - **Runtime/Lifecycle 状态**（3 个）— 运行时生命周期管理：任务完成流、全局 Ctrl+C 处理、安全退出
+
+> **Bun OpenTUI 迁移说明**：`alternate-screen.ts`、`mouse-input.ts`、`scroll-state.ts` 三个模块已移除。其功能由 OpenTUI 运行时原生提供：`createCliRenderer` 内置 alternate screen 管理，OpenTUI 原生处理鼠标输入，`ScrollBox` 组件提供原生滚动（`stickyScroll` / `scrollBy` / `scrollTo`）。
 
 ---
 
 ## 模块总览
 
-### Core UI 状态（10 个）
+### Core UI 状态（7 个）
 
 | # | 文件 | 职责 | FR 来源 |
 |---|------|------|---------|
-| 1 | `alternate-screen.ts` | Alternate Screen Buffer 管理 | — |
-| 2 | `scroll-state.ts` | Smart Scroll Lock | FR-016 |
-| 3 | `display-mode.ts` | Minimal/Verbose 切换 | FR-021 |
-| 4 | `directory-picker-state.ts` | 目录选择器逻辑 | FR-019 |
-| 5 | `keybindings.ts` | 快捷键映射 | FR-022 |
-| 6 | `overlay-state.ts` | Overlay 生命周期 | FR-022 |
-| 7 | `markdown-parser.ts` | Markdown 解析 | FR-023 |
-| 8 | `mouse-input.ts` | 鼠标输入过滤与 wheel 转换 | — |
-| 9 | `git-diff-stats.ts` | Git diff 统计 | FR-026 |
-| 10 | `session-runner-state.ts` | 流式聚合与路由决策 | 多 FR |
+| 1 | `display-mode.ts` | Minimal/Verbose 切换 | FR-021 |
+| 2 | `directory-picker-state.ts` | 目录选择器逻辑 | FR-019 |
+| 3 | `keybindings.ts` | 快捷键映射 | FR-022 |
+| 4 | `overlay-state.ts` | Overlay 生命周期 | FR-022 |
+| 5 | `markdown-parser.ts` | Markdown 解析 | FR-023 |
+| 6 | `git-diff-stats.ts` | Git diff 统计 | FR-026 |
+| 7 | `session-runner-state.ts` | 流式聚合与路由决策 | 多 FR |
 
 ### God LLM UI 状态（6 个）
 
 | # | 文件 | 职责 | FR 来源 |
 |---|------|------|---------|
-| 11 | `god-fallback.ts` | God 调用 retry + backoff 包装 | FR-G01 |
-| 12 | `god-message-style.ts` | God 消息视觉样式 | FR-014 |
-| 13 | `phase-transition-banner.ts` | 阶段切换 banner 状态 | FR-010 |
-| 14 | `reclassify-overlay.ts` | 运行时任务重分类 overlay 状态 | FR-002a |
-| 15 | `task-analysis-card.ts` | 任务分析卡片状态 | FR-001a |
-| 16 | `message-lines.ts` | 消息行计算与渲染 | — |
+| 8 | `god-fallback.ts` | God 调用 retry + backoff 包装 | FR-G01 |
+| 9 | `god-message-style.ts` | God 消息视觉样式 | FR-014 |
+| 10 | `phase-transition-banner.ts` | 阶段切换 banner 状态 | FR-010 |
+| 11 | `reclassify-overlay.ts` | 运行时任务重分类 overlay 状态 | FR-002a |
+| 12 | `task-analysis-card.ts` | 任务分析卡片状态 | FR-001a |
+| 13 | `message-lines.ts` | 消息行计算与渲染 | — |
 
 ### Runtime/Lifecycle 状态（3 个）
 
 | # | 文件 | 职责 | 说明 |
 |---|------|------|------|
-| 17 | `completion-flow.ts` | 任务完成后续流 | 构建追加任务的 prompt |
-| 18 | `global-ctrl-c.ts` | 全局 Ctrl+C 双击检测 | 区分 interrupt 与 safe_exit |
-| 19 | `safe-shutdown.ts` | 安全退出流程 | 协调 adapter 终止与进程退出 |
+| 14 | `completion-flow.ts` | 任务完成后续流 | 构建追加任务的 prompt |
+| 15 | `global-ctrl-c.ts` | 全局 Ctrl+C 双击检测 | 区分 interrupt 与 safe_exit |
+| 16 | `safe-shutdown.ts` | 安全退出流程 | 协调 adapter 终止与进程退出 |
 
 ---
 
 ## Core UI 状态
 
-### 1. alternate-screen.ts — Alternate Screen Buffer 管理
-
-进入终端 alternate screen buffer，为 TUI 提供干净的全屏画布。同时启用 SGR 鼠标报告模式（`\x1b[?1000h` + `\x1b[?1006h`），并在退出时清理所有终端状态。
-
-#### 核心函数
-
-| 函数 | 输入 | 输出 | 关键逻辑 |
-|------|------|------|----------|
-| `enterAlternateScreen(stdout?)` | 可选的 `stdout` 写入目标（默认 `process.stdout`） | `() => void`（cleanup 函数） | 1. 写入 `\x1b[?1049h` 进入 alternate screen；2. 写入 `\x1b[?1000h` + `\x1b[?1006h` 启用 SGR 鼠标跟踪；3. 注册 SIGINT/SIGTERM/SIGHUP signal handler 和 `exit` 事件处理；4. 返回 cleanup 函数（幂等，通过 `cleaned` flag 防止重复执行） |
-
-#### Signal 处理模式
-
-使用标准 Unix re-raise 模式确保正确的退出状态码：
-1. 执行 cleanup（离开 alternate screen + 禁用鼠标跟踪）
-2. 移除自定义 handler 以恢复默认行为
-3. 使用 `process.kill(process.pid, signal)` 重新发送 signal
-
-cleanup 时依次禁用：legacy mouse wheel mode (`\x1b[?1007l`)、基础鼠标跟踪 (`\x1b[?1000l`)、SGR 扩展 (`\x1b[?1006l`)、alternate screen (`\x1b[?1049l`)。额外禁用 `\x1b[?1007l` 作为 last-resort recovery，防止先前 session 或 crashed build 残留的模式。
-
----
-
-### 2. scroll-state.ts — Smart Scroll Lock
-
-**来源**: FR-016
-
-智能滚动锁定状态管理。当用户向上滚动阅读历史消息时，自动锁定视口；当新消息到达时显示提示条而非强制滚到底部。
-
-#### 核心类型
-
-```ts
-interface ScrollState {
-  scrollOffset: number;     // 当前滚动偏移量
-  autoFollow: boolean;      // 是否自动跟随新消息
-  lockedAtCount: number;    // 锁定时的消息数（-1 表示正在跟随）
-}
-
-interface ScrollView {
-  effectiveOffset: number;  // 实际渲染偏移
-  visibleSlots: number;     // 可见行槽位数
-  showIndicator: boolean;   // 是否显示 "新输出" 提示条
-  newMessageCount: number;  // 锁定后新增的消息数
-}
-```
-
-#### 核心函数
-
-| 函数 | 输入 | 输出 | 关键逻辑 |
-|------|------|------|----------|
-| `computeScrollView(state, totalMessages, messageAreaHeight)` | `ScrollState` + 消息总数 + 视口高度 | `ScrollView` | 当 `!autoFollow` 且 `totalMessages > lockedAtCount` 时显示提示条；提示条占 1 行，`visibleSlots` 相应减 1；计算 `newMessageCount = totalMessages - lockedAtCount` |
-| `scrollUp(state, lines, totalMessages, messageAreaHeight)` | 当前状态 + 滚动行数 + 布局参数 | `ScrollState` | 关闭 `autoFollow`，首次锁定时记录 `lockedAtCount`；偏移量向 0 方向移动 |
-| `scrollDown(state, lines, totalMessages, messageAreaHeight)` | 同上 | `ScrollState` | 到达底部（`next >= maxOffset`）时自动重新启用 `autoFollow`，清除 `lockedAtCount` |
-| `jumpToEnd(totalMessages, messageAreaHeight)` | 消息总数 + 视口高度 | `ScrollState` | 立即跳到底部，重新启用 `autoFollow`，`lockedAtCount` 重置为 -1 |
-
-**初始状态**: `INITIAL_SCROLL_STATE` — `autoFollow: true, scrollOffset: 0, lockedAtCount: -1`
-
-**与 MainLayout 的集成**: MainLayout 通过 `useState` 持有 `ScrollState`，在 `handleAction` 中调用 `scrollUp`/`scrollDown`/`jumpToEnd` 更新状态；`computeScrollView` 在每次渲染时计算可见窗口，驱动消息切片和 ScrollIndicator 的显示。
-
----
-
-### 3. display-mode.ts — Minimal/Verbose 模式切换
+### 1. display-mode.ts — Minimal/Verbose 模式切换
 
 **来源**: FR-021 (AC-070, AC-071)
 
@@ -149,7 +89,7 @@ type DisplayMode = 'minimal' | 'verbose';
 
 ---
 
-### 4. directory-picker-state.ts — 目录选择器逻辑
+### 2. directory-picker-state.ts — 目录选择器逻辑
 
 **来源**: FR-019 (AC-065, AC-066, AC-067)
 
@@ -196,7 +136,7 @@ type PickerAction =
 
 ---
 
-### 5. keybindings.ts — 快捷键映射
+### 3. keybindings.ts — 快捷键映射
 
 **来源**: FR-022 (AC-072, AC-073, AC-074)
 
@@ -275,7 +215,7 @@ interface KeyContext {
 
 ---
 
-### 6. overlay-state.ts — Overlay 生命周期
+### 4. overlay-state.ts — Overlay 生命周期
 
 **来源**: FR-022 (AC-072, AC-073, AC-074)
 
@@ -311,7 +251,7 @@ interface OverlayState {
 
 ---
 
-### 7. markdown-parser.ts — Markdown 解析
+### 5. markdown-parser.ts — Markdown 解析
 
 **来源**: FR-023 (AC-076, AC-077)
 
@@ -346,47 +286,7 @@ interface OverlayState {
 
 ---
 
-### 8. mouse-input.ts — 鼠标输入过滤与 Wheel 转换
-
-拦截终端 SGR 鼠标跟踪序列，将滚轮事件转换为箭头键序列（供 Ink 的 `useInput` 消费），丢弃非滚轮鼠标事件（点击、移动等）。通过 Node.js `Transform` stream 实现 stdin 代理。
-
-#### 核心类型
-
-```ts
-interface MouseInputFilterResult {
-  output: string;    // 过滤后的输出（滚轮转为箭头键，其余保留）
-  pending: string;   // 未完成的 SGR 序列（等待更多数据）
-}
-
-interface TerminalInputHandle {
-  stdin: NodeJS.ReadStream;  // 代理后的 stdin（可直接传给 Ink）
-  cleanup: () => void;       // 清理函数（解除 pipe + 结束 stream）
-}
-```
-
-#### 核心函数
-
-| 函数 | 输入 | 输出 | 关键逻辑 |
-|------|------|------|----------|
-| `filterMouseTrackingInput(chunk, pending?, wheelLines?)` | 输入文本块 + 待处理缓冲 + 每次滚轮行数 | `MouseInputFilterResult` | 扫描 `\x1b[<` 前缀的 SGR 鼠标序列；滚轮上（buttonCode bit6=1, bit0-1=00）-> 生成 `wheelLines` 个 `\x1b[A`（上箭头）；滚轮下（bit0-1=01）-> 生成 `\x1b[B`（下箭头）；非滚轮鼠标事件静默丢弃；畸形序列丢弃；不完整序列暂存到 `pending` |
-| `createTerminalInput(source?)` | 可选的源 `ReadStream`（默认 `process.stdin`） | `TerminalInputHandle` | 创建 `MouseCaptureInputStream`（Transform stream），pipe 源 stdin 通过过滤器，返回代理 stdin + cleanup 函数 |
-
-#### 内部类 `MouseCaptureInputStream`
-
-继承 `Transform`，在 `_transform` 中调用 `filterMouseTrackingInput` 过滤每个 chunk。`dispose()` 方法幂等地解除 pipe 并结束 stream。
-
-#### 代理 stdin 的属性复制
-
-`attachReadStreamMethods` 将源 stdin 的 `isTTY`、`setRawMode`、`ref`、`unref`、`pause`、`resume` 等方法绑定到代理对象上，确保 Ink 框架能正常检测终端能力。
-
-#### 常量
-
-- `DEFAULT_WHEEL_LINES = 3` — 每次滚轮事件转换为 3 个箭头键
-- `SGR_MOUSE_PATTERN = /^\x1b\[<(\d+);(\d+);(\d+)([mM])/` — SGR 鼠标序列正则
-
----
-
-### 9. git-diff-stats.ts — Git 变更统计
+### 6. git-diff-stats.ts — Git 变更统计
 
 **来源**: FR-026 (AC-082)
 

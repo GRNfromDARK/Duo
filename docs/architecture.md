@@ -26,14 +26,18 @@ Duo 采用六层架构，自顶向下职责分明，层间严格单向依赖：
 ┌─────────────────────────────────────────────────────────────────────┐
 │  Layer 1: CLI 入口层                                                │
 │  cli.ts, cli-commands.ts, index.ts                                  │
-│  职责: 命令解析、参数校验、渲染启动                                      │
+│  职责: 命令解析、参数校验、分发到 Bun OpenTUI 运行时                     │
+├─────────────────────────────────────────────────────────────────────┤
+│  Layer 1.5: TUI Runtime 层                                          │
+│  tui/cli.tsx, tui/app.tsx, tui/primitives.tsx,                      │
+│  tui/runtime/bun-launcher.ts                                        │
+│  职责: Bun OpenTUI 渲染运行时、UI 原语适配、进程启动                     │
 ├─────────────────────────────────────────────────────────────────────┤
 │  Layer 2: UI 层                                                     │
 │  App.tsx, MainLayout.tsx, SetupWizard.tsx, StatusBar.tsx,            │
-│  StreamRenderer.tsx, alternate-screen.ts, mouse-input.ts,           │
-│  ... (22 components + 20 state files)                               │
-│  职责: 终端交互界面 (Ink + React)、流式输出渲染、                       │
-│        Alternate Screen + Mouse 输入、Overlay 面板                   │
+│  StreamRenderer.tsx, ... (22 components + 16 state files)           │
+│  职责: 终端交互界面 (OpenTUI + React)、流式输出渲染、                   │
+│        原生 ScrollBox 滚动、Overlay 面板                              │
 ├─────────────────────────────────────────────────────────────────────┤
 │  Layer 3: Sovereign God Runtime                                     │
 │  god-decision-service.ts, hand-executor.ts, rule-engine.ts,         │
@@ -67,7 +71,7 @@ Duo 采用六层架构，自顶向下职责分明，层间严格单向依赖：
 
 | 文件 | 职责 |
 |------|------|
-| `src/cli.ts` | 程序入口。解析 `process.argv`，分发到 `start` / `resume` / `log` / `help` / `--version`。`start` 命令检测已安装 CLI、创建 `SessionConfig`、渲染 Ink `App` 组件 |
+| `src/cli.ts` | 程序入口（Node.js 侧）。解析 `process.argv`，轻量命令（`--version` / `help` / `resume` 列表 / `log`）在 Node 中直接处理；`start` / `resume <id>` 等 TUI 命令通过 `bun-launcher.ts` 交接给 Bun OpenTUI 运行时 |
 | `src/cli-commands.ts` | 命令处理器。`handleStart` 检测工具 + 校验参数；`handleResume` 加载会话快照并校验完整性；`handleLog` 读取 God 审计日志、按类型过滤、输出延迟统计 |
 | `src/index.ts` | 版本号导出 (`VERSION = '1.0.0'`) |
 
@@ -80,15 +84,27 @@ duo log <session-id> [--type <type>]                     # 查看审计日志
 duo                                                      # 交互式模式
 ```
 
+#### Layer 1.5: TUI Runtime 层
+
+迁移至 **Bun OpenTUI** 后新增的运行时层，位于 `src/tui/`：
+
+| 文件 | 职责 |
+|------|------|
+| `tui/runtime/bun-launcher.ts` | 解析 Bun 二进制路径（优先级：`DUO_BUN_BINARY` 环境变量 > 项目内 `.local/bun/bin/bun` > 系统 `which bun`），构建 OpenTUI 启动命令 |
+| `tui/cli.tsx` | Bun 侧入口，使用 `@opentui/core` 的 `createCliRenderer` 和 `@opentui/react` 的 `createRoot` 渲染 React 组件树；处理 `start` / `resume` / `--smoke-test` 命令 |
+| `tui/primitives.tsx` | UI 原语适配层，将 OpenTUI 的 `box` / `text` / `span` / `scrollbox` 元素和 `useKeyboard` / `useAppContext` hook 封装为 `Box` / `Text` / `ScrollBox` / `useInput` / `useApp` / `useStdout` 等与旧 Ink API 兼容的接口 |
+| `tui/app.tsx` | 轻量 TUI 组件，用于 smoke test 和 resume 预览 |
+
 #### Layer 2: UI 层
 
-基于 **Ink + React** 的终端 UI 组件（22 个），配合状态管理模块（20 个）。核心组件包括：
+基于 **OpenTUI + React** 的终端 UI 组件（22 个），配合状态管理模块（16 个）。核心组件包括：
 
 - `App.tsx` — 根组件，管理 XState 状态机生命周期
 - `SetupWizard.tsx` — 交互式设置向导
 - `StreamRenderer.tsx` — 实时流式渲染 LLM 输出
-- `alternate-screen.ts` — Alternate screen buffer 管理（全屏 TUI 画布），含 SGR mouse reporting 启用和信号安全清理
-- `mouse-input.ts` — 鼠标输入过滤（SGR mouse tracking → wheel 事件转 arrow key），通过 Transform stream 代理 stdin
+- `MainLayout.tsx` — 使用 OpenTUI 原生 `ScrollBox` 组件实现滚动（`stickyScroll` / `scrollBy` / `scrollTo`），替代旧版手动 scroll-state 管理
+
+> **已移除的模块**（功能由 OpenTUI 原生提供）：`alternate-screen.ts`（OpenTUI `createCliRenderer` 内置 alternate screen 管理）、`mouse-input.ts`（OpenTUI 原生处理鼠标输入）、`scroll-state.ts`（OpenTUI `ScrollBox` 原生滚动）
 
 #### Layer 3: Sovereign God Runtime
 
@@ -204,7 +220,7 @@ Iteration N: Coder 实现（带 Reviewer 原始反馈）→ Reviewer 验证 → 
     │
     v
 ┌──────────────┐     SessionConfig     ┌────────────────┐
-│  CLI 入口     │ ─────────────────────>│  App.tsx (Ink)  │
+│  CLI 入口     │ ─────────────────────>│ App.tsx (OpenTUI)│
 └──────────────┘                       └───────┬────────┘
                                                │
                                                v
@@ -898,7 +914,8 @@ God 决策失败时的 fallback envelope 包含一个 `wait` action（而非空 
 | **XState** | v5 (^5.28.0) | 状态机引擎，驱动工作流 |
 | **@xstate/react** | ^6.1.0 | XState 与 React 集成 |
 | **React** | ^19.2.4 | UI 组件框架 |
-| **Ink** | ^6.8.0 | 终端 UI 渲染（React for CLI） |
+| **Bun OpenTUI** | `@opentui/core` + `@opentui/react` | 终端 UI 渲染运行时（替代 Ink） |
+| **Bun** | - | TUI 进程运行时（通过 `bun-launcher.ts` 启动） |
 | **Zod** | ^4.3.6 | Schema 定义与运行时校验 |
 
 ### 开发工具
@@ -909,11 +926,10 @@ God 决策失败时的 fallback envelope 包含一个 `wait` action（而非空 
 | **tsx** | - | 开发模式运行 |
 | **Vitest** | - | 单元测试框架 |
 | **ESLint** | ^10.0.3 | 代码质量检查 |
-| **ink-testing-library** | ^4.0.0 | Ink 组件测试 |
 
 ### 运行时架构
 
-- **进程模型**：严格串行执行（1 LLM process at a time），避免并发冲突
+- **双进程模型**：CLI 入口在 Node.js 中运行，TUI 渲染在 Bun 进程中运行（通过 `spawnSync` 交接，`stdio: 'inherit'`）；LLM 调用严格串行执行（1 LLM process at a time），避免并发冲突
 - **持久化**：原子写入（write-tmp-rename），会话快照存储在 `.duo/sessions/<id>/`
 - **审计**：God 审计日志使用 append-only JSONL 格式
 - **Prompt 日志**：所有 God 调用的 prompt 记录，用于调试和追溯
@@ -923,14 +939,18 @@ God 决策失败时的 fallback envelope 包含一个 `wait` action（而非空 
 ### 模块依赖方向
 
 ```
-cli.ts ──> cli-commands.ts
-  │              │
-  │              ├── session/session-starter.ts
-  │              ├── session/session-manager.ts
-  │              ├── adapters/detect.ts
-  │              └── god/god-audit.ts
+cli.ts (Node.js) ──> cli-commands.ts
+  │                       │
+  │                       ├── session/session-starter.ts
+  │                       ├── session/session-manager.ts
+  │                       ├── adapters/detect.ts
+  │                       └── god/god-audit.ts
   │
-  └──> ui/components/App.tsx
+  └──> tui/runtime/bun-launcher.ts ──> (spawnSync Bun)
+                                          │
+                                    tui/cli.tsx (Bun)
+                                          │
+                                          └──> ui/components/App.tsx
           │
           ├── engine/workflow-machine.ts (XState v5)
           ├── god/observation-integration.ts
