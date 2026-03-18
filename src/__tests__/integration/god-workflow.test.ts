@@ -25,7 +25,7 @@ import {
   type WorkflowContext,
 } from '../../engine/workflow-machine.js';
 import type { CLIAdapter, ExecOptions, OutputChunk } from '../../types/adapter.js';
-import type { GodTaskAnalysis, GodPostReviewerDecision } from '../../types/god-schemas.js';
+import type { GodTaskAnalysis } from '../../types/god-schemas.js';
 import type { Observation } from '../../types/observation.js';
 import type { GodDecisionEnvelope } from '../../types/god-envelope.js';
 import { initializeTask } from '../../god/task-init.js';
@@ -185,18 +185,14 @@ describe('Scenario 1: Normal God workflow path (AC-1)', () => {
       taskType: 'code',
       reasoning: 'User wants login feature — coding task.',
       confidence: 0.9,
-      suggestedMaxRounds: 5,
-      terminationCriteria: ['Login form renders', 'Auth works', 'Tests pass'],
     } satisfies GodTaskAnalysis);
 
     const taskResult = await initializeTask(godAdapter, 'implement user login', 'You are God.', tmpDir);
     expect(taskResult).not.toBeNull();
     expect(taskResult!.analysis.taskType).toBe('code');
-    expect(taskResult!.analysis.suggestedMaxRounds).toBe(5);
 
-    actor.send({ type: 'TASK_INIT_COMPLETE', maxRounds: taskResult!.analysis.suggestedMaxRounds });
+    actor.send({ type: 'TASK_INIT_COMPLETE' });
     expect(actor.getSnapshot().value).toBe('CODING');
-    expect(actor.getSnapshot().context.maxRounds).toBe(5);
 
     // ── Step 2: Coder produces output → OBSERVING (not ROUTING_POST_CODE) ──
     actor.send({ type: 'CODE_COMPLETE', output: 'function login() { /* auth logic */ }' });
@@ -456,8 +452,6 @@ describe('Scenario 5: duo resume (AC-5)', () => {
       taskType: 'code',
       reasoning: 'Coding task.',
       confidence: 0.9,
-      suggestedMaxRounds: 5,
-      terminationCriteria: ['Tests pass'],
     };
 
     // Simulate save
@@ -471,7 +465,7 @@ describe('Scenario 5: duo resume (AC-5)', () => {
     // Simulate restore
     expect(state.godTaskAnalysis).toEqual(taskAnalysis);
     expect(state.godTaskAnalysis!.taskType).toBe('code');
-    expect(state.godTaskAnalysis!.suggestedMaxRounds).toBe(5);
+    expect(state.godTaskAnalysis!.confidence).toBe(0.9);
   });
 
   it('convergenceLog persisted and restored from SessionState', () => {

@@ -113,14 +113,3 @@ export async function loadAdaptersConfig(
     return { custom: [], disabled: [] };
   }
 }
-
-/**
- * Load user-defined custom adapters from .duo/adapters.json
- * @deprecated Use loadAdaptersConfig() instead
- */
-export async function loadCustomAdapters(
-  projectDir: string,
-): Promise<CLIRegistryEntry[]> {
-  const config = await loadAdaptersConfig(projectDir);
-  return config.custom;
-}

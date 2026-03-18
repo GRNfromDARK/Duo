@@ -964,7 +964,6 @@ interface ThinkingIndicatorProps {
 | `Ctrl+I` | 打开/关闭 Context 上下文摘要 overlay | 始终可用 |
 | `Ctrl+V` | 切换 Minimal/Verbose 显示模式 | 始终可用 |
 | `Ctrl+T` | 打开/关闭 Timeline 事件时间线 overlay | 始终可用 |
-| `Ctrl+G` | 打开/关闭 God 控制面板 overlay | 始终可用 |
 | `Ctrl+R` | 重分类任务类型 | 始终可用（受 workflow state 限制） |
 | `Ctrl+L` | 清屏（保留历史，记录 clearedCount） | 始终可用 |
 | `j` / `↓` | 向下滚动 1 行 | 无 overlay 且输入为空 |
@@ -989,4 +988,3 @@ interface ThinkingIndicatorProps {
 | `1-6` | 快速选择任务类型 | TaskAnalysisCard |
 | `1-4` | 快速选择重分类类型 | ReclassifyOverlay |
 | `1-3` | 快速选择后续操作 | CompletionScreen menu |
-| `R/S/F/P` | God overlay 手动干预 | God Overlay (Ctrl+G) |

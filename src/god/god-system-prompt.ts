@@ -36,16 +36,12 @@ You are being called to classify a task. Output this exact JSON schema:
   "taskType": "explore|code|discuss|review|debug|compound",
   "reasoning": "why you chose this classification",
   "confidence": 0.85,
-  "suggestedMaxRounds": 5,
-  "terminationCriteria": ["criterion 1", "criterion 2"],
   "phases": null
 }
 \`\`\`
 
 - taskType: one of explore/code/discuss/review/debug/compound
 - confidence: 0.0 to 1.0
-- suggestedMaxRounds: integer 1-20 (explore: 2-5, code: 3-10, review: 1-3, debug: 2-6)
-- terminationCriteria: array of strings describing when the task is done
 - phases: omit this field or use null for non-compound tasks. For compound tasks, provide:
   \`[{"id": "phase-1", "name": "Phase Name", "type": "explore", "description": "..."}]\`
 

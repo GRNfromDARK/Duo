@@ -26,6 +26,7 @@ describe('session-runner-state', () => {
       expect(finalizeStreamAggregation(state)).toEqual({
         kind: 'error',
         fullText: 'partial output\nError: CLI crashed',
+        llmText: 'partial output',
         displayText: 'partial output\n**Error:** CLI crashed',
         errorMessage: 'CLI crashed',
       });
@@ -56,6 +57,7 @@ describe('session-runner-state', () => {
       expect(finalizeStreamAggregation(state)).toEqual({
         kind: 'success',
         fullText: '[Bash] List files\n[Bash result] 3 lines\nDone.',
+        llmText: 'Done.',
         displayText: '⏺ 2 tool updates · latest Bash: List files\nDone.',
       });
     });
@@ -115,6 +117,7 @@ describe('session-runner-state', () => {
       expect(finalizeStreamAggregation(state)).toEqual({
         kind: 'success',
         fullText: '[Read] Read missing.txt\n[Read error] File does not exist. Note: your current working directory is /tmp.',
+        llmText: '',
         displayText: '⏺ 2 tool updates · 1 warning · latest Read: Read missing.txt',
       });
     });
@@ -267,8 +270,6 @@ describe('session-runner-state', () => {
         taskType: 'code' as const,
         reasoning: 'User wants to fix a bug',
         confidence: 0.9,
-        suggestedMaxRounds: 5,
-        terminationCriteria: ['Tests pass'],
       };
       const godConvergenceLog = [
         {

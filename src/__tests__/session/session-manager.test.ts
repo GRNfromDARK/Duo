@@ -508,8 +508,6 @@ describe('SessionManager — God session persistence (C.4)', () => {
       taskType: 'code' as const,
       reasoning: 'Bug fix task',
       confidence: 0.85,
-      suggestedMaxRounds: 4,
-      terminationCriteria: ['Tests pass', 'No lint errors'],
     };
     const godConvergenceLog = [
       {

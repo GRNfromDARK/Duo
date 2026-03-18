@@ -35,7 +35,7 @@ Duo 采用八层架构，自顶向下职责分明，层间严格单向依赖：
 ├─────────────────────────────────────────────────────────────────────┤
 │  Layer 3: UI 状态层                                                 │
 │  session-runner-state.ts, god-decision-banner.ts,                   │
-│  escape-window.ts, overlay-state.ts, ... (24 state files)           │
+│  overlay-state.ts, god-decision-banner.ts, ... (21 state files)     │
 │  职责: 纯函数状态管理，为 UI 组件提供数据                                │
 ├─────────────────────────────────────────────────────────────────────┤
 │  Layer 4: Sovereign God Runtime                                     │
@@ -45,8 +45,8 @@ Duo 采用八层架构，自顶向下职责分明，层间严格单向依赖：
 │  职责: Observe → Decide → Act 自主决策循环                            │
 ├─────────────────────────────────────────────────────────────────────┤
 │  Layer 5: 工作流引擎层                                               │
-│  workflow-machine.ts (XState v5), interrupt-handler.ts              │
-│  职责: 状态机驱动、中断处理、会话恢复状态路由                              │
+│  workflow-machine.ts (XState v5)                                    │
+│  职责: 状态机驱动、会话恢复状态路由                                      │
 ├─────────────────────────────────────────────────────────────────────┤
 │  Layer 6: 决策引擎层 (旧版 fallback)                                 │
 │  choice-detector.ts, convergence-service.ts                         │
@@ -98,7 +98,6 @@ duo                                                      # 交互式模式
 | 文件 | 职责 |
 |------|------|
 | `src/engine/workflow-machine.ts` | XState v5 状态机。12 个状态、20+ 事件类型。详见 [XState v5 状态机详解](#xstate-v5-状态机详解) |
-| `src/engine/interrupt-handler.ts` | 中断处理。单次 Ctrl+C 杀进程 -> 生成 `human_interrupt` Observation -> 走 Observation pipeline 到 God。文本中断附带用户指令。双击 Ctrl+C (<500ms) 保存会话后退出 |
 
 #### Layer 6: 决策引擎层 (旧版 fallback)
 
@@ -847,7 +846,7 @@ God LLM 是系统中唯一的决策者。所有状态变更（路由、收敛、
 
 ### 2. Envelope 模式（统一决策信封）
 
-旧版使用 5 种独立 schema（GodTaskAnalysis / GodPostCoderDecision / GodPostReviewerDecision / GodConvergenceJudgment / GodAutoDecision）。新版 `GodDecisionEnvelope` 统一所有决策场景：
+旧版使用多种独立 schema（GodTaskAnalysis / GodPostCoderDecision / GodPostReviewerDecision / GodConvergenceJudgment 等）。新版 `GodDecisionEnvelope` 统一所有决策场景：
 - 一个入口（`makeDecision`），一种输出格式
 - 通过 `actions[]` 的组合表达任意决策
 - `authority` 语义约束通过 Zod `superRefine` 在 schema 层强制执行
@@ -981,9 +980,8 @@ cli.ts ──> cli-commands.ts
   └──> ui/components/App.tsx
           │
           ├── engine/workflow-machine.ts (XState v5)
-          ├── engine/interrupt-handler.ts
-          │       └── god/observation-integration.ts
-          │           god/observation-classifier.ts
+          ├── god/observation-integration.ts
+          │   god/observation-classifier.ts
           │
           ├── god/god-decision-service.ts ────> god/god-call.ts
           │       │                                   │

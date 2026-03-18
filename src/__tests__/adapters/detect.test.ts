@@ -10,7 +10,7 @@ vi.mock('node:fs/promises', () => ({
 
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { detectInstalledCLIs, loadCustomAdapters, loadAdaptersConfig } from '../../adapters/detect.js';
+import { detectInstalledCLIs, loadAdaptersConfig } from '../../adapters/detect.js';
 
 const mockExecFile = vi.mocked(execFile);
 const mockReadFile = vi.mocked(readFile);
@@ -102,38 +102,6 @@ describe('detectInstalledCLIs', () => {
     const notInstalled = result.filter((r) => !r.installed);
     expect(installed.length).toBe(2);
     expect(notInstalled.length).toBe(1);
-  });
-});
-
-describe('loadCustomAdapters', () => {
-  beforeEach(() => {
-    mockReadFile.mockReset();
-  });
-
-  it('should load custom adapters from .duo/adapters.json', async () => {
-    mockReadFile.mockResolvedValue(JSON.stringify([
-      {
-        name: 'custom-tool',
-        displayName: 'Custom Tool',
-        command: 'custom',
-        detectCommand: 'custom --version',
-        execCommand: 'custom run',
-        outputFormat: 'text',
-        yoloFlag: '--yes',
-        parserType: 'text',
-      },
-    ]) as any);
-
-    const customs = await loadCustomAdapters('/project');
-    expect(customs).toHaveLength(1);
-    expect(customs[0].name).toBe('custom-tool');
-  });
-
-  it('should return empty array if .duo/adapters.json does not exist', async () => {
-    mockReadFile.mockRejectedValue(new Error('ENOENT'));
-
-    const customs = await loadCustomAdapters('/project');
-    expect(customs).toHaveLength(0);
   });
 });
 

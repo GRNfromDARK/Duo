@@ -182,13 +182,9 @@ export function TaskAnalysisCard({
         })}
       </Box>
 
-      {/* Confidence + Rounds + criteria */}
+      {/* Confidence */}
       <Box marginTop={1}>
         <Text dimColor>{t.confidence}: {Math.round(analysis.confidence * 100)}%</Text>
-        <Text dimColor>  {t.rounds}: {analysis.suggestedMaxRounds}</Text>
-        {analysis.terminationCriteria.length > 0 && (
-          <Text dimColor>  {t.criteria}: {analysis.terminationCriteria.join(', ')}</Text>
-        )}
       </Box>
 
       {/* Keyboard hints */}

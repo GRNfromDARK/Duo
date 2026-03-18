@@ -443,7 +443,7 @@ describe('BUG-18 regression: userConfirmation god_override requires system_log',
 
     expect(prompt).toContain('Task Classification');
     expect(prompt).toContain('taskType');
-    expect(prompt).toContain('terminationCriteria');
+    expect(prompt).toContain('confidence');
     expect(prompt).toContain('Rules');
   });
 });

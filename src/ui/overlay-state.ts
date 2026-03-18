@@ -4,7 +4,7 @@
  */
 import type { Message } from '../types/ui.js';
 
-export type OverlayType = 'help' | 'context' | 'timeline' | 'search' | 'god';
+export type OverlayType = 'help' | 'context' | 'timeline' | 'search';
 
 export interface OverlayState {
   activeOverlay: OverlayType | null;

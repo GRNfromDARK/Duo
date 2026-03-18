@@ -18,14 +18,12 @@ import { validateCLIChoices } from '../../session/session-starter.js';
 import { cleanupOldDecisions } from '../../god/god-audit.js';
 import {
   GodTaskAnalysisSchema,
-  GodPostReviewerDecisionSchema,
 } from '../../types/god-schemas.js';
 import { workflowMachine } from '../../engine/workflow-machine.js';
 import type { ConvergenceLogEntry } from '../../god/god-prompt-generator.js';
 import { parseMarkdown } from '../../ui/markdown-parser.js';
 import { OutputStreamManager } from '../../adapters/output-stream-manager.js';
 import { ProcessTimeoutError } from '../../adapters/process-manager.js';
-import type { GodPostReviewerDecision } from '../../types/god-schemas.js';
 import type { OutputChunk } from '../../types/adapter.js';
 import type { Message } from '../../types/ui.js';
 import type { Observation } from '../../types/observation.js';
@@ -334,8 +332,6 @@ describe('BUG-11: Zod schema refine constraints', () => {
       taskType: 'compound',
       reasoning: 'Complex task',
       confidence: 0.8,
-      suggestedMaxRounds: 5,
-      terminationCriteria: ['all phases done'],
     });
     expect(result.success).toBe(false);
   });
@@ -346,8 +342,6 @@ describe('BUG-11: Zod schema refine constraints', () => {
       reasoning: 'Complex task',
       phases: [],
       confidence: 0.8,
-      suggestedMaxRounds: 5,
-      terminationCriteria: ['all phases done'],
     });
     expect(result.success).toBe(false);
   });
@@ -358,31 +352,8 @@ describe('BUG-11: Zod schema refine constraints', () => {
       reasoning: 'Complex task',
       phases: [{ id: 'p1', name: 'Phase 1', type: 'code', description: 'Code it' }],
       confidence: 0.8,
-      suggestedMaxRounds: 5,
-      terminationCriteria: ['all phases done'],
     });
     expect(result.success).toBe(true);
-  });
-
-  test('test_bug_11_route_to_coder_without_unresolvedIssues_rejected', () => {
-    const result = GodPostReviewerDecisionSchema.safeParse({
-      action: 'route_to_coder',
-      reasoning: 'Issues found',
-      confidenceScore: 0.7,
-      progressTrend: 'improving',
-    });
-    expect(result.success).toBe(false);
-  });
-
-  test('test_bug_11_route_to_coder_with_empty_unresolvedIssues_rejected', () => {
-    const result = GodPostReviewerDecisionSchema.safeParse({
-      action: 'route_to_coder',
-      reasoning: 'Issues found',
-      unresolvedIssues: [],
-      confidenceScore: 0.7,
-      progressTrend: 'improving',
-    });
-    expect(result.success).toBe(false);
   });
 
   test('test_regression_11_non_compound_without_phases_accepted', () => {
@@ -390,18 +361,6 @@ describe('BUG-11: Zod schema refine constraints', () => {
       taskType: 'code',
       reasoning: 'Simple task',
       confidence: 0.9,
-      suggestedMaxRounds: 5,
-      terminationCriteria: ['done'],
-    });
-    expect(result.success).toBe(true);
-  });
-
-  test('test_regression_11_converged_without_unresolvedIssues_accepted', () => {
-    const result = GodPostReviewerDecisionSchema.safeParse({
-      action: 'converged',
-      reasoning: 'All good',
-      confidenceScore: 0.95,
-      progressTrend: 'improving',
     });
     expect(result.success).toBe(true);
   });
@@ -482,43 +441,7 @@ describe('Round2 BUG-2: God session ID in RestoredSessionRuntime', () => {
   });
 });
 
-// ══════════════════════════════════════════════════════════════
-// Round 2 BUG-3 (P1): Zod schema preserves nextPhaseId
-// ══════════════════════════════════════════════════════════════
-
-describe('Round2 BUG-3: nextPhaseId preserved by Zod schema', () => {
-  test('test_regression_r2_bug3_nextPhaseId_survives_zod_parse', () => {
-    const input = {
-      action: 'phase_transition',
-      reasoning: 'Phase 1 complete',
-      confidenceScore: 0.9,
-      progressTrend: 'improving',
-      nextPhaseId: 'phase-2',
-    };
-
-    const result = GodPostReviewerDecisionSchema.safeParse(input);
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.nextPhaseId).toBe('phase-2');
-    }
-  });
-
-  test('test_regression_r2_bug3_nextPhaseId_optional_still_parses', () => {
-    const input = {
-      action: 'phase_transition',
-      reasoning: 'Moving on',
-      confidenceScore: 0.85,
-      progressTrend: 'improving',
-    };
-
-    const result = GodPostReviewerDecisionSchema.safeParse(input);
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.nextPhaseId).toBeUndefined();
-    }
-  });
-
-});
+// Round2 BUG-3 tests removed — tested GodPostReviewerDecisionSchema which has been deleted.
 
 // Round3 BUG-2 tests removed — tested evaluatePhaseTransition from the now-deleted phase-transition.ts module.
 
@@ -897,8 +820,6 @@ describe('Round 8 BUG-1: saveState merges partial state', () => {
         taskType: 'code',
         reasoning: 'test',
         confidence: 0.8,
-        suggestedMaxRounds: 3,
-        terminationCriteria: ['tests pass'],
       },
       godConvergenceLog: [
         {
@@ -1316,10 +1237,10 @@ describe('BUG-5: Message objects must include id field', () => {
 describe('BUG-8: handleTaskAnalysisConfirm updates taskAnalysis.taskType', () => {
   test('test_bug_8_user_selected_taskType_updates_state', () => {
     // Simulate the state update logic from handleTaskAnalysisConfirm
-    type GodTaskAnalysis = { taskType: string; suggestedMaxRounds?: number; phases?: { id: string }[] };
+    type GodTaskAnalysis = { taskType: string; confidence?: number; phases?: { id: string }[] };
     let taskAnalysis: GodTaskAnalysis | null = {
       taskType: 'code',       // God recommended 'code'
-      suggestedMaxRounds: 5,
+      confidence: 0.9,
       phases: [],
     };
 
@@ -1330,7 +1251,7 @@ describe('BUG-8: handleTaskAnalysisConfirm updates taskAnalysis.taskType', () =>
     taskAnalysis = taskAnalysis ? { ...taskAnalysis, taskType: userSelectedType } : taskAnalysis;
 
     expect(taskAnalysis!.taskType).toBe('discuss');
-    expect(taskAnalysis!.suggestedMaxRounds).toBe(5); // other fields preserved
+    expect(taskAnalysis!.confidence).toBe(0.9); // other fields preserved
   });
 
   test('test_bug_8_compound_check_uses_param_not_stale_state', () => {

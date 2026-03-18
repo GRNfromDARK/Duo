@@ -551,13 +551,13 @@ function SessionRunner({
             round: 0,
             decisionType: 'TASK_INIT',
             inputSummary: config.task,
-            outputSummary: `taskType=${result.analysis.taskType}, suggestedMaxRounds=${result.analysis.suggestedMaxRounds}`,
+            outputSummary: `taskType=${result.analysis.taskType}`,
             latencyMs: latency,
             decision: result.analysis,
           }, result.analysis);
         }
 
-        addTimelineEvent('task_start', `God TASK_INIT: ${result.analysis.taskType}, ${result.analysis.suggestedMaxRounds} rounds`);
+        addTimelineEvent('task_start', `God TASK_INIT: ${result.analysis.taskType}`);
         setShowTaskAnalysisCard(true);
       } else {
         // Paused — log failure to God audit
@@ -1611,8 +1611,6 @@ function SessionRunner({
   const handleTaskAnalysisConfirm = useCallback(
     (taskType: string) => {
       setShowTaskAnalysisCard(false);
-      const maxRounds = taskAnalysis?.suggestedMaxRounds;
-
       // BUG-8 fix: Update taskAnalysis state with user-selected taskType
       setTaskAnalysis(prev => prev ? { ...prev, taskType: taskType as GodTaskAnalysis['taskType'] } : prev);
 
@@ -1623,10 +1621,10 @@ function SessionRunner({
 
       addMessage({
         role: 'system',
-        content: `Task analysis confirmed: type=${taskType}, rounds=${maxRounds ?? 'default'}.`,
+        content: `Task analysis confirmed: type=${taskType}.`,
         timestamp: Date.now(),
       });
-      send({ type: 'TASK_INIT_COMPLETE', maxRounds });
+      send({ type: 'TASK_INIT_COMPLETE' });
     },
     [taskAnalysis, send, addMessage, setTaskAnalysis],
   );

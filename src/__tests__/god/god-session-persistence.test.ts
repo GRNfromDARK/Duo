@@ -33,8 +33,6 @@ function makeTaskAnalysis(): GodTaskAnalysis {
     taskType: 'code',
     reasoning: 'User wants to implement login',
     confidence: 0.85,
-    suggestedMaxRounds: 5,
-    terminationCriteria: ['All tests pass', 'Code compiles'],
   };
 }
 

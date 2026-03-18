@@ -10,8 +10,25 @@ import { App } from './ui/components/App.js';
 import type { SessionConfig } from './types/session.js';
 import * as path from 'node:path';
 import { enterAlternateScreen } from './ui/alternate-screen.js';
+import { createTerminalInput } from './ui/mouse-input.js';
 
 const args = process.argv.slice(2);
+
+async function runInkApp(props: Record<string, unknown>): Promise<void> {
+  const { stdin, cleanup: cleanupInput } = createTerminalInput(process.stdin);
+  const cleanupScreen = enterAlternateScreen(process.stdout);
+  const { waitUntilExit } = render(React.createElement(App, props), {
+    exitOnCtrlC: false,
+    stdin,
+  });
+
+  try {
+    await waitUntilExit();
+  } finally {
+    cleanupInput();
+    cleanupScreen();
+  }
+}
 
 if (args.includes('--version') || args.includes('-v')) {
   console.log(VERSION);
@@ -48,17 +65,10 @@ if (command === 'start') {
     }
 
     // Render TUI — either with full config (direct start) or without (interactive setup)
-    const cleanupScreen = enterAlternateScreen();
-    const { waitUntilExit } = render(
-      React.createElement(App, {
-        initialConfig: config,
-        detected,
-      }),
-      { exitOnCtrlC: false },
-    );
-
-    await waitUntilExit();
-    cleanupScreen();
+    await runInkApp({
+      initialConfig: config,
+      detected,
+    });
   })().catch((err) => {
     console.error('Failed to start Duo:', err);
     process.exit(1);
@@ -99,18 +109,11 @@ if (command === 'start') {
         godModel: result.session.metadata.godModel,
       };
 
-      const cleanupScreen = enterAlternateScreen();
-      const { waitUntilExit } = render(
-        React.createElement(App, {
-          initialConfig,
-          detected,
-          resumeSession: result.session,
-        }),
-        { exitOnCtrlC: false },
-      );
-
-      await waitUntilExit();
-      cleanupScreen();
+      await runInkApp({
+        initialConfig,
+        detected,
+        resumeSession: result.session,
+      });
     })().catch((err) => {
       console.error('Failed to resume Duo session:', err);
       process.exit(1);
@@ -180,17 +183,10 @@ if (command === 'start') {
       config = result.config ?? undefined;
     }
 
-    const cleanupScreen = enterAlternateScreen();
-    const { waitUntilExit } = render(
-      React.createElement(App, {
-        initialConfig: config,
-        detected,
-      }),
-      { exitOnCtrlC: false },
-    );
-
-    await waitUntilExit();
-    cleanupScreen();
+    await runInkApp({
+      initialConfig: config,
+      detected,
+    });
   })().catch((err) => {
     console.error('Failed to start Duo:', err);
     process.exit(1);
