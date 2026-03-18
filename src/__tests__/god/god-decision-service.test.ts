@@ -17,6 +17,7 @@ import {
   GodDecisionService,
   type GodDecisionContext,
   REVIEWER_HANDLING_INSTRUCTIONS,
+  SYSTEM_PROMPT,
 } from '../../god/god-decision-service.js';
 import { WatchdogService } from '../../god/watchdog.js';
 
@@ -546,6 +547,20 @@ describe('GodDecisionService', () => {
       expect(REVIEWER_HANDLING_INSTRUCTIONS).toContain('auto-forwarding');
       expect(REVIEWER_HANDLING_INSTRUCTIONS).toContain('ROUTING GUIDANCE');
       expect(REVIEWER_HANDLING_INSTRUCTIONS).toContain('Do NOT repeat or summarize');
+    });
+  });
+
+  describe('CHOICE_HANDLING_INSTRUCTIONS', () => {
+    it('is included in SYSTEM_PROMPT', () => {
+      expect(SYSTEM_PROMPT).toContain('Worker choice handling');
+      expect(SYSTEM_PROMPT).toContain('autonomousResolutions');
+      expect(SYSTEM_PROMPT).toContain('request_user_input');
+    });
+  });
+
+  describe('MODE_SPECIFICATION_INSTRUCTIONS', () => {
+    it('is included in SYSTEM_PROMPT', () => {
+      expect(SYSTEM_PROMPT).toContain('Worker mode specification');
     });
   });
 });
