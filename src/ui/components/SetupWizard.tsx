@@ -6,7 +6,7 @@
  */
 
 import React, { useRef, useState } from 'react';
-import { Text, useInput } from '../../tui/primitives.js';
+import { Text, useInput, usePaste } from '../../tui/primitives.js';
 import { DirectoryPicker } from './DirectoryPicker.js';
 import type { DetectedCLI } from '../../adapters/detect.js';
 import { getInstalledGodAdapters, isSupportedGodAdapterName } from '../../god/god-adapter-config.js';
@@ -366,6 +366,17 @@ export function ModelSelector({
     }
   });
 
+  usePaste((text) => {
+    if (modeRef.current !== 'custom') return;
+    // Model IDs are single-line; strip newlines and whitespace
+    const cleaned = text.replace(/[\r\n]+/g, '').trim();
+    if (cleaned) {
+      const next = customValueRef.current + cleaned;
+      customValueRef.current = next;
+      setCustomValue(next);
+    }
+  });
+
   if (mode === 'custom') {
     return (
       <Panel tone="section" width={panelWidth} alignSelf="flex-start" paddingX={2}>
@@ -411,6 +422,14 @@ function TaskInput({
       setValue((prev) => prev.slice(0, -1));
     } else if (input && !key.ctrl && !key.meta) {
       setValue((prev) => prev + input);
+    }
+  });
+
+  usePaste((text) => {
+    // Task text: keep content but normalize whitespace (collapse newlines to spaces)
+    const cleaned = text.replace(/[\r\n]+/g, ' ').trim();
+    if (cleaned) {
+      setValue((prev) => prev + cleaned);
     }
   });
 

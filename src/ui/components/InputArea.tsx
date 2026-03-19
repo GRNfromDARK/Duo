@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Box, Text, useInput } from '../../tui/primitives.js';
+import { Box, Text, useInput, usePaste } from '../../tui/primitives.js';
 import type { Key } from '../../tui/primitives.js';
 import { buildInputAreaLayout } from '../input-area-layout.js';
 
@@ -148,6 +148,31 @@ export function processInput(
   return { type: 'noop' };
 }
 
+/**
+ * Pure function: insert pasted text at cursor position, respecting maxLines.
+ */
+export function processPaste(
+  currentValue: string,
+  cursorPos: number,
+  pastedText: string,
+  maxLines: number,
+): InputAction {
+  if (!pastedText) return { type: 'noop' };
+
+  const before = currentValue.slice(0, cursorPos);
+  const after = currentValue.slice(cursorPos);
+  let combined = before + pastedText + after;
+
+  // Enforce maxLines by trimming excess lines from the end
+  const lines = combined.split('\n');
+  if (lines.length > maxLines) {
+    combined = lines.slice(0, maxLines).join('\n');
+  }
+
+  const newCursorPos = Math.min(before.length + pastedText.length, combined.length);
+  return { type: 'update', value: combined, cursorPos: newCursorPos };
+}
+
 export function InputArea({
   isLLMRunning,
   onSubmit,
@@ -189,6 +214,14 @@ export function InputArea({
         break;
       case 'noop':
         break;
+    }
+  });
+
+  usePaste((text) => {
+    if (disabled) return;
+    const action = processPaste(state.value, state.cursorPos, text, maxLines);
+    if (action.type === 'update') {
+      setState({ value: action.value, cursorPos: action.cursorPos });
     }
   });
 

@@ -1,5 +1,6 @@
 import React from 'react';
-import { createTextAttributes, type ParsedKey } from '@opentui/core';
+import { createTextAttributes, decodePasteBytes, stripAnsiSequences, type ParsedKey } from '@opentui/core';
+import type { PasteEvent } from '@opentui/core';
 import { useAppContext, useKeyboard } from '@opentui/react';
 
 export interface Key {
@@ -78,6 +79,14 @@ function toRuntimeInput(event: Partial<ParsedKey>): string {
     return ' ';
   }
 
+  // Support multi-character sequences (e.g. rapid typing or non-bracketed paste fallback)
+  if (typeof event.sequence === 'string' && event.sequence.length > 1 && !event.ctrl && !event.meta) {
+    // Only forward printable multi-char sequences (no escape sequences)
+    if (!/[\x00-\x1f]/.test(event.sequence)) {
+      return event.sequence;
+    }
+  }
+
   return '';
 }
 
@@ -85,6 +94,31 @@ export function useInput(handler: (input: string, key: Key) => void): void {
   useKeyboard((event) => {
     handler(toRuntimeInput(event), toRuntimeKey(event));
   });
+}
+
+/**
+ * Subscribe to terminal paste events (bracketed paste mode).
+ * The handler receives the decoded, ANSI-stripped paste text.
+ */
+export function usePaste(handler: (text: string) => void): void {
+  const { keyHandler } = useAppContext();
+  const handlerRef = React.useRef(handler);
+  React.useLayoutEffect(() => {
+    handlerRef.current = handler;
+  });
+  const stableHandler = React.useCallback((event: PasteEvent) => {
+    const raw = decodePasteBytes(event.bytes);
+    const cleaned = stripAnsiSequences(raw);
+    if (cleaned.length > 0) {
+      handlerRef.current(cleaned);
+    }
+  }, []);
+  React.useEffect(() => {
+    keyHandler?.on('paste', stableHandler);
+    return () => {
+      keyHandler?.off('paste', stableHandler);
+    };
+  }, [keyHandler, stableHandler]);
 }
 
 export function useApp(): { exit: () => void } {

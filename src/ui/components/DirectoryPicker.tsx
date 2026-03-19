@@ -3,7 +3,7 @@
  */
 
 import React, { useMemo, useState } from 'react';
-import { Text, useInput } from '../../tui/primitives.js';
+import { Text, useInput, usePaste } from '../../tui/primitives.js';
 import {
   addToMRU,
   completePath,
@@ -102,6 +102,16 @@ export function DirectoryPicker({
         break;
       case 'noop':
         break;
+    }
+  });
+
+  usePaste((text) => {
+    // Strip newlines and surrounding whitespace — paths are single-line
+    const cleaned = text.replace(/[\r\n]+/g, '').trim();
+    if (cleaned) {
+      setInputValue(cleaned);
+      setCompletions([]);
+      setWarning(null);
     }
   });
 
