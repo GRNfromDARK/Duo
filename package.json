@@ -9,6 +9,7 @@
   },
   "scripts": {
     "test": "node scripts/with-bun.mjs x vitest run",
+    "test:selection": "node scripts/with-bun.mjs run src/__tests__/ui/selection-copy-regression.tsx",
     "build": "tsup src/cli.ts --format esm",
     "dev": "tsx src/cli.ts",
     "smoke:opentui": "node scripts/with-bun.mjs run src/tui/cli.tsx --smoke-test"

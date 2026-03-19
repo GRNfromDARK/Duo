@@ -168,22 +168,56 @@ export function App({ initialConfig, detected, resumeSession }: AppProps): React
 
   const renderer = useRenderer();
 
+  // Cache selected text at drag-finish time. During rapid React re-renders
+  // (e.g. streaming updates), the Selection's renderable references can become
+  // stale, causing getSelectedText() to return empty even though hasSelection
+  // is true. By caching the text when the renderer emits 'selection' (fired at
+  // the end of every mouse-drag selection), we guarantee a valid copy payload
+  // is available when the user presses Ctrl/Cmd+C moments later.
+  //
+  // To prevent stale cache from a previous selection leaking into a new one,
+  // we also store the Selection object reference. In the copy handler we only
+  // use the cached text when the current selection is the same object that
+  // produced the cache. If the user clears and starts a new selection, the
+  // renderer creates a new Selection instance, so the identity check fails
+  // and the stale cache is ignored.
+  const cachedSelectionTextRef = useRef('');
+  const cachedSelectionRef = useRef<object | null>(null);
+  useEffect(() => {
+    const onSelectionFinish = (selection: { getSelectedText?: () => string } | null) => {
+      cachedSelectionTextRef.current = selection?.getSelectedText?.() ?? '';
+      cachedSelectionRef.current = selection;
+    };
+    renderer.on('selection', onSelectionFinish);
+    return () => { renderer.off('selection', onSelectionFinish); };
+  }, [renderer]);
+
   useInput((input, key) => {
-    // Match Ctrl+C (all platforms) and Cmd+C (macOS: meta+C)
-    const isCopyKey = (key.ctrl || key.meta) && input === 'c';
+    // Match Ctrl+C (all platforms) and Cmd+C (macOS).
+    // On macOS with kitty keyboard protocol, Command maps to key.super,
+    // while Option maps to key.meta.  Check all three modifiers so that
+    // both Ctrl+C and Command+C trigger the copy-or-interrupt path.
+    const isCopyKey = (key.ctrl || key.meta || key.super) && input === 'c';
     if (!isCopyKey) return;
 
     // If there is an active text selection, copy it to the clipboard via OSC52
     // and do NOT trigger the interrupt/exit flow.
+    // Use live extraction first; fall back to the cached snapshot captured at
+    // drag-finish time (immune to renderable staleness from re-renders).
+    // The cache is only used when the current Selection object is the same
+    // instance that produced the cache (identity check prevents stale leaks).
     if (renderer.hasSelection) {
-      const text = renderer.getSelection()?.getSelectedText();
+      const currentSel = renderer.getSelection();
+      const liveText = currentSel?.getSelectedText() ?? '';
+      const cacheValid = currentSel != null && currentSel === cachedSelectionRef.current;
+      const text = liveText || (cacheValid ? cachedSelectionTextRef.current : '');
       if (text) {
         renderer.copyToClipboardOSC52(text);
-        return;
       }
+      return;
     }
 
-    // Cmd+C (meta only, no ctrl) without a selection: ignore — don't interrupt.
+    // Cmd+C (meta/super, no ctrl) without a selection: ignore — don't interrupt.
     if (!key.ctrl) return;
 
     // Ctrl+C without selection: existing interrupt / safe-exit logic.
