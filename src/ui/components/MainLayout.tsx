@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Box, ScrollBox, Text, useInput } from '../../tui/primitives.js';
+import { Box, ScrollBox, Text, useInput, usePaste } from '../../tui/primitives.js';
 import { InputArea } from './InputArea.js';
 import { StatusBar, type WorkflowStatus } from './StatusBar.js';
 import { TaskBanner } from './TaskBanner.js';
@@ -216,6 +216,17 @@ export function MainLayout({
         setOverlayState((state) => updateSearchQuery(state, state.searchQuery.slice(0, -1)));
       } else if (input && !key.return && !key.tab && input !== '/') {
         setOverlayState((state) => updateSearchQuery(state, state.searchQuery + input));
+      }
+    }
+  });
+
+  usePaste((text) => {
+    if (suspendGlobalKeys) return;
+    if (overlayState.activeOverlay === 'search') {
+      // Search queries are single-line; strip newlines and append
+      const cleaned = text.replace(/[\r\n]+/g, ' ').trim();
+      if (cleaned) {
+        setOverlayState((state) => updateSearchQuery(state, state.searchQuery + cleaned));
       }
     }
   });

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Text, useInput, useStdout } from '../../tui/primitives.js';
+import { Text, useInput, usePaste, useStdout } from '../../tui/primitives.js';
 import type { Key } from '../../tui/primitives.js';
 import { computeOverlaySurfaceWidth } from '../screen-shell-layout.js';
 import { CenteredContent, Column, FooterHint, LabelValueRow, Panel, PromptRow, Row, SectionTitle, SelectionRow } from '../tui-layout.js';
@@ -91,6 +91,21 @@ export function processCompletionInput(
   return { type: 'noop' };
 }
 
+/**
+ * Pure function: process paste for the completion screen text input.
+ * Only active when mode is 'continue' or 'new-task'.
+ */
+export function processCompletionPaste(
+  state: CompletionScreenState,
+  pastedText: string,
+): CompletionInputAction {
+  if (state.mode === 'menu' || !pastedText) return { type: 'noop' };
+  // Follow-up / new-task text: collapse newlines to spaces, append
+  const cleaned = pastedText.replace(/[\r\n]+/g, ' ').trim();
+  if (!cleaned) return { type: 'noop' };
+  return { type: 'set_value', value: state.value + cleaned };
+}
+
 export interface CompletionScreenProps {
   currentTask: string;
   onContinueCurrentTask: (followUp: string) => void;
@@ -139,6 +154,13 @@ export function CompletionScreen({
         return;
       case 'noop':
         return;
+    }
+  });
+
+  usePaste((text) => {
+    const action = processCompletionPaste({ mode, selected, value }, text);
+    if (action.type === 'set_value') {
+      setValue(action.value);
     }
   });
 

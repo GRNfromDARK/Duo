@@ -4,6 +4,8 @@
  * Covers:
  * - processPaste pure function (InputArea.tsx)
  * - processInput unchanged for single-character input
+ * - processCompletionPaste (CompletionScreen.tsx)
+ * - MainLayout search query paste sanitisation
  * - DirectoryPicker paste sanitisation expectations
  * - SetupWizard TaskInput / ModelSelector paste sanitisation expectations
  */
@@ -22,6 +24,10 @@ vi.mock('@opentui/react', () => ({
 }));
 
 import { processInput, processPaste } from '../../ui/components/InputArea.js';
+import {
+  processCompletionPaste,
+  type CompletionScreenState,
+} from '../../ui/components/CompletionScreen.js';
 import type { Key } from '../../tui/primitives.js';
 
 // ── Helper ──
@@ -225,5 +231,85 @@ describe('SetupWizard ModelSelector paste sanitisation', () => {
     const raw = '  gpt-4o  ';
     const cleaned = raw.replace(/[\r\n]+/g, '').trim();
     expect(cleaned).toBe('gpt-4o');
+  });
+});
+
+// ── processCompletionPaste (CompletionScreen) ──
+
+describe('processCompletionPaste', () => {
+  function makeState(overrides: Partial<CompletionScreenState> = {}): CompletionScreenState {
+    return { mode: 'continue', selected: 0, value: '', ...overrides };
+  }
+
+  it('appends pasted text in continue mode', () => {
+    const result = processCompletionPaste(makeState({ mode: 'continue' }), 'follow-up task');
+    expect(result).toEqual({ type: 'set_value', value: 'follow-up task' });
+  });
+
+  it('appends pasted text in new-task mode', () => {
+    const result = processCompletionPaste(makeState({ mode: 'new-task' }), 'brand new task');
+    expect(result).toEqual({ type: 'set_value', value: 'brand new task' });
+  });
+
+  it('appends to existing value', () => {
+    const result = processCompletionPaste(
+      makeState({ mode: 'continue', value: 'prefix ' }),
+      'suffix',
+    );
+    expect(result).toEqual({ type: 'set_value', value: 'prefix suffix' });
+  });
+
+  it('collapses newlines to spaces', () => {
+    const result = processCompletionPaste(makeState(), 'line1\nline2\nline3');
+    expect(result).toEqual({ type: 'set_value', value: 'line1 line2 line3' });
+  });
+
+  it('trims leading/trailing whitespace after collapsing', () => {
+    const result = processCompletionPaste(makeState(), '\n  hello  \n');
+    expect(result).toEqual({ type: 'set_value', value: 'hello' });
+  });
+
+  it('returns noop in menu mode', () => {
+    const result = processCompletionPaste(makeState({ mode: 'menu' }), 'text');
+    expect(result).toEqual({ type: 'noop' });
+  });
+
+  it('returns noop for empty paste', () => {
+    const result = processCompletionPaste(makeState(), '');
+    expect(result).toEqual({ type: 'noop' });
+  });
+
+  it('returns noop for whitespace-only paste', () => {
+    const result = processCompletionPaste(makeState(), '  \n\n  ');
+    expect(result).toEqual({ type: 'noop' });
+  });
+});
+
+// ── MainLayout search query paste sanitisation ──
+
+describe('MainLayout search query paste', () => {
+  it('collapses newlines to spaces for search query', () => {
+    const raw = 'search\nterm\nmultiline';
+    const cleaned = raw.replace(/[\r\n]+/g, ' ').trim();
+    expect(cleaned).toBe('search term multiline');
+  });
+
+  it('trims leading/trailing whitespace', () => {
+    const raw = '  query text  \n';
+    const cleaned = raw.replace(/[\r\n]+/g, ' ').trim();
+    expect(cleaned).toBe('query text');
+  });
+
+  it('appends cleaned text to existing query', () => {
+    const existing = 'existing ';
+    const pasted = 'new text\n';
+    const cleaned = pasted.replace(/[\r\n]+/g, ' ').trim();
+    expect(existing + cleaned).toBe('existing new text');
+  });
+
+  it('handles empty paste (no change)', () => {
+    const raw = '';
+    const cleaned = raw.replace(/[\r\n]+/g, ' ').trim();
+    expect(cleaned).toBe('');
   });
 });
