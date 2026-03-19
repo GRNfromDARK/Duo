@@ -133,6 +133,9 @@ npm run build
 
 # Run tests
 npm test
+
+# Run selection/copy regression tests
+npm run test:selection
 ```
 
 ## CLI Commands
