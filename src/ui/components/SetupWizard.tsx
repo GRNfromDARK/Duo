@@ -14,6 +14,7 @@ import { getRegistryEntry, getAdapterModels, CUSTOM_MODEL_SENTINEL } from '../..
 import type { SessionConfig } from '../../types/session.js';
 import { VERSION } from '../../index.js';
 import {
+  CenteredContent,
   Column,
   Divider,
   FooterHint,
@@ -25,11 +26,19 @@ import {
   buildSelectionRowModel,
 } from '../tui-layout.js';
 import {
+  computeSetupDividerWidth,
+  computeSetupSurfaceWidth,
+} from '../screen-shell-layout.js';
+import {
   SETUP_FEATURE_BULLETS,
   SETUP_HERO_SLOGAN,
   SETUP_HERO_SUBHEAD,
 } from '../setup-copy.js';
-import { SETUP_PANEL_WIDTH, buildSetupStepperModel } from '../setup-wizard-layout.js';
+import {
+  SETUP_PANEL_WIDTH,
+  buildSetupHeroLayout,
+  buildSetupStepperModel,
+} from '../setup-wizard-layout.js';
 
 export type SetupPhase =
   | 'select-dir'
@@ -99,14 +108,25 @@ function SelectionListRow({
   );
 }
 
-export function BrandHeader({ version }: { version: string }): React.ReactElement {
+export function BrandHeader({
+  version,
+  width,
+  rows,
+}: {
+  version: string;
+  width: number;
+  rows: number;
+}): React.ReactElement {
+  const heroLayout = buildSetupHeroLayout(rows);
+  const dividerWidth = Math.max(24, width - 10);
+
   return (
     <Panel
       tone="hero"
       paddingX={3}
-      paddingY={1}
+      paddingY={heroLayout.compact ? 0 : 1}
       alignSelf="flex-start"
-      width={SETUP_PANEL_WIDTH}
+      width={width}
     >
       <Column>
         {LOGO_LINES.map((line, i) => (
@@ -114,27 +134,33 @@ export function BrandHeader({ version }: { version: string }): React.ReactElemen
         ))}
       </Column>
 
-      <Row marginTop={1}>
+      <Row marginTop={heroLayout.topMargin}>
         <Text color="white" bold>{`  ${SETUP_HERO_SLOGAN}`}</Text>
       </Row>
 
-      <Row marginTop={1}>
-        <Divider width={60} />
+      <Row marginTop={heroLayout.topMargin}>
+        <Divider width={dividerWidth} />
       </Row>
 
-      <Column marginTop={1}>
-        <Text dimColor>{SETUP_HERO_SUBHEAD}</Text>
-        <Text dimColor>{`Workflow-guided OpenTUI session setup · v${version}`}</Text>
-      </Column>
+      {heroLayout.showSubhead && (
+        <Column marginTop={heroLayout.topMargin}>
+          <Text dimColor>{SETUP_HERO_SUBHEAD}</Text>
+          {heroLayout.showVersionLine && (
+            <Text dimColor>{`Workflow-guided OpenTUI session setup · v${version}`}</Text>
+          )}
+        </Column>
+      )}
 
-      <Column marginTop={1}>
-        {SETUP_FEATURE_BULLETS.map((bullet, i) => (
-          <Row key={i}>
-            <Text color="cyan">{'  ◆ '}</Text>
-            <Text dimColor>{bullet}</Text>
-          </Row>
-        ))}
-      </Column>
+      {heroLayout.showBullets && (
+        <Column marginTop={heroLayout.topMargin}>
+          {SETUP_FEATURE_BULLETS.map((bullet, i) => (
+            <Row key={i}>
+              <Text color="cyan">{'  ◆ '}</Text>
+              <Text dimColor>{bullet}</Text>
+            </Row>
+          ))}
+        </Column>
+      )}
     </Panel>
   );
 }
@@ -167,11 +193,13 @@ function CLISelector({
   onSelect,
   exclude,
   label,
+  panelWidth = SETUP_PANEL_WIDTH,
 }: {
   detected: DetectedCLI[];
   onSelect: (name: string) => void;
   exclude?: string;
   label: string;
+  panelWidth?: number;
 }): React.ReactElement {
   const items = detected.filter((d) => d.installed && d.name !== exclude);
   const [selected, setSelected] = useState(0);
@@ -184,7 +212,7 @@ function CLISelector({
 
   if (items.length === 0) {
     return (
-      <Panel tone="warning" width={SETUP_PANEL_WIDTH} alignSelf="flex-start">
+      <Panel tone="warning" width={panelWidth} alignSelf="flex-start">
         <SectionTitle title={label} tone="warning" />
         <Text color="red">No CLI tools available. Install at least one AI CLI tool.</Text>
       </Panel>
@@ -192,7 +220,7 @@ function CLISelector({
   }
 
   return (
-    <Panel tone="section" width={SETUP_PANEL_WIDTH} alignSelf="flex-start" paddingX={2}>
+    <Panel tone="section" width={panelWidth} alignSelf="flex-start" paddingX={2}>
       <SectionTitle title={label} />
       <FooterHint text="Arrow keys navigate · Enter selects" />
       <Column marginTop={1}>
@@ -216,11 +244,13 @@ export function GodSelector({
   reviewer,
   onSelect,
   label,
+  panelWidth = SETUP_PANEL_WIDTH,
 }: {
   detected: DetectedCLI[];
   reviewer?: string;
   onSelect: (name: string) => void;
   label: string;
+  panelWidth?: number;
 }): React.ReactElement {
   const cliItems = getInstalledGodAdapters(detected);
   const canReuseReviewer = reviewer ? isSupportedGodAdapterName(reviewer) : false;
@@ -244,7 +274,7 @@ export function GodSelector({
   });
 
   return (
-    <Panel tone="section" width={SETUP_PANEL_WIDTH} alignSelf="flex-start" paddingX={2}>
+    <Panel tone="section" width={panelWidth} alignSelf="flex-start" paddingX={2}>
       <SectionTitle title={label} />
       <FooterHint text="Arrow keys navigate · Enter selects" />
       <Text dimColor color="yellow">
@@ -280,11 +310,13 @@ export function ModelSelector({
   adapterName,
   cliName,
   onSubmit,
+  panelWidth = SETUP_PANEL_WIDTH,
 }: {
   roleName: string;
   adapterName: string;
   cliName: string;
   onSubmit: (model: string | undefined) => void;
+  panelWidth?: number;
 }): React.ReactElement {
   const models = getAdapterModels(cliName);
   const items: { id: string | undefined; label: string }[] = [
@@ -336,7 +368,7 @@ export function ModelSelector({
 
   if (mode === 'custom') {
     return (
-      <Panel tone="section" width={SETUP_PANEL_WIDTH} alignSelf="flex-start" paddingX={2}>
+      <Panel tone="section" width={panelWidth} alignSelf="flex-start" paddingX={2}>
         <SectionTitle title={`Model for ${roleName} (${adapterName}):`} />
         <FooterHint text="Type a model id and press Enter, or Enter on empty for default" />
         <Row marginTop={1}>
@@ -347,7 +379,7 @@ export function ModelSelector({
   }
 
   return (
-    <Panel tone="section" width={SETUP_PANEL_WIDTH} alignSelf="flex-start" paddingX={2}>
+    <Panel tone="section" width={panelWidth} alignSelf="flex-start" paddingX={2}>
       <SectionTitle title={`Model for ${roleName} (${adapterName}):`} />
       <FooterHint text="Arrow keys navigate · Enter selects" />
       <Column marginTop={1}>
@@ -363,7 +395,13 @@ export function ModelSelector({
   );
 }
 
-function TaskInput({ onSubmit }: { onSubmit: (task: string) => void }): React.ReactElement {
+function TaskInput({
+  onSubmit,
+  panelWidth = SETUP_PANEL_WIDTH,
+}: {
+  onSubmit: (task: string) => void;
+  panelWidth?: number;
+}): React.ReactElement {
   const [value, setValue] = useState('');
 
   useInput((input, key) => {
@@ -377,7 +415,7 @@ function TaskInput({ onSubmit }: { onSubmit: (task: string) => void }): React.Re
   });
 
   return (
-    <Panel tone="section" width={SETUP_PANEL_WIDTH} alignSelf="flex-start" paddingX={2}>
+    <Panel tone="section" width={panelWidth} alignSelf="flex-start" paddingX={2}>
       <SectionTitle title="Describe the task for this session:" />
       <FooterHint text="Type the task prompt and press Enter" />
       <Row marginTop={1}>
@@ -392,11 +430,13 @@ export function ConfirmScreen({
   detected,
   onConfirm,
   onBack,
+  panelWidth = SETUP_PANEL_WIDTH,
 }: {
   config: Partial<SessionConfig>;
   detected: DetectedCLI[];
   onConfirm: () => void;
   onBack: () => void;
+  panelWidth?: number;
 }): React.ReactElement {
   const home = process.env.HOME ?? '';
   const findDisplayName = (name?: string) =>
@@ -410,7 +450,7 @@ export function ConfirmScreen({
   });
 
   return (
-    <Panel tone="section" width={SETUP_PANEL_WIDTH} alignSelf="flex-start" paddingX={2}>
+    <Panel tone="section" width={panelWidth} alignSelf="flex-start" paddingX={2}>
       <SectionTitle title="Session Configuration" tone="hero" />
       <Column marginTop={1}>
         <LabelValueRow label="Project" value={displayDir} />
@@ -457,13 +497,19 @@ export interface SetupWizardProps {
   detected: DetectedCLI[];
   initialConfig?: Partial<SessionConfig>;
   onComplete: (config: SessionConfig) => void;
+  columns: number;
+  rows: number;
 }
 
 export function SetupWizard({
   detected,
   initialConfig,
   onComplete,
+  columns,
+  rows,
 }: SetupWizardProps): React.ReactElement {
+  const panelWidth = computeSetupSurfaceWidth(columns);
+  const dividerWidth = computeSetupDividerWidth(panelWidth);
   const [phase, setPhase] = useState<SetupPhase>('select-dir');
   const [config, setConfig] = useState<Partial<SessionConfig>>({
     projectDir: initialConfig?.projectDir ?? process.cwd(),
@@ -473,17 +519,18 @@ export function SetupWizard({
   });
 
   return (
-    <Column>
-      <BrandHeader version={VERSION} />
+    <CenteredContent width={panelWidth}>
+      <BrandHeader version={VERSION} width={panelWidth} rows={rows} />
       <ProgressStepper currentPhase={phase} />
 
       <Row marginTop={1}>
-        <Divider width={58} />
+        <Divider width={dividerWidth} />
       </Row>
 
       <Column marginTop={1}>
         {phase === 'select-dir' && (
           <DirectoryPicker
+            panelWidth={panelWidth}
             onSelect={(dir) => {
               setConfig((prev) => ({ ...prev, projectDir: dir }));
               setPhase('select-coder');
@@ -499,6 +546,7 @@ export function SetupWizard({
           <CLISelector
             detected={detected}
             label="Select Coder"
+            panelWidth={panelWidth}
             onSelect={(name) => {
               setConfig((prev) => ({ ...prev, coder: name, coderModel: undefined }));
               setPhase(adapterSupportsModel(name) ? 'coder-model' : 'select-reviewer');
@@ -511,6 +559,7 @@ export function SetupWizard({
             roleName="Coder"
             adapterName={detected.find((detectedCli) => detectedCli.name === config.coder)?.displayName ?? config.coder ?? ''}
             cliName={config.coder ?? ''}
+            panelWidth={panelWidth}
             onSubmit={(model) => {
               setConfig((prev) => ({ ...prev, coderModel: model }));
               setPhase('select-reviewer');
@@ -523,6 +572,7 @@ export function SetupWizard({
             detected={detected}
             label="Select Reviewer"
             exclude={config.coder}
+            panelWidth={panelWidth}
             onSelect={(name) => {
               setConfig((prev) => ({ ...prev, reviewer: name, reviewerModel: undefined }));
               setPhase(adapterSupportsModel(name) ? 'reviewer-model' : 'select-god');
@@ -535,6 +585,7 @@ export function SetupWizard({
             roleName="Reviewer"
             adapterName={detected.find((detectedCli) => detectedCli.name === config.reviewer)?.displayName ?? config.reviewer ?? ''}
             cliName={config.reviewer ?? ''}
+            panelWidth={panelWidth}
             onSubmit={(model) => {
               setConfig((prev) => ({ ...prev, reviewerModel: model }));
               setPhase('select-god');
@@ -547,6 +598,7 @@ export function SetupWizard({
             detected={detected}
             reviewer={config.reviewer}
             label="Select God"
+            panelWidth={panelWidth}
             onSelect={(name) => {
               const godValue = (name === SAME_AS_REVIEWER ? config.reviewer! : name) as SessionConfig['god'];
               setConfig((prev) => ({ ...prev, god: godValue, godModel: undefined }));
@@ -560,6 +612,7 @@ export function SetupWizard({
             roleName="God"
             adapterName={detected.find((detectedCli) => detectedCli.name === config.god)?.displayName ?? config.god ?? ''}
             cliName={config.god ?? ''}
+            panelWidth={panelWidth}
             onSubmit={(model) => {
               setConfig((prev) => ({ ...prev, godModel: model }));
               setPhase('enter-task');
@@ -569,6 +622,7 @@ export function SetupWizard({
 
         {phase === 'enter-task' && (
           <TaskInput
+            panelWidth={panelWidth}
             onSubmit={(task) => {
               setConfig((prev) => ({ ...prev, task }));
               setPhase('confirm');
@@ -580,6 +634,7 @@ export function SetupWizard({
           <ConfirmScreen
             config={config}
             detected={detected}
+            panelWidth={panelWidth}
             onConfirm={() => {
               onComplete({
                 projectDir: config.projectDir!,
@@ -596,6 +651,6 @@ export function SetupWizard({
           />
         )}
       </Column>
-    </Column>
+    </CenteredContent>
   );
 }

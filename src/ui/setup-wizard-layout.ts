@@ -6,6 +6,14 @@ export interface SetupStepperItem {
   state: 'complete' | 'active' | 'pending';
 }
 
+export interface SetupHeroLayout {
+  compact: boolean;
+  showBullets: boolean;
+  showSubhead: boolean;
+  showVersionLine: boolean;
+  topMargin: 0 | 1;
+}
+
 const STEPPER_GROUPS: { key: string; label: string; phases: SetupPhase[] }[] = [
   { key: 'project', label: 'Project', phases: ['select-dir'] },
   { key: 'coder', label: 'Coder', phases: ['select-coder', 'coder-model'] },
@@ -29,4 +37,18 @@ export function buildSetupStepperModel(currentPhase: SetupPhase): SetupStepperIt
         ? 'active'
         : 'pending',
   }));
+}
+
+export function buildSetupHeroLayout(rows: number): SetupHeroLayout {
+  const compact = rows <= 28;
+  const showBullets = rows >= 30;
+  const showVersionLine = rows >= 32;
+
+  return {
+    compact,
+    showBullets,
+    showSubhead: true,
+    showVersionLine,
+    topMargin: compact ? 0 : 1,
+  };
 }

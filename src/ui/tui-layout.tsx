@@ -31,6 +31,28 @@ export function Column({ children, ...props }: BoxProps): React.ReactElement {
   );
 }
 
+export function CenteredContent({
+  children,
+  width,
+  height,
+  justifyContent = 'flex-start',
+}: {
+  children: React.ReactNode;
+  width: number | string;
+  height?: number | string;
+  justifyContent?: string;
+}): React.ReactElement {
+  return (
+    <Column width="100%" height={height} justifyContent={justifyContent}>
+      <Row width="100%" justifyContent="center">
+        <Column width={width}>
+          {children}
+        </Column>
+      </Row>
+    </Column>
+  );
+}
+
 export function Panel({
   children,
   tone = 'section',
@@ -83,9 +105,11 @@ export function LabelValueRow({
       <Box width={labelWidth}>
         <Text dimColor bold>{label}</Text>
       </Box>
-      {typeof value === 'string'
-        ? <Text color={valueColor}>{value}</Text>
-        : <>{value}</>}
+      <Box flexDirection="column" flexGrow={1}>
+        {typeof value === 'string'
+          ? <Text color={valueColor}>{value}</Text>
+          : <>{value}</>}
+      </Box>
     </Row>
   );
 }

@@ -27,6 +27,7 @@ export interface DirectoryPickerProps {
   onCancel: () => void;
   mruFile?: string;
   scanDirs?: string[];
+  panelWidth?: number;
 }
 
 export function DirectoryPicker({
@@ -34,6 +35,7 @@ export function DirectoryPicker({
   onCancel,
   mruFile = MRU_FILE,
   scanDirs = DEFAULT_SCAN_DIRS,
+  panelWidth = SETUP_PANEL_WIDTH,
 }: DirectoryPickerProps): React.ReactElement {
   const mru = useMemo(() => loadMRU(mruFile), [mruFile]);
   const discovered = useMemo(() => discoverGitRepos(scanDirs), [scanDirs]);
@@ -104,7 +106,7 @@ export function DirectoryPicker({
   });
 
   return (
-    <Panel tone="section" width={SETUP_PANEL_WIDTH} alignSelf="flex-start" paddingX={2}>
+    <Panel tone="section" width={panelWidth} alignSelf="flex-start" paddingX={2}>
       <SectionTitle title="Select Project Directory" tone="hero" />
       <FooterHint text="Tab autocomplete · Arrow keys browse · Esc cancel" />
 
