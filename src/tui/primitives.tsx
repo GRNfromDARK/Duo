@@ -108,7 +108,10 @@ export function usePaste(handler: (text: string) => void): void {
   });
   const stableHandler = React.useCallback((event: PasteEvent) => {
     const raw = decodePasteBytes(event.bytes);
-    const cleaned = stripAnsiSequences(raw);
+    // Bun.stripANSI removes ANSI escape sequences but leaves \r intact.
+    // Normalise \r\n → \n and bare \r → \n so that Windows-style line endings
+    // in pasted text cannot corrupt cursor-position calculations downstream.
+    const cleaned = stripAnsiSequences(raw).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     if (cleaned.length > 0) {
       handlerRef.current(cleaned);
     }
