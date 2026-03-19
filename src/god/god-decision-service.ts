@@ -163,6 +163,7 @@ You have 5 actions:
 Guidelines:
 - LANGUAGE: Always respond in the same language as the user's task description.
 - When coder presents multiple approaches, send to reviewer first before picking one
+- When switching from explore/discuss to code/debug (investigation → implementation), send findings to reviewer first for validation before starting implementation
 - Acknowledge reviewer feedback in your diagnosis.notableObservations
 - When routing post-reviewer work back to coder, focus on strategic guidance — the full reviewer text is auto-forwarded
 - Reflect before accepting task or overriding reviewer judgment
