@@ -185,8 +185,14 @@ export function App({ initialConfig, detected, resumeSession }: AppProps): React
   const cachedSelectionRef = useRef<object | null>(null);
   useEffect(() => {
     const onSelectionFinish = (selection: { getSelectedText?: () => string } | null) => {
-      cachedSelectionTextRef.current = selection?.getSelectedText?.() ?? '';
+      const text = selection?.getSelectedText?.() ?? '';
+      cachedSelectionTextRef.current = text;
       cachedSelectionRef.current = selection;
+      // Auto-copy on selection: immediately copy to clipboard when user
+      // finishes a mouse-drag selection, so no extra keypress is needed.
+      if (text) {
+        renderer.copyToClipboardOSC52(text);
+      }
     };
     renderer.on('selection', onSelectionFinish);
     return () => { renderer.off('selection', onSelectionFinish); };
