@@ -86,7 +86,7 @@ interface AppProps {
 - Setup 阶段：渲染 `SetupWizard`，完成后获得完整 `SessionConfig`
 - Session 阶段：实例化内部 `SessionRunner`，传入最终 `SessionConfig`
 - 全局 Ctrl+C 处理：使用 `resolveGlobalCtrlCAction` 区分单次中断与双击安全退出，双击触发 `performSafeShutdown`
-- 复制选中文本：鼠标拖选结束时自动通过 OSC52 复制到剪贴板（auto-copy on selection），无需额外按键。同时 Ctrl+C / Cmd+C（macOS `key.super`）/ Option+C（`key.meta`）在有活跃文本选区时也通过 OSC52 复制而非触发中断。采用 identity-based selection cache：在 `renderer` 的 `'selection'` 事件触发时缓存选中文本和 Selection 对象引用，当流式渲染导致 `getSelectedText()` 返回空字符串时，通过对象 identity 校验回退到缓存文本，防止 stale cache 泄漏到新选区
+- 复制选中文本：鼠标拖选结束时自动通过 OSC52 复制到剪贴板（auto-copy on selection），无需额外按键。同时 Ctrl+C / Cmd+C（macOS `key.super`）/ Option+C（`key.meta`）在有活跃文本选区时也通过 OSC52 复制而非触发中断。决策逻辑提取为纯函数 `resolveCopyOrInterrupt(input, key, hasSelection, liveText, cachedText, cacheValid)` 返回 `CopyAction`（`copy` | `interrupt` | `noop`），便于独立测试。采用 identity-based selection cache：在 `renderer` 的 `'selection'` 事件触发时缓存选中文本和 Selection 对象引用，当流式渲染导致 `getSelectedText()` 返回空字符串时，通过对象 identity 校验回退到缓存文本，防止 stale cache 泄漏到新选区
 - 支持 session 重启：通过 `sessionRunKey` 递增触发 SessionRunner 重新挂载，支持 CompletionScreen 的 "Continue" / "New task" 流
 
 **SessionRunner — App 内部的 Session 阶段核心组件**:
@@ -466,6 +466,7 @@ interface InputAreaProps {
 **纯函数 `processInput(currentValue, cursorPos, input, key, maxLines)`**:
 - 提取为独立纯函数以便测试
 - 返回 `InputAction`: `submit` | `update` | `special` | `noop`
+- 过滤所有修饰键组合（`key.ctrl || key.super || key.meta`）为 `noop`，防止 Cmd+C / Option+C 等在输入区插入字符
 
 **辅助函数**:
 - `getDisplayLines(value, maxLines)` — 按 `\n` 分割并截取前 `maxLines` 行用于渲染
